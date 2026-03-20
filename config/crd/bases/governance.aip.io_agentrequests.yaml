@@ -1,0 +1,372 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: agentrequests.governance.aip.io
+spec:
+  group: governance.aip.io
+  names:
+    kind: AgentRequest
+    listKind: AgentRequestList
+    plural: agentrequests
+    singular: agentrequest
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.action
+      name: Action
+      type: string
+    - jsonPath: .spec.agentIdentity
+      name: Agent
+      type: string
+    - jsonPath: .spec.target.uri
+      name: Target
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: AgentRequest is the Schema for the agentrequests API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of AgentRequest
+            properties:
+              action:
+                minLength: 1
+                type: string
+              agentIdentity:
+                minLength: 1
+                type: string
+              cascadeModel:
+                properties:
+                  affectedTargets:
+                    items:
+                      properties:
+                        effectType:
+                          enum:
+                          - deleted
+                          - modified
+                          - disrupted
+                          - orphaned
+                          type: string
+                        uri:
+                          minLength: 1
+                          type: string
+                      required:
+                      - effectType
+                      - uri
+                      type: object
+                    minItems: 1
+                    type: array
+                  modelSourceID:
+                    type: string
+                  modelSourceTrust:
+                    enum:
+                    - authoritative
+                    - derived
+                    - inferred
+                    type: string
+                required:
+                - affectedTargets
+                type: object
+              executionMode:
+                default: single
+                description: |-
+                  ExecutionMode declares how the agent plans to execute.
+                  "single" (default): a specific pre-declared action.
+                  "scoped": dynamic execution within declared bounds (e.g. ReAct / Bedrock agents).
+                  When "scoped", ScopeBounds MUST also be provided.
+                enum:
+                - single
+                - scoped
+                type: string
+              humanApproval:
+                description: |-
+                  HumanApproval holds the human reviewer's decision when a policy requires manual approval.
+                  The controller watches this field and drives the status state machine accordingly.
+                properties:
+                  decision:
+                    description: 'Decision is the reviewer''s choice: "approved" or
+                      "denied".'
+                    enum:
+                    - approved
+                    - denied
+                    type: string
+                  forGeneration:
+                    description: ForGeneration binds this approval to a specific EvaluationGeneration
+                      epoch.
+                    format: int64
+                    type: integer
+                  reason:
+                    description: Reason is an optional free-text justification for
+                      the decision.
+                    type: string
+                required:
+                - decision
+                - forGeneration
+                type: object
+              intentPlanRef:
+                description: Optional fields
+                type: string
+              interruptibility:
+                type: boolean
+              parameters:
+                x-kubernetes-preserve-unknown-fields: true
+              priority:
+                format: int32
+                minimum: 0
+                type: integer
+              reason:
+                minLength: 1
+                type: string
+              reasoningTrace:
+                properties:
+                  alternatives:
+                    items:
+                      type: string
+                    type: array
+                  calibrationEvidence:
+                    type: string
+                  componentConfidence:
+                    additionalProperties:
+                      type: number
+                    type: object
+                  confidenceScore:
+                    format: float
+                    maximum: 1
+                    minimum: 0
+                    type: number
+                  traceReference:
+                    type: string
+                type: object
+              scopeBounds:
+                description: |-
+                  ScopeBounds defines the operating envelope for an agent using executionMode: scoped.
+                  The control plane approves the envelope at scope-request time and acquires OpsLocks on
+                  all resources currently matching PermittedTargetPatterns (spec Section 3.3).
+                properties:
+                  permittedActions:
+                    description: PermittedActions lists the action types the agent
+                      may perform within this scope.
+                    items:
+                      type: string
+                    minItems: 1
+                    type: array
+                  permittedTargetPatterns:
+                    description: |-
+                      PermittedTargetPatterns lists URI glob patterns the agent may operate on.
+                      OpsLocks are acquired on all currently-matching resources at approval time.
+                    items:
+                      type: string
+                    minItems: 1
+                    type: array
+                  timeBoundSeconds:
+                    description: |-
+                      TimeBoundSeconds is the maximum duration for the scoped operation.
+                      The control plane MUST revoke the scope after this period.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                required:
+                - permittedActions
+                - permittedTargetPatterns
+                - timeBoundSeconds
+                type: object
+              target:
+                properties:
+                  attributes:
+                    additionalProperties:
+                      type: string
+                    type: object
+                  resourceType:
+                    type: string
+                  uri:
+                    minLength: 1
+                    type: string
+                required:
+                - uri
+                type: object
+            required:
+            - action
+            - agentIdentity
+            - reason
+            - target
+            type: object
+          status:
+            description: status defines the observed state of AgentRequest
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              controlPlaneVerification:
+                description: |-
+                  ControlPlaneVerification holds live cluster state independently fetched by
+                  the AIP control plane before policy evaluation. This is persisted so that
+                  human reviewers in the dashboard can see what AIP verified vs what the
+                  agent declared — the two sides of the governance decision.
+                properties:
+                  activeEndpointCount:
+                    description: ActiveEndpointCount is the number of ready endpoint
+                      addresses.
+                    type: integer
+                  downstreamServices:
+                    description: DownstreamServices lists services the control plane
+                      found depending on this target.
+                    items:
+                      type: string
+                    type: array
+                  evaluatedStateFingerprint:
+                    description: |-
+                      EvaluatedStateFingerprint is the opaque fingerprint of the target resource's
+                      state at the time of policy evaluation (T1).
+                    type: string
+                  fetchedAt:
+                    description: FetchedAt is when the control plane fetched this
+                      data.
+                    format: date-time
+                    type: string
+                  hasActiveEndpoints:
+                    description: HasActiveEndpoints is true when the target service
+                      has ready endpoints.
+                    type: boolean
+                  readyReplicas:
+                    description: ReadyReplicas is the number of ready replicas observed
+                      on the target deployment.
+                    type: integer
+                  specReplicas:
+                    description: SpecReplicas is the desired replica count in the
+                      deployment spec.
+                    type: integer
+                  targetExists:
+                    description: TargetExists is true when the target resource was
+                      found in the cluster.
+                    type: boolean
+                required:
+                - fetchedAt
+                - hasActiveEndpoints
+                - targetExists
+                type: object
+              denial:
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                  policyResults:
+                    items:
+                      properties:
+                        policyName:
+                          type: string
+                        result:
+                          type: string
+                        ruleName:
+                          type: string
+                      required:
+                      - policyName
+                      - result
+                      - ruleName
+                      type: object
+                    type: array
+                  retryAfterSeconds:
+                    format: int32
+                    type: integer
+                required:
+                - code
+                - message
+                type: object
+              evaluationGeneration:
+                description: |-
+                  EvaluationGeneration is incremented each time the control plane performs
+                  a fresh policy evaluation on the request.
+                format: int64
+                type: integer
+              leaseName:
+                type: string
+              phase:
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

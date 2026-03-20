@@ -1,0 +1,28 @@
+apiVersion: governance.aip.io/v1alpha1
+kind: SafetyPolicy
+metadata:
+  labels:
+    app.kubernetes.io/name: aip-k8s
+    app.kubernetes.io/managed-by: kustomize
+  name: safetypolicy-sample
+spec:
+  targetSelector:
+    matchAttributes:
+      environment: "production"
+    matchResourceTypes:
+      - "Deployment"
+    matchActions:
+      - "delete"
+      - "scale"
+  rules:
+    - name: "deny-scale-above-max"
+      type: "StateEvaluation"
+      action: "Deny"
+      message: "Scaling above 10 replicas requires manual approval"
+      expression: "has(request.parameters) && request.parameters.replicas <= 10"
+    - name: "log-all-production-changes"
+      type: "StateEvaluation"
+      action: "Log"
+      message: "Logging all production mutations for audit"
+      expression: "true"
+  failureMode: "FailClosed"

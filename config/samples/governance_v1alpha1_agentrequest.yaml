@@ -1,0 +1,20 @@
+apiVersion: governance.aip.io/v1alpha1
+kind: AgentRequest
+metadata:
+  labels:
+    app.kubernetes.io/name: aip-k8s
+    app.kubernetes.io/managed-by: kustomize
+  name: agentrequest-sample
+spec:
+  agentIdentity: "sre-agent-01"
+  action: "scale"
+  target:
+    uri: "k8s://prod/default/deployment/payment-api"
+    resourceType: "Deployment"
+    attributes:
+      environment: "production"
+      team: "payments"
+  reason: "High latency detected (p99 > 500ms), scaling up replicas"
+  priority: 10
+  parameters:
+    raw: '{"replicas": 5}'

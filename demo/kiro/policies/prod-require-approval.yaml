@@ -1,0 +1,37 @@
+apiVersion: governance.aip.io/v1alpha1
+kind: SafetyPolicy
+metadata:
+  name: prod-require-approval
+  namespace: default
+spec:
+  targetSelector:
+    matchActions: ["deploy", "kiro/deploy"] # Scope to deploy actions only
+  rules:
+    - name: production-guard
+      type: StateEvaluation
+      action: RequireApproval
+      expression: 'request.spec.target.uri.startsWith("k8s://prod")'
+
+    - name: cascade-blast-radius-guard
+      type: StateEvaluation
+      action: RequireApproval
+      expression: 'has(request.spec.cascadeModel) && size(request.spec.cascadeModel.affectedTargets) > 2'
+
+    - name: low-confidence-guard
+      type: StateEvaluation
+      action: RequireApproval
+      expression: 'has(request.spec.reasoningTrace) && request.spec.reasoningTrace.confidenceScore < 0.8'
+
+    - name: untested-in-staging-guard
+      type: StateEvaluation
+      action: Deny
+      message: "Direct deployment to production without staging tests is explicitly prohibited by policy. Use breakglass=true in parameters for emergencies."
+      expression: 'has(request.spec.parameters) && request.spec.parameters.testedInStaging == false && (!has(request.spec.parameters.breakglass) || request.spec.parameters.breakglass == false) && request.spec.target.uri.startsWith("k8s://prod")'
+
+    - name: breakglass-guard
+      type: StateEvaluation
+      action: RequireApproval
+      message: "Emergency breakglass used for untested deployment. Human review strictly required before execution."
+      expression: 'has(request.spec.parameters) && request.spec.parameters.testedInStaging == false && has(request.spec.parameters.breakglass) && request.spec.parameters.breakglass == true && request.spec.target.uri.startsWith("k8s://prod")'
+
+  failureMode: FailClosed

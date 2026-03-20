@@ -1,0 +1,28 @@
+apiVersion: governance.aip.io/v1alpha1
+kind: SafetyPolicy
+metadata:
+  name: live-traffic-guard
+  namespace: default
+spec:
+  targetSelector:
+    matchActions: ["scale-down", "scale", "delete"]
+
+  rules:
+    # The AIP control plane independently detects active endpoints.
+    # The agent cannot spoof this — it is fetched directly from the K8s API.
+    - name: scale-down-with-active-endpoints
+      type: StateEvaluation
+      action: RequireApproval
+      expression: >
+        request.spec.action == "scale-down" &&
+        target.hasActiveEndpoints == true
+
+    # Block when multiple ready replicas confirm the service is actively serving.
+    - name: scale-down-with-ready-replicas
+      type: StateEvaluation
+      action: RequireApproval
+      expression: >
+        request.spec.action == "scale-down" &&
+        target.readyReplicas > 1
+
+  failureMode: FailClosed

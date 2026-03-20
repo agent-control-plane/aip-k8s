@@ -1,0 +1,18 @@
+apiVersion: governance.aip.io/v1alpha1
+kind: AuditRecord
+metadata:
+  labels:
+    app.kubernetes.io/name: aip-k8s
+    app.kubernetes.io/managed-by: kustomize
+  name: auditrecord-sample
+spec:
+  timestamp: "2026-03-08T12:00:00Z"
+  agentIdentity: "sre-agent-01"
+  agentRequestRef: "agentrequest-sample"
+  event: "request.submitted"
+  action: "scale"
+  targetURI: "k8s://prod/default/deployment/payment-api"
+  reason: "High latency detected (p99 > 500ms), scaling up replicas"
+  phaseTransition:
+    from: ""
+    to: "Pending"

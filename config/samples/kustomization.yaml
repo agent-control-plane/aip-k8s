@@ -1,0 +1,6 @@
+## Append samples of your project ##
+resources:
+- governance_v1alpha1_agentrequest.yaml
+- governance_v1alpha1_safetypolicy.yaml
+- governance_v1alpha1_auditrecord.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
