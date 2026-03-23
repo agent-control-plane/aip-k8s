@@ -40,11 +40,11 @@ func main() {
 	if err != nil {
 		logger.Fatalf("Failed to connect to gateway: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		var errResp map[string]string
-		json.NewDecoder(resp.Body).Decode(&errResp)
+		_ = json.NewDecoder(resp.Body).Decode(&errResp)
 		logger.Fatalf("Error submitting request: %s", errResp["error"])
 	}
 
@@ -56,7 +56,7 @@ func main() {
 			Message string `json:"message"`
 		} `json:"denial"`
 	}
-	json.NewDecoder(resp.Body).Decode(&arResp)
+	_ = json.NewDecoder(resp.Body).Decode(&arResp)
 
 	logger.Printf("→ Submitted AgentRequest: %s", arResp.Name)
 
@@ -64,31 +64,34 @@ func main() {
 		logger.Fatalf("✗ Denied — code: %s, message: %s", arResp.Denial.Code, arResp.Denial.Message)
 	}
 
-	if arResp.Phase == "Approved" {
+	switch arResp.Phase {
+	case "Approved":
 		logger.Printf("✓ Approved — acquiring OpsLock, signalling Executing...")
 
 		// 4. Signal Executing
-		execResp, err := http.Post(fmt.Sprintf("%s/agent-requests/%s/executing?namespace=%s", *gateway, arResp.Name, *namespace), "application/json", nil)
+		execURL := fmt.Sprintf("%s/agent-requests/%s/executing?namespace=%s", *gateway, arResp.Name, *namespace)
+		execResp, err := http.Post(execURL, "application/json", nil)
 		if err != nil {
 			logger.Fatalf("Failed to signal executing: %v", err)
 		}
-		execResp.Body.Close()
+		_ = execResp.Body.Close()
 
 		// 5. Simulate work
 		time.Sleep(10 * time.Second)
 
 		// 6. Signal Completed
-		compResp, err := http.Post(fmt.Sprintf("%s/agent-requests/%s/completed?namespace=%s", *gateway, arResp.Name, *namespace), "application/json", nil)
+		compURL := fmt.Sprintf("%s/agent-requests/%s/completed?namespace=%s", *gateway, arResp.Name, *namespace)
+		compResp, err := http.Post(compURL, "application/json", nil)
 		if err != nil {
 			logger.Fatalf("Failed to signal completed: %v", err)
 		}
-		compResp.Body.Close()
+		_ = compResp.Body.Close()
 
 		logger.Printf("✓ Completed successfully")
-	} else if arResp.Phase == "Completed" {
+	case "Completed":
 		// This might happen if the gateway returns once it's already completed (unlikely in this flow but possible)
 		logger.Printf("✓ Completed successfully")
-	} else {
+	default:
 		logger.Fatalf("Unexpected phase: %s", arResp.Phase)
 	}
 }

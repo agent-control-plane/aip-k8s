@@ -253,12 +253,12 @@ func matchesSelector(req *governancev1alpha1.AgentRequest, policy *governancev1a
 }
 
 func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq *governancev1alpha1.AgentRequest, statusPatch client.Patch) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
 	policyEvaluated := meta.IsStatusConditionTrue(agentReq.Status.Conditions, governancev1alpha1.ConditionPolicyEvaluated)
 	requiresApproval := meta.IsStatusConditionTrue(agentReq.Status.Conditions, governancev1alpha1.ConditionRequiresApproval)
 	hasHumanApproval := agentReq.Spec.HumanApproval != nil
-	log.Info("reconcilePending", "name", agentReq.Name, "policyEvaluated", policyEvaluated, "requiresApproval", requiresApproval, "hasHumanApproval", hasHumanApproval)
+	logger.Info("reconcilePending", "name", agentReq.Name, "policyEvaluated", policyEvaluated, "requiresApproval", requiresApproval, "hasHumanApproval", hasHumanApproval)
 
 	// Guard: If policies are already evaluated, skip to lock acquisition or wait for approval
 	if policyEvaluated {
@@ -270,11 +270,11 @@ func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq 
 				// 5. If same (or Re-eval returned Allow), proceed
 				switch agentReq.Spec.HumanApproval.Decision {
 				case "approved":
-					log.Info("Human approved AgentRequest via spec", "name", agentReq.Name)
+					logger.Info("Human approved AgentRequest via spec", "name", agentReq.Name)
 					meta.RemoveStatusCondition(&agentReq.Status.Conditions, governancev1alpha1.ConditionRequiresApproval)
 					return r.handleLockAcquisition(ctx, agentReq, fromPhase, statusPatch)
 				case "denied":
-					log.Info("Human denied AgentRequest via spec", "name", agentReq.Name)
+					logger.Info("Human denied AgentRequest via spec", "name", agentReq.Name)
 					agentReq.Status.Phase = governancev1alpha1.PhaseDenied
 					agentReq.Status.Denial = &governancev1alpha1.DenialResponse{
 						Code:    governancev1alpha1.DenialCodePolicyViolation,
@@ -295,7 +295,7 @@ func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq 
 					return ctrl.Result{}, nil
 				}
 			}
-			log.Info("AgentRequest awaiting manual approval", "name", agentReq.Name)
+			logger.Info("AgentRequest awaiting manual approval", "name", agentReq.Name)
 			return ctrl.Result{}, nil
 		}
 		// Otherwise, it must have been an "Allow" result and we're now in lock acquisition mode
@@ -303,7 +303,7 @@ func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq 
 		return r.handleLockAcquisition(ctx, agentReq, fromPhase, statusPatch)
 	}
 
-	log.Info("Evaluating policies for AgentRequest", "name", agentReq.Name, "generation", agentReq.Generation)
+	logger.Info("Evaluating policies for AgentRequest", "name", agentReq.Name, "generation", agentReq.Generation)
 
 	var policyList governancev1alpha1.SafetyPolicyList
 	// Use APIReader if available to avoid Informer cache lag for policies
@@ -313,7 +313,7 @@ func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq 
 		reader = r.APIReader
 	}
 	if err := reader.List(ctx, &policyList, client.InNamespace(agentReq.Namespace)); err != nil {
-		log.Error(err, "Failed to list SafetyPolicies")
+		logger.Error(err, "Failed to list SafetyPolicies")
 		return ctrl.Result{}, err
 	}
 
@@ -328,7 +328,7 @@ func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq 
 	// data — agents cannot influence it. It is injected as `target` in CEL.
 	targetCtx, err := r.fetchTargetContext(ctx, agentReq)
 	if err != nil {
-		log.Error(err, "Failed to fetch target context, proceeding with empty context")
+		logger.Error(err, "Failed to fetch target context, proceeding with empty context")
 	}
 
 	// Persist what the control plane verified so the dashboard can show
@@ -347,10 +347,10 @@ func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq 
 
 	result, err := r.Evaluator.Evaluate(ctx, agentReq, evalOpts, targetCtx)
 	if err != nil {
-		log.Error(err, "Evaluation failed")
+		logger.Error(err, "Evaluation failed")
 		return ctrl.Result{}, err
 	}
-	log.Info("Evaluation complete", "name", agentReq.Name, "action", result.Action, "message", result.Message)
+	logger.Info("Evaluation complete", "name", agentReq.Name, "action", result.Action, "message", result.Message)
 
 	auditEvals := []governancev1alpha1.AuditPolicyEvaluation{}
 	for _, pr := range result.PolicyResults {
@@ -386,7 +386,7 @@ func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq 
 	}
 
 	if err := ctrl.SetControllerReference(agentReq, policyEvalAudit, r.Scheme); err != nil {
-		log.Error(err, "Failed to set owner reference for policy.evaluated AuditRecord")
+		logger.Error(err, "Failed to set owner reference for policy.evaluated AuditRecord")
 	}
 
 	fromPhase := agentReq.Status.Phase
@@ -418,14 +418,14 @@ func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq 
 
 	// Single status patch: commits ConditionPolicyEvaluated + action-specific conditions atomically
 	if err := r.Status().Patch(ctx, agentReq, statusPatch); err != nil {
-		log.Error(err, "Failed to update Status with evaluation results")
+		logger.Error(err, "Failed to update Status with evaluation results")
 		return ctrl.Result{}, err
 	}
 
 	// Now emit the audit record(s) safely. Using a dedicated patch for the audit creation
 	// to ensure we don't return from handleLockAcquisition without the audit trace.
 	if err := r.Create(ctx, policyEvalAudit); err != nil {
-		log.Error(err, "Failed to create policy.evaluated AuditRecord")
+		logger.Error(err, "Failed to create policy.evaluated AuditRecord")
 	}
 
 	if result.Action == governancev1alpha1.ResultDeny {
@@ -448,7 +448,7 @@ func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq 
 }
 
 func (r *AgentRequestReconciler) handleLockAcquisition(ctx context.Context, agentReq *governancev1alpha1.AgentRequest, fromPhase string, statusPatch client.Patch) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
 	// Idempotency check: if we are already in Approved phase, we don't need to acquire again
 	// unless we are implementing re-entrant or renewal logic here.
@@ -482,20 +482,20 @@ func (r *AgentRequestReconciler) handleLockAcquisition(ctx context.Context, agen
 			// Lock contention check
 			existingLease := &coordinationv1.Lease{}
 			if getErr := r.Get(ctx, types.NamespacedName{Name: leaseName, Namespace: agentReq.Namespace}, existingLease); getErr != nil {
-				log.Error(getErr, "Failed to get existing lease for conflict resolution")
+				logger.Error(getErr, "Failed to get existing lease for conflict resolution")
 				return ctrl.Result{}, getErr
 			}
 
 			// Ensure that the holder is not ourselves (re-entrant success handling)
 			if existingLease.Spec.HolderIdentity != nil && *existingLease.Spec.HolderIdentity == holderIdentity {
 				// We somehow already own the lock
-				log.Info("AgentRequest already holds the lease", "lease", leaseName)
+				logger.Info("AgentRequest already holds the lease", "lease", leaseName)
 			} else {
 				// Check timeout
 				waitLimit := r.now().Add(-60 * time.Second) // 60 second timeout
 				if agentReq.CreationTimestamp.Time.Before(waitLimit) {
 					// Timeout exceeded
-					log.Info("Lock wait timeout exceeded", "lease", leaseName)
+					logger.Info("Lock wait timeout exceeded", "lease", leaseName)
 					agentReq.Status.Phase = governancev1alpha1.PhaseDenied
 					agentReq.Status.Denial = &governancev1alpha1.DenialResponse{
 						Code:    governancev1alpha1.DenialCodeLockTimeout,
@@ -521,11 +521,11 @@ func (r *AgentRequestReconciler) handleLockAcquisition(ctx context.Context, agen
 				}
 
 				// Requeue to wait for the lock
-				log.Info("Lock contention, requeueing", "lease", leaseName)
+				logger.Info("Lock contention, requeueing", "lease", leaseName)
 				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 			}
 		} else {
-			log.Error(err, "Failed to create Lease for OpsLock")
+			logger.Error(err, "Failed to create Lease for OpsLock")
 			return ctrl.Result{}, err
 		}
 	}

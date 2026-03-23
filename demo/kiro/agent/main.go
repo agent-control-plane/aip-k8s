@@ -29,18 +29,18 @@ type scopeBounds struct {
 }
 
 type agentRequestBody struct {
-	AgentIdentity    string                 `json:"agentIdentity"`
-	Action           string                 `json:"action"`
-	TargetURI        string                 `json:"targetURI"`
-	Reason           string                 `json:"reason"`
-	Namespace        string                 `json:"namespace"`
-	AffectedTargets  []affectedTarget       `json:"affectedTargets,omitempty"`
-	ModelSourceTrust string                 `json:"modelSourceTrust,omitempty"`
-	ModelSourceID    string                 `json:"modelSourceID,omitempty"`
-	ReasoningTrace   *reasoningTrace        `json:"reasoningTrace,omitempty"`
-	Parameters       map[string]interface{} `json:"parameters,omitempty"`
-	ExecutionMode    *string                `json:"executionMode,omitempty"`
-	ScopeBounds      *scopeBounds           `json:"scopeBounds,omitempty"`
+	AgentIdentity    string           `json:"agentIdentity"`
+	Action           string           `json:"action"`
+	TargetURI        string           `json:"targetURI"`
+	Reason           string           `json:"reason"`
+	Namespace        string           `json:"namespace"`
+	AffectedTargets  []affectedTarget `json:"affectedTargets,omitempty"`
+	ModelSourceTrust string           `json:"modelSourceTrust,omitempty"`
+	ModelSourceID    string           `json:"modelSourceID,omitempty"`
+	ReasoningTrace   *reasoningTrace  `json:"reasoningTrace,omitempty"`
+	Parameters       map[string]any   `json:"parameters,omitempty"`
+	ExecutionMode    *string          `json:"executionMode,omitempty"`
+	ScopeBounds      *scopeBounds     `json:"scopeBounds,omitempty"`
 }
 
 func submitAndPollRequest(gateway, namespace string, body agentRequestBody) {
@@ -50,7 +50,7 @@ func submitAndPollRequest(gateway, namespace string, body agentRequestBody) {
 	if err != nil {
 		log.Fatalf("Failed to connect to gateway: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var arResp struct {
 		Name   string `json:"name"`
@@ -65,7 +65,7 @@ func submitAndPollRequest(gateway, namespace string, body agentRequestBody) {
 		var errResp struct {
 			Error string `json:"error"`
 		}
-		json.NewDecoder(resp.Body).Decode(&errResp)
+		_ = json.NewDecoder(resp.Body).Decode(&errResp)
 		log.Fatalf("Gateway returned error (%d): %s", resp.StatusCode, errResp.Error)
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&arResp); err != nil {
@@ -85,8 +85,8 @@ func submitAndPollRequest(gateway, namespace string, body agentRequestBody) {
 		}
 
 		var status struct {
-			Phase      string      `json:"phase"`
-			Denial     interface{} `json:"denial"`
+			Phase      string `json:"phase"`
+			Denial     any    `json:"denial"`
 			Conditions []struct {
 				Type    string `json:"type"`
 				Status  string `json:"status"`
@@ -94,8 +94,8 @@ func submitAndPollRequest(gateway, namespace string, body agentRequestBody) {
 			} `json:"conditions"`
 			AuditEvents []string `json:"auditEvents"`
 		}
-		json.NewDecoder(getResp.Body).Decode(&status)
-		getResp.Body.Close()
+		_ = json.NewDecoder(getResp.Body).Decode(&status)
+		_ = getResp.Body.Close()
 
 		if status.Phase != lastPhase {
 			fmt.Printf("Current Phase: \033[1;34m%s\033[0m\n", status.Phase)
@@ -126,9 +126,10 @@ func submitAndPollRequest(gateway, namespace string, body agentRequestBody) {
 				Code    string `json:"code"`
 				Message string `json:"message"`
 			}
-			json.Unmarshal(denialBody, &denial)
+			_ = json.Unmarshal(denialBody, &denial)
 
-			fmt.Printf("\n🛑 \033[1;31mMACHINE OVERRIDE: AIP explicitly DENIED the operation. Message: %s\033[0m\n", denial.Message)
+			fmt.Printf("\n🛑 \033[1;31mMACHINE OVERRIDE: AIP explicitly DENIED the operation."+
+				" Message: %s\033[0m\n", denial.Message)
 			printAuditTimeline(status.AuditEvents)
 			return
 		}
@@ -176,7 +177,7 @@ func main() {
 			},
 			TraceReference: "https://traces.kiro.internal/deploy-payment-api-v2.1.0-20260314",
 		},
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"imageTag":        "v2.1.0",
 			"strategy":        "RollingUpdate",
 			"maxUnavailable":  "25%",

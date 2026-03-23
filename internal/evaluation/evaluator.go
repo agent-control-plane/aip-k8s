@@ -6,6 +6,8 @@ import (
 	aipv1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
 )
 
+const failModeClosed = "FailClosed"
+
 // Evaluator evaluates an AgentRequest against a list of SafetyPolicies.
 // targetCtx holds live cluster state fetched by the control plane — it is
 // available as the `target` variable in CEL expressions.
@@ -24,10 +26,10 @@ type Result struct {
 
 // Action Precedence map to resolve conflicts. Higher number == higher priority.
 var actionPriority = map[string]int{
-	"Allow":           1,
-	"Log":             2,
-	"RequireApproval": 3,
-	"Deny":            4,
+	aipv1alpha1.ResultAllow:           1,
+	"Log":                             2,
+	aipv1alpha1.ResultRequireApproval: 3,
+	aipv1alpha1.ResultDeny:            4,
 }
 
 type defaultEvaluator struct {
@@ -63,7 +65,7 @@ func (e *defaultEvaluator) Evaluate(ctx context.Context, req *aipv1alpha1.AgentR
 	if err != nil {
 		// If we can't even serialize the request, fail close.
 		return &Result{
-			Action:  "Deny",
+			Action:  aipv1alpha1.ResultDeny,
 			Code:    aipv1alpha1.DenialCodeEvaluationFailure,
 			Message: "Failed to parse AgentRequest variables for evaluation",
 		}, nil
@@ -84,15 +86,15 @@ func (e *defaultEvaluator) Evaluate(ctx context.Context, req *aipv1alpha1.AgentR
 				pr.Result = "EvaluationFailed"
 
 				// Handle FailureMode
-				failureMode := "FailClosed"
+				failureMode := failModeClosed
 				if policy.Spec.FailureMode != nil {
 					failureMode = *policy.Spec.FailureMode
 				}
 
-				if failureMode == "FailClosed" {
-					if highestPriority < actionPriority["Deny"] {
-						highestPriority = actionPriority["Deny"]
-						result.Action = "Deny"
+				if failureMode == failModeClosed {
+					if highestPriority < actionPriority[aipv1alpha1.ResultDeny] {
+						highestPriority = actionPriority[aipv1alpha1.ResultDeny]
+						result.Action = aipv1alpha1.ResultDeny
 						denialCode = aipv1alpha1.DenialCodeEvaluationFailure
 						finalMessage = "CEL evaluation failed (FailClosed): " + err.Error()
 					}
@@ -141,71 +143,9 @@ func (e *defaultEvaluator) Evaluate(ctx context.Context, req *aipv1alpha1.AgentR
 		}
 	}
 
-	// Now check Cascade mode if requested
-	if req.Spec.CascadeModel != nil && len(req.Spec.CascadeModel.AffectedTargets) > 0 {
-		// Evaluate CascadeModel
-		for _, affectedTarget := range req.Spec.CascadeModel.AffectedTargets {
-			// For cascade targets, we map them as temporary requests? Or we use a specific variable?
-			// The simplest way is to evaluate the SafetyPolicies against a mock request that represents the affected target.
-			// Let's create a mock variable map.
-			cascadeVars := map[string]any{
-				"request": map[string]any{
-					"spec": map[string]any{
-						"action": affectedTarget.EffectType,
-						"target": map[string]any{
-							"uri": affectedTarget.URI,
-						},
-					},
-				},
-			}
+	_, denialCode, finalMessage = e.evaluateCascade(req, policies, result, highestPriority, denialCode, finalMessage)
 
-			for _, policy := range policies {
-				for _, rule := range policy.Spec.Rules {
-					match, err := e.env.EvaluateExpression(rule.Expression, cascadeVars)
-
-					// Simple handle for FailClosed
-					if err != nil {
-						failureMode := "FailClosed"
-						if policy.Spec.FailureMode != nil {
-							failureMode = *policy.Spec.FailureMode
-						}
-						if failureMode == "FailClosed" {
-							if highestPriority < actionPriority["Deny"] {
-								highestPriority = actionPriority["Deny"]
-								result.Action = "Deny"
-								denialCode = aipv1alpha1.DenialCodeEvaluationFailure
-								finalMessage = "Cascade CEL evaluation failed (FailClosed): " + err.Error()
-							}
-							result.PolicyResults = append(result.PolicyResults, aipv1alpha1.PolicyResult{
-								PolicyName: policy.Name,
-								RuleName:   rule.Name,
-								Result:     "EvaluationFailed (Cascade Deny)",
-							})
-						}
-						continue
-					}
-
-					if match {
-						if rule.Action == "Deny" {
-							if highestPriority < actionPriority["Deny"] {
-								highestPriority = actionPriority["Deny"]
-								result.Action = "Deny"
-								denialCode = aipv1alpha1.DenialCodeCascadeDenied
-								finalMessage = "Cascade effect denied by policy: " + policy.Name + " rule: " + rule.Name
-							}
-							result.PolicyResults = append(result.PolicyResults, aipv1alpha1.PolicyResult{
-								PolicyName: policy.Name,
-								RuleName:   rule.Name,
-								Result:     "CascadeDeny",
-							})
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if result.Action == "Deny" {
+	if result.Action == aipv1alpha1.ResultDeny {
 		result.Code = denialCode
 		result.Message = finalMessage
 	} else if result.Action == "RequireApproval" {
@@ -215,4 +155,68 @@ func (e *defaultEvaluator) Evaluate(ctx context.Context, req *aipv1alpha1.AgentR
 	}
 
 	return result, nil
+}
+
+func (e *defaultEvaluator) evaluateCascade(req *aipv1alpha1.AgentRequest, policies []aipv1alpha1.SafetyPolicy, result *Result, highestPriority int, denialCode, finalMessage string) (int, string, string) {
+	if req.Spec.CascadeModel == nil || len(req.Spec.CascadeModel.AffectedTargets) == 0 {
+		return highestPriority, denialCode, finalMessage
+	}
+	for _, affectedTarget := range req.Spec.CascadeModel.AffectedTargets {
+		// For cascade targets, we map them as temporary requests? Or we use a specific variable?
+		// The simplest way is to evaluate the SafetyPolicies against a mock request that represents the affected target.
+		// Let's create a mock variable map.
+		cascadeVars := map[string]any{
+			"request": map[string]any{
+				"spec": map[string]any{
+					"action": affectedTarget.EffectType,
+					"target": map[string]any{
+						"uri": affectedTarget.URI,
+					},
+				},
+			},
+		}
+
+		for _, policy := range policies {
+			for _, rule := range policy.Spec.Rules {
+				match, err := e.env.EvaluateExpression(rule.Expression, cascadeVars)
+
+				// Simple handle for FailClosed
+				if err != nil {
+					failureMode := failModeClosed
+					if policy.Spec.FailureMode != nil {
+						failureMode = *policy.Spec.FailureMode
+					}
+					if failureMode == failModeClosed {
+						if highestPriority < actionPriority[aipv1alpha1.ResultDeny] {
+							highestPriority = actionPriority[aipv1alpha1.ResultDeny]
+							result.Action = aipv1alpha1.ResultDeny
+							denialCode = aipv1alpha1.DenialCodeEvaluationFailure
+							finalMessage = "Cascade CEL evaluation failed (FailClosed): " + err.Error()
+						}
+						result.PolicyResults = append(result.PolicyResults, aipv1alpha1.PolicyResult{
+							PolicyName: policy.Name,
+							RuleName:   rule.Name,
+							Result:     "EvaluationFailed (Cascade Deny)",
+						})
+					}
+					continue
+				}
+
+				if match && rule.Action == aipv1alpha1.ResultDeny {
+					if highestPriority < actionPriority[aipv1alpha1.ResultDeny] {
+						highestPriority = actionPriority[aipv1alpha1.ResultDeny]
+						result.Action = aipv1alpha1.ResultDeny
+						denialCode = aipv1alpha1.DenialCodeCascadeDenied
+						finalMessage = "Cascade effect denied by policy: " + policy.Name + " rule: " + rule.Name
+					}
+					result.PolicyResults = append(result.PolicyResults, aipv1alpha1.PolicyResult{
+						PolicyName: policy.Name,
+						RuleName:   rule.Name,
+						Result:     "CascadeDeny",
+					})
+				}
+			}
+		}
+	}
+	return highestPriority, denialCode, finalMessage
 }

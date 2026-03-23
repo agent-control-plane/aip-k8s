@@ -31,14 +31,14 @@ type reasoningTrace struct {
 }
 
 type agentRequestBody struct {
-	AgentIdentity  string                 `json:"agentIdentity"`
-	Action         string                 `json:"action"`
-	TargetURI      string                 `json:"targetURI"`
-	Reason         string                 `json:"reason"`
-	Namespace      string                 `json:"namespace"`
-	CascadeModel   *cascadeModel          `json:"cascadeModel,omitempty"`
-	ReasoningTrace *reasoningTrace        `json:"reasoningTrace,omitempty"`
-	Parameters     map[string]interface{} `json:"parameters,omitempty"`
+	AgentIdentity  string          `json:"agentIdentity"`
+	Action         string          `json:"action"`
+	TargetURI      string          `json:"targetURI"`
+	Reason         string          `json:"reason"`
+	Namespace      string          `json:"namespace"`
+	CascadeModel   *cascadeModel   `json:"cascadeModel,omitempty"`
+	ReasoningTrace *reasoningTrace `json:"reasoningTrace,omitempty"`
+	Parameters     map[string]any  `json:"parameters,omitempty"`
 }
 
 type condition struct {
@@ -105,8 +105,9 @@ func main() {
 		AgentIdentity: "cost-optimizer",
 		Action:        "scale-down",
 		TargetURI:     "k8s://prod/default/deployment/payment-api",
-		Reason:        "Scale payment-api from 3 to 1 replica to reduce cloud spend during predicted low-traffic window. Estimated saving: $24/day.",
-		Namespace:     *namespace,
+		Reason: "Scale payment-api from 3 to 1 replica to reduce cloud spend" +
+			" during predicted low-traffic window. Estimated saving: $24/day.",
+		Namespace: *namespace,
 		// Agent declares what it knows about downstream impact from its causal model.
 		// AIP will independently verify live cluster state (endpoints, ready replicas).
 		CascadeModel: &cascadeModel{
@@ -130,7 +131,7 @@ func main() {
 				"enable HPA with min-replicas=1",
 			},
 		},
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"currentReplicas":           3,
 			"targetReplicas":            1,
 			"estimatedCostSavingPerDay": "$24",
@@ -147,7 +148,7 @@ func main() {
 	if err != nil {
 		log.Fatalf(red+"Failed to reach AIP Gateway: %v"+reset, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var initial agentRequestStatus
 	if err := json.NewDecoder(resp.Body).Decode(&initial); err != nil {
@@ -191,7 +192,8 @@ func main() {
 				fmt.Println(red + "    $ kubectl scale deployment payment-api --replicas=1 -n " + *namespace + reset)
 				fmt.Println()
 				fmt.Println("  Verify the object is unchanged (run in another terminal):")
-				fmt.Println(cyan + "    $ kubectl get deployment payment-api -n " + *namespace + " -o jsonpath='{.spec.replicas}'" + reset)
+				fmt.Println(cyan + "    $ kubectl get deployment payment-api -n " +
+					*namespace + " -o jsonpath='{.spec.replicas}'" + reset)
 				fmt.Println(cyan + "    3   ← still 3, agent has not acted" + reset)
 				fmt.Println(bold + "─────────────────────────────────────────────────────────────────" + reset)
 				fmt.Println()
@@ -252,7 +254,7 @@ func notifyGateway(gateway, name, namespace, event string) {
 	if err != nil {
 		return
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
 
 func pollStatus(gateway, name, namespace string) agentRequestStatus {
@@ -261,9 +263,9 @@ func pollStatus(gateway, name, namespace string) agentRequestStatus {
 	if err != nil {
 		return agentRequestStatus{}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var s agentRequestStatus
-	json.NewDecoder(resp.Body).Decode(&s)
+	_ = json.NewDecoder(resp.Body).Decode(&s)
 	return s
 }
 

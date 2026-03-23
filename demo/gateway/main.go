@@ -27,6 +27,8 @@ var (
 	addr = flag.String("addr", ":8080", "The address to listen on for HTTP requests")
 )
 
+const defaultNamespace = "default"
+
 type Server struct {
 	client client.Client
 }
@@ -62,7 +64,7 @@ type createAgentRequestBody struct {
 	ScopeBounds    *v1alpha1.ScopeBounds `json:"scopeBounds,omitempty"`
 }
 
-func writeJSON(w http.ResponseWriter, status int, data interface{}) {
+func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(data)
@@ -161,7 +163,7 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 
 	ns := body.Namespace
 	if ns == "" {
-		ns = "default"
+		ns = defaultNamespace
 	}
 
 	var cascadeModel *v1alpha1.CascadeModel
@@ -251,8 +253,9 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 			}
 
 			phase := current.Status.Phase
-			if phase == v1alpha1.PhaseApproved || phase == v1alpha1.PhaseDenied || phase == v1alpha1.PhaseCompleted || phase == v1alpha1.PhaseFailed {
-				writeJSON(w, http.StatusCreated, map[string]interface{}{
+			if phase == v1alpha1.PhaseApproved || phase == v1alpha1.PhaseDenied ||
+				phase == v1alpha1.PhaseCompleted || phase == v1alpha1.PhaseFailed {
+				writeJSON(w, http.StatusCreated, map[string]any{
 					"name":       current.Name,
 					"phase":      current.Status.Phase,
 					"denial":     current.Status.Denial,
@@ -263,8 +266,9 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 
 			// Return early when human approval is required — the agent
 			// should not block waiting for a human decision.
-			if phase == v1alpha1.PhasePending && meta.IsStatusConditionTrue(current.Status.Conditions, v1alpha1.ConditionRequiresApproval) {
-				writeJSON(w, http.StatusCreated, map[string]interface{}{
+			if phase == v1alpha1.PhasePending &&
+				meta.IsStatusConditionTrue(current.Status.Conditions, v1alpha1.ConditionRequiresApproval) {
+				writeJSON(w, http.StatusCreated, map[string]any{
 					"name":       current.Name,
 					"phase":      current.Status.Phase,
 					"conditions": current.Status.Conditions,
@@ -279,7 +283,7 @@ func (s *Server) handleGetAgentRequest(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
-		ns = "default"
+		ns = defaultNamespace
 	}
 
 	var current v1alpha1.AgentRequest
@@ -301,7 +305,7 @@ func (s *Server) handleGetAgentRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"name":        current.Name,
 		"phase":       current.Status.Phase,
 		"denial":      current.Status.Denial,
@@ -315,14 +319,17 @@ func (s *Server) handleExecutingAgentRequest(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) handleCompletedAgentRequest(w http.ResponseWriter, r *http.Request) {
-	s.patchAgentRequestCondition(w, r, v1alpha1.ConditionCompleted, "ActionSuccess", "Agent successfully completed the action")
+	s.patchAgentRequestCondition(w, r, v1alpha1.ConditionCompleted,
+		"ActionSuccess", "Agent successfully completed the action")
 }
 
-func (s *Server) patchAgentRequestCondition(w http.ResponseWriter, r *http.Request, conditionType, reason, message string) {
+func (s *Server) patchAgentRequestCondition(
+	w http.ResponseWriter, r *http.Request, conditionType, reason, message string,
+) {
 	name := r.PathValue("name")
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
-		ns = "default"
+		ns = defaultNamespace
 	}
 
 	var current v1alpha1.AgentRequest
@@ -343,7 +350,7 @@ func (s *Server) patchAgentRequestCondition(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"message": fmt.Sprintf("successfully patched condition %s", conditionType),
 	})
 }

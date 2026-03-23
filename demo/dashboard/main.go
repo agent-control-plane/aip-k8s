@@ -24,6 +24,8 @@ var (
 	scheme = runtime.NewScheme()
 )
 
+const defaultNamespace = "default"
+
 func init() {
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = governancev1alpha1.AddToScheme(scheme)
@@ -128,7 +130,7 @@ func (s *DashboardServer) handleListAgentRequests(w http.ResponseWriter, r *http
 
 	namespace := r.URL.Query().Get("namespace")
 	if namespace == "" {
-		namespace = "default"
+		namespace = defaultNamespace
 	}
 
 	var list governancev1alpha1.AgentRequestList
@@ -138,7 +140,7 @@ func (s *DashboardServer) handleListAgentRequests(w http.ResponseWriter, r *http
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(list.Items)
+	_ = json.NewEncoder(w).Encode(list.Items)
 }
 
 func (s *DashboardServer) handleListAuditRecords(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +151,7 @@ func (s *DashboardServer) handleListAuditRecords(w http.ResponseWriter, r *http.
 
 	namespace := r.URL.Query().Get("namespace")
 	if namespace == "" {
-		namespace = "default"
+		namespace = defaultNamespace
 	}
 	reqName := r.URL.Query().Get("agentRequest")
 
@@ -168,7 +170,7 @@ func (s *DashboardServer) handleListAuditRecords(w http.ResponseWriter, r *http.
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(results)
+	_ = json.NewEncoder(w).Encode(results)
 }
 
 func (s *DashboardServer) handleAgentRequestAction(w http.ResponseWriter, r *http.Request) {
@@ -188,7 +190,7 @@ func (s *DashboardServer) handleAgentRequestAction(w http.ResponseWriter, r *htt
 	action := parts[1]
 	namespace := r.URL.Query().Get("namespace")
 	if namespace == "" {
-		namespace = "default"
+		namespace = defaultNamespace
 	}
 
 	var decision string
@@ -227,8 +229,9 @@ func (s *DashboardServer) handleAgentRequestAction(w http.ResponseWriter, r *htt
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	log.Printf("OK spec.humanApproval=%s patched on %s/%s (new RV=%s)", decision, namespace, name, agentReq.ResourceVersion)
+	log.Printf("OK spec.humanApproval=%s patched on %s/%s (new RV=%s)",
+		decision, namespace, name, agentReq.ResourceVersion)
 
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Action %s applied to %s", action, name)
+	_, _ = fmt.Fprintf(w, "Action %s applied to %s", action, name)
 }

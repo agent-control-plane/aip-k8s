@@ -4,8 +4,7 @@ import (
 	"context"
 
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -47,9 +46,7 @@ func (f *KubernetesTargetContextFetcher) Fetch(ctx context.Context, targetURI st
 func (f *KubernetesTargetContextFetcher) fetchDeploymentState(ctx context.Context, name, namespace string, result *TargetContext) {
 	var dep appsv1.Deployment
 	if err := f.Client.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &dep); err != nil {
-		if !errors.IsNotFound(err) {
-			// Transient error — leave replica counts at zero, don't fail evaluation
-		}
+		// Transient error — leave replica counts at zero, don't fail evaluation
 		return
 	}
 	result.Exists = true
@@ -61,13 +58,20 @@ func (f *KubernetesTargetContextFetcher) fetchDeploymentState(ctx context.Contex
 }
 
 func (f *KubernetesTargetContextFetcher) fetchEndpointState(ctx context.Context, name, namespace string, result *TargetContext) {
-	var ep corev1.Endpoints
-	if err := f.Client.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &ep); err != nil {
+	var epList discoveryv1.EndpointSliceList
+	if err := f.Client.List(ctx, &epList,
+		client.InNamespace(namespace),
+		client.MatchingLabels{"kubernetes.io/service-name": name},
+	); err != nil {
 		return
 	}
-	result.Exists = true
-	for _, subset := range ep.Subsets {
-		result.ActiveEndpointCount += len(subset.Addresses)
+	for _, eps := range epList.Items {
+		result.Exists = true
+		for _, ep := range eps.Endpoints {
+			if ep.Conditions.Ready == nil || *ep.Conditions.Ready {
+				result.ActiveEndpointCount += len(ep.Addresses)
+			}
+		}
 	}
 	result.HasActiveEndpoints = result.ActiveEndpointCount > 0
 }
