@@ -20,6 +20,7 @@ limitations under the License.
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -28,6 +29,12 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
+
+	governancev1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
 	"github.com/ravisantoshgudimetla/aip-k8s/test/utils"
 )
 
@@ -36,6 +43,13 @@ var (
 	managerImage = "example.com/aip-k8s:v0.0.1"
 	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
 	shouldCleanupCertManager = false
+
+	// k8sClient is a typed client-go client used for all assertion and status checks in tests.
+	// Resource creation still uses kubectl apply so the wire format is exercised end-to-end.
+	k8sClient client.Client
+
+	// ctx is the shared context for all client-go calls in the suite.
+	ctx = context.Background()
 )
 
 // TestE2E runs the e2e test suite to validate the solution in an isolated environment.
@@ -54,13 +68,20 @@ var _ = BeforeSuite(func() {
 	_, err := utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager image")
 
-	// TODO(user): If you want to change the e2e test vendor from Kind,
-	// ensure the image is built and available, then remove the following block.
 	By("loading the manager image on Kind")
 	err = utils.LoadImageToKindClusterWithName(managerImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
 
 	setupCertManager()
+
+	By("setting up typed Kubernetes client for assertions")
+	scheme := runtime.NewScheme()
+	Expect(clientgoscheme.AddToScheme(scheme)).To(Succeed())
+	Expect(governancev1alpha1.AddToScheme(scheme)).To(Succeed())
+	cfg, err := config.GetConfig()
+	Expect(err).NotTo(HaveOccurred(), "Failed to get kubeconfig")
+	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme})
+	Expect(err).NotTo(HaveOccurred(), "Failed to create Kubernetes client")
 })
 
 var _ = AfterSuite(func() {
@@ -81,7 +102,6 @@ func setupCertManager() {
 		return
 	}
 
-	// Mark for cleanup before installation to handle interruptions and partial installs.
 	shouldCleanupCertManager = true
 
 	By("installing CertManager")
@@ -89,7 +109,6 @@ func setupCertManager() {
 }
 
 // teardownCertManager uninstalls CertManager if it was installed by setupCertManager.
-// This ensures we only remove what we installed.
 func teardownCertManager() {
 	if !shouldCleanupCertManager {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping CertManager cleanup (not installed by this suite)\n")

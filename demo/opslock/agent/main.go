@@ -38,9 +38,15 @@ func main() {
 
 	resp, err := http.Post(*gateway+"/agent-requests", "application/json", bytes.NewBuffer(b))
 	if err != nil {
-		logger.Fatalf("Failed to connect to gateway: %v", err)
+		logger.Fatalf("Failed to reach AIP Gateway: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		var errResp map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&errResp)
+		logger.Fatalf("Gateway returned error: %v (Status %d)", errResp["error"], resp.StatusCode)
+	}
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		var errResp map[string]string

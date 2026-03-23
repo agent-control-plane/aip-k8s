@@ -43,9 +43,14 @@ async function fetchAuditRecords(name) {
     }
 }
 
-async function performAction(name, action) {
+async function performAction(name, action, reason) {
     try {
-        const response = await fetch(`/api/agent-requests/${name}/${action}`, { method: 'POST' });
+        const opts = { method: 'POST' };
+        if (reason !== undefined) {
+            opts.headers = { 'Content-Type': 'application/json' };
+            opts.body = JSON.stringify({ reason });
+        }
+        const response = await fetch(`/api/agent-requests/${name}/${action}`, opts);
         if (response.ok) {
             await fetchRequests();
         } else {
@@ -56,6 +61,58 @@ async function performAction(name, action) {
         alert('Action failed: ' + err.message);
     }
 }
+
+// Called when the human clicks "Approve Override".
+// If the control plane verified live endpoints, a reason is mandatory —
+// the human must justify overriding independent cluster state evidence.
+function promptApproval(name, hasActiveEndpoints) {
+    if (!hasActiveEndpoints) {
+        performAction(name, 'approve', '');
+        return;
+    }
+
+    // Build the reason modal
+    const overlay = document.createElement('div');
+    overlay.id = 'reason-overlay';
+    overlay.style.cssText = `
+        position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:1000;
+        display:flex; align-items:center; justify-content:center;`;
+
+    overlay.innerHTML = `
+        <div style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:8px;padding:2rem;max-width:480px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.5);">
+            <h3 style="margin:0 0 0.5rem;color:var(--error);">⚠ Override Required — Live Traffic Detected</h3>
+            <p style="font-size:0.85rem;color:var(--text-secondary);margin:0 0 1.25rem;">
+                The AIP control plane independently verified <strong style="color:var(--error);">active endpoints</strong>
+                on this resource. You are approving a destructive action against live cluster evidence.
+                <br><br>
+                This justification will be recorded in the immutable audit trail.
+            </p>
+            <textarea id="override-reason" rows="4" placeholder="Why is this override safe? (required)"
+                style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.05);border:1px solid var(--border-color);
+                       border-radius:4px;padding:0.6rem;color:var(--text-primary);font-size:0.85rem;resize:vertical;"></textarea>
+            <div style="display:flex;gap:0.75rem;margin-top:1rem;justify-content:flex-end;">
+                <button onclick="document.getElementById('reason-overlay').remove()"
+                    style="padding:0.5rem 1.25rem;background:transparent;border:1px solid var(--border-color);
+                           border-radius:4px;color:var(--text-secondary);cursor:pointer;">Cancel</button>
+                <button onclick="submitApprovalWithReason('${name}')"
+                    style="padding:0.5rem 1.25rem;background:var(--error);border:none;
+                           border-radius:4px;color:white;font-weight:600;cursor:pointer;">Confirm Override</button>
+            </div>
+        </div>`;
+
+    document.body.appendChild(overlay);
+    document.getElementById('override-reason').focus();
+}
+
+window.submitApprovalWithReason = async function(name) {
+    const reason = document.getElementById('override-reason')?.value?.trim();
+    if (!reason) {
+        document.getElementById('override-reason').style.borderColor = 'var(--error)';
+        return;
+    }
+    document.getElementById('reason-overlay')?.remove();
+    await performAction(name, 'approve', reason);
+};
 
 function selectRequest(req) {
     state.selectedRequest = req;
@@ -315,7 +372,7 @@ function renderDetails() {
     // Sort ascending (oldest first) for timeline readability
     const auditLogs = [...state.auditRecords].sort((a, b) => new Date(a.spec.timestamp) - new Date(b.spec.timestamp));
 
-    const needsApproval = req.status?.conditions?.some(c => c.type === 'RequiresApproval' && c.status === 'True');
+    const needsApproval = phase === 'Pending' && req.status?.conditions?.some(c => c.type === 'RequiresApproval' && c.status === 'True');
     const reason = req.spec.reason || 'No reason provided.';
 
     const cascadeCount = req.spec.cascadeModel?.affectedTargets?.length || 0;
@@ -385,7 +442,7 @@ function renderDetails() {
                 </div>
                 ${needsApproval ? `
                     <div class="actions">
-                        <button class="primary" onclick="performAction('${req.metadata.name}', 'approve')">Approve Override</button>
+                        <button class="primary" onclick="promptApproval('${req.metadata.name}', ${!!req.status?.controlPlaneVerification?.hasActiveEndpoints})">Approve Override</button>
                         <button class="danger" onclick="performAction('${req.metadata.name}', 'deny')">Deny</button>
                     </div>
                 ` : ''}

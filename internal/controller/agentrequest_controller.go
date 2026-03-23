@@ -68,6 +68,8 @@ func (r *AgentRequestReconciler) now() time.Time {
 // +kubebuilder:rbac:groups=governance.aip.io,resources=safetypolicies,verbs=get;list;watch
 // +kubebuilder:rbac:groups=governance.aip.io,resources=auditrecords,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=governance.aip.io,resources=auditrecords/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=endpoints,verbs=get;list;watch
 
 func (r *AgentRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 

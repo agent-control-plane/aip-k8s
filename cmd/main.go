@@ -189,7 +189,7 @@ func main() {
 		Client:               mgr.GetClient(),
 		Scheme:               mgr.GetScheme(),
 		Evaluator:            eval,
-		TargetContextFetcher: &evaluation.KubernetesTargetContextFetcher{Client: mgr.GetClient()},
+		TargetContextFetcher: &evaluation.KubernetesTargetContextFetcher{Client: mgr.GetAPIReader()},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentRequest")
 		os.Exit(1)

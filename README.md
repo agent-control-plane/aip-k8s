@@ -22,6 +22,28 @@ Traditional "black-box" AI agents can fail catastrophically when interacting wit
     *   **Reasoning Traces**: AIP requires agents to expose their internal logic. The agent would have had to declare: *"I am destroying resources defined in the unarchived production state file to ensure a clean state."*
     *   **Hard Guardrails**: A `SafetyPolicy` can enforce "Manual Approval" for any `delete` or `destroy` actions on production URIs, ensuring a human line-of-defense.
 
+**See it in action**: The [`demo/scaledown`](demo/scaledown/) scenario runs this exact failure mode against a live Kubernetes cluster. An idle-resource-reaper agent — operating on 6-hour-stale metrics — attempts to delete `payment-api` (and cascade-delete `payment-worker` and `payment-db`). The AIP control plane independently verifies live endpoints and blocks every attempt before a single byte of infrastructure is touched.
+
+## Demos
+
+| Demo | What it shows |
+|------|--------------|
+| [`demo/scaledown`](demo/scaledown/) | **DataTalks incident, reproduced and prevented.** An idle-resource-reaper agent tries to delete a production service it misclassifies as unused (stale monitoring data). AIP independently verifies live traffic and blocks the deletion. ReACT loop: `delete` → `scale-to-0` → human escalation. |
+| [`demo/opslock`](demo/opslock/) | Two concurrent agents attempt conflicting operations on the same resource. OpsLock mutual exclusion ensures only one proceeds; the other receives `LOCK_CONTENTION`. |
+| [`demo/kiro`](demo/kiro/) | An autonomous deployment agent is blocked by a `RequireApproval` policy on production targets, triggering the human-in-the-loop escalation path with a full audit trail. |
+
+### Running the scaledown demo
+
+```sh
+# Start the full stack (controller, gateway, dashboard)
+./demo/scaledown/start.sh
+
+# In a second terminal — run the agent scenario
+./demo/scaledown/run.sh
+```
+
+The agent will attempt to delete `payment-api` twice (direct delete, then scale-to-0), be blocked both times, and escalate to the dashboard for human review. Open the dashboard URL printed by `start.sh` to see what AIP independently verified versus what the agent declared, then deny the request.
+
 ## Getting Started
 
 ### Prerequisites
@@ -63,8 +85,27 @@ This project uses `envtest` for rapid integration testing without a full cluster
 make test
 ```
 
+## OSS Scope and Known Limitations
+
+This repository currently implements **AIP Phases 1 through 5**. We are launching this MVP to gather early community feedback on the core Agent Intent Protocol design.
+
+The following capabilities defined in the AIP specification are intentionally deferred in this MVP:
+
+| Capability | Tier | Why it matters |
+|------------|------|---------------|
+| **Transport-layer Identity Verification** (spec §6) | **Core** | *(Phase 6)* Missing `MutatingAdmissionWebhook` to extract and enforce `agentIdentity` from the K8s ServiceAccount. Currently, agents self-declare their identity. |
+| **Hard API Enforcement** | **Core** | *(Phase 6)* Missing `ValidatingAdmissionWebhook` to physically block raw K8s mutations. Safety currently relies on agents voluntarily using the AIP gateway. |
+| **CalibrationEvidence verification** (spec §3.1.5) | Extended | `confidenceScore` is currently agent-self-reported rather than cryptographically verified via a signed evaluator JWT. |
+| **TOCTOU protection** (spec §3.6.2) | Extended | State can drift between policy evaluation (T1) and human approval (T2). Re-verifying live state via `ForGeneration` binding is deferred. |
+| **Approval revocation** (spec §3.6.3) | Extended | If cluster state changes after approval but before execution, a conforming control plane must automatically signal the agent. |
+| **AgentTrustProfile** (spec §3.7) | Extended | Per-agent calibration history and measured accuracy tracking is deferred. |
+
+**What this means in practice**: In this MVP, `agentIdentity` and `confidenceScore` are self-reported. Operators writing policies should treat these fields as unverified. However, the primary safety workflow — intent declaration, independent live state evaluation against CEL policies, OpsLocks, and immutable audit trails — is fully functional and ready to be tested!
+
+See `control_plane_implementation.md` for the full architectural breakdown and `spec.md` for the complete protocol specification.
+
 ## Contributing
-Please see `control_plane_implementation.md` and `implementation_phases.md` for our current architectural state and roadmap. All new features must conform to the core AIP specification. 
+All new features must conform to the core AIP specification.
 
 **NOTE:** Run `make help` for more information on all potential `make` targets.
 

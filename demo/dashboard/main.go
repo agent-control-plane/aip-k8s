@@ -99,6 +99,7 @@ func main() {
 
 	// Explicitly serve index.html for the root
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		if r.URL.Path == "/" {
 			http.ServeFile(w, r, filepath.Join(absStaticDir, "index.html"))
 			return
@@ -139,8 +140,13 @@ func (s *DashboardServer) handleListAgentRequests(w http.ResponseWriter, r *http
 		return
 	}
 
+	data, err := json.Marshal(list.Items)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(list.Items)
+	_, _ = w.Write(data)
 }
 
 func (s *DashboardServer) handleListAuditRecords(w http.ResponseWriter, r *http.Request) {
@@ -169,8 +175,13 @@ func (s *DashboardServer) handleListAuditRecords(w http.ResponseWriter, r *http.
 		}
 	}
 
+	data, err := json.Marshal(results)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(results)
+	_, _ = w.Write(data)
 }
 
 func (s *DashboardServer) handleAgentRequestAction(w http.ResponseWriter, r *http.Request) {
@@ -204,6 +215,14 @@ func (s *DashboardServer) handleAgentRequestAction(w http.ResponseWriter, r *htt
 		return
 	}
 
+	// Parse optional JSON body for human-provided reason.
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if r.Header.Get("Content-Type") == "application/json" {
+		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+	}
+
 	ctx := context.Background()
 	nn := types.NamespacedName{Name: name, Namespace: namespace}
 
@@ -214,6 +233,35 @@ func (s *DashboardServer) handleAgentRequestAction(w http.ResponseWriter, r *htt
 		return
 	}
 
+	// Reject actions on requests that are no longer actionable.
+	currentPhase := agentReq.Status.Phase
+	if currentPhase == "Approved" || currentPhase == "Denied" ||
+		currentPhase == "Completed" || currentPhase == "Executing" {
+		msg := fmt.Sprintf("request is already in terminal phase %q — no action allowed", currentPhase)
+		http.Error(w, msg, http.StatusConflict)
+		return
+	}
+
+	// Approvals that deviate from live control plane verification require an
+	// explicit human reason. The control plane independently verified cluster
+	// state — a human overriding that evidence must justify why.
+	// Denials are always permitted without a reason (safe default).
+	if decision == "approved" {
+		cpv := agentReq.Status.ControlPlaneVerification
+		deviates := cpv != nil && cpv.HasActiveEndpoints
+		if deviates && strings.TrimSpace(body.Reason) == "" {
+			msg := "reason required: control plane verified active endpoints " +
+				"— explain why this override is safe"
+			http.Error(w, msg, http.StatusBadRequest)
+			return
+		}
+	}
+
+	humanReason := strings.TrimSpace(body.Reason)
+	if humanReason == "" {
+		humanReason = "denied via dashboard" // denial with no reason is fine
+	}
+
 	// Write the human decision to spec via merge patch — avoids 409 conflicts
 	// with the controller's concurrent status updates (they share resourceVersion).
 	// The controller owns status and will drive the state machine when it sees
@@ -221,9 +269,10 @@ func (s *DashboardServer) handleAgentRequestAction(w http.ResponseWriter, r *htt
 	specPatch := client.MergeFrom(agentReq.DeepCopy())
 	agentReq.Spec.HumanApproval = &governancev1alpha1.HumanApproval{
 		Decision: decision,
-		Reason:   "Decision made via Visual Audit Dashboard",
+		Reason:   humanReason,
 	}
-	log.Printf("PATCH spec.humanApproval=%s on %s/%s (RV=%s)", decision, namespace, name, agentReq.ResourceVersion)
+	log.Printf("PATCH spec.humanApproval=%s reason=%q on %s/%s (RV=%s)",
+		decision, humanReason, namespace, name, agentReq.ResourceVersion)
 	if err := s.client.Patch(ctx, &agentReq, specPatch); err != nil {
 		log.Printf("ERROR patch %s/%s: %v", namespace, name, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)

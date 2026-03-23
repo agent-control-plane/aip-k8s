@@ -43,14 +43,25 @@ type agentRequestBody struct {
 	ScopeBounds      *scopeBounds     `json:"scopeBounds,omitempty"`
 }
 
+const (
+	red   = "\033[31m"
+	reset = "\033[0m"
+)
+
 func submitAndPollRequest(gateway, namespace string, body agentRequestBody) {
 	b, _ := json.Marshal(body)
 
 	resp, err := http.Post(gateway+"/agent-requests", "application/json", bytes.NewBuffer(b))
 	if err != nil {
-		log.Fatalf("Failed to connect to gateway: %v", err)
+		log.Fatalf(red+"[FATAL] Failed to reach Gateway: %v"+reset, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		var errResp map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&errResp)
+		log.Fatalf(red+"[FATAL] Gateway returned error: %v (Status %d)"+reset, errResp["error"], resp.StatusCode)
+	}
 
 	var arResp struct {
 		Name   string `json:"name"`

@@ -5,24 +5,45 @@ metadata:
   namespace: default
 spec:
   targetSelector:
-    matchActions: ["scale-down", "scale", "delete"]
+    matchActions: ["delete", "scale", "scale-down", "escalate"]
 
   rules:
-    # The AIP control plane independently detects active endpoints.
-    # The agent cannot spoof this — it is fetched directly from the K8s API.
-    - name: scale-down-with-active-endpoints
+    # Deny autonomous deletion of any resource with active endpoints.
+    # The agent cannot unilaterally delete a live service — this is terminal.
+    # If the agent genuinely believes deletion is warranted, it must escalate
+    # (action: escalate) so a human can review the contradicting evidence.
+    - name: delete-with-active-endpoints
       type: StateEvaluation
-      action: RequireApproval
+      action: Deny
       expression: >
-        request.spec.action == "scale-down" &&
+        request.spec.action == "delete" &&
         target.hasActiveEndpoints == true
 
-    # Block when multiple ready replicas confirm the service is actively serving.
+    # Deny autonomous scale-to-zero on a resource with ready replicas.
+    # Scaling to 0 is operationally equivalent to deletion for a live service.
+    - name: scale-to-zero-with-ready-replicas
+      type: StateEvaluation
+      action: Deny
+      expression: >
+        request.spec.action == "scale" &&
+        target.readyReplicas > 0
+
+    # Deny autonomous scale-down on a resource actively serving traffic.
     - name: scale-down-with-ready-replicas
       type: StateEvaluation
-      action: RequireApproval
+      action: Deny
       expression: >
         request.spec.action == "scale-down" &&
         target.readyReplicas > 1
+
+    # RequireApproval only for explicit agent escalations.
+    # When an agent submits action: escalate, it is declaring it cannot
+    # resolve the conflict autonomously and is handing off to a human.
+    # This is the only path that creates a pending human review request.
+    - name: escalation-requires-human
+      type: StateEvaluation
+      action: RequireApproval
+      expression: >
+        request.spec.action == "escalate"
 
   failureMode: FailClosed

@@ -31,6 +31,10 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	governancev1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
 	"github.com/ravisantoshgudimetla/aip-k8s/test/utils"
 )
 
@@ -285,8 +289,8 @@ var _ = Describe("Manager", Ordered, func() {
 	// Phase 2: AgentRequest lifecycle and AuditRecord generation
 	Context("Phase 2: AgentRequest lifecycle", Ordered, func() {
 		const (
-			reqName  = "e2e-lifecycle-test"
-			reqNS    = "default"
+			reqName      = "e2e-lifecycle-test"
+			reqNS        = "default"
 			agentReqJSON = `{
 				"apiVersion": "governance.aip.io/v1alpha1",
 				"kind": "AgentRequest",
@@ -382,6 +386,163 @@ var _ = Describe("Manager", Ordered, func() {
 			}).Should(BeTrue())
 		})
 	})
+
+	// Phase 3: SafetyPolicy Evaluation
+	Context("Phase 3: SafetyPolicy Evaluation", Ordered, func() {
+		const (
+			policyName = "deny-prod-scale"
+			reqName    = "e2e-policy-test"
+			ns         = "default"
+			policyJSON = `{
+				"apiVersion": "governance.aip.io/v1alpha1",
+				"kind": "SafetyPolicy",
+				"metadata": {"name": "deny-prod-scale", "namespace": "default"},
+				"spec": {
+					"targetSelector": {"matchActions": ["scale"]},
+					"rules": [
+						{
+							"name": "block-scale",
+							"type": "StateEvaluation",
+							"action": "Deny",
+							"expression": "request.spec.target.uri.startsWith('k8s://prod')"
+						}
+					],
+					"failureMode": "FailClosed"
+				}
+			}`
+			reqJSON = `{
+				"apiVersion": "governance.aip.io/v1alpha1",
+				"kind": "AgentRequest",
+				"metadata": {"name": "e2e-policy-test", "namespace": "default"},
+				"spec": {
+					"agentIdentity": "e2e-test-agent",
+					"action": "scale",
+					"target": {"uri": "k8s://prod/default/deployment/backend"},
+					"reason": "e2e policy test"
+				}
+			}`
+		)
+
+		AfterAll(func() {
+			By("cleaning up SafetyPolicy and AgentRequest")
+			cmd := exec.Command("kubectl", "delete", "safetypolicy", policyName, "-n", ns, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "agentrequest", reqName, "-n", ns, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should transition to Denied with POLICY_VIOLATION when policy matches", func() {
+			By("creating the SafetyPolicy")
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(policyJSON)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for SafetyPolicy to be visible in the API server")
+			Eventually(func(g Gomega) {
+				var sp governancev1alpha1.SafetyPolicy
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: policyName, Namespace: ns}, &sp)).To(Succeed())
+			}).Should(Succeed())
+
+			By("creating the AgentRequest targeting prod")
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(reqJSON)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for Phase=Denied")
+			Eventually(func() string {
+				return getAgentRequestPhase(reqName, ns)
+			}).Should(Equal("Denied"))
+
+			By("checking that denial code is POLICY_VIOLATION and matched rule is block-scale")
+			Eventually(func(g Gomega) {
+				var ar governancev1alpha1.AgentRequest
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: reqName, Namespace: ns}, &ar)).To(Succeed())
+				g.Expect(ar.Status.Denial).NotTo(BeNil())
+				g.Expect(ar.Status.Denial.Code).To(Equal("POLICY_VIOLATION"))
+				g.Expect(ar.Status.Denial.PolicyResults).NotTo(BeEmpty())
+				g.Expect(ar.Status.Denial.PolicyResults[0].RuleName).To(Equal("block-scale"))
+			}).Should(Succeed())
+
+			By("asserting request.denied AuditRecord exists")
+			Eventually(func() bool {
+				return auditRecordExists(reqName, ns, "request.denied")
+			}).Should(BeTrue())
+		})
+	})
+
+	// Phase 4: OpsLock Contention
+	Context("Phase 4: OpsLock Contention", Ordered, func() {
+		const (
+			req1Name        = "e2e-lock1"
+			req2Name        = "e2e-lock2"
+			ns              = "default"
+			targetURI       = "k8s://dev/default/deployment/locked-app"
+			reqJSONTemplate = `{
+				"apiVersion": "governance.aip.io/v1alpha1",
+				"kind": "AgentRequest",
+				"metadata": {"name": "%s", "namespace": "default"},
+				"spec": {
+					"agentIdentity": "e2e-test-agent",
+					"action": "update",
+					"target": {"uri": "%s"},
+					"reason": "e2e lock test"
+				}
+			}`
+		)
+
+		AfterAll(func() {
+			By("cleaning up lock AgentRequests")
+			cmd := exec.Command("kubectl", "delete", "agentrequest", req1Name, req2Name, "-n", ns, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should handle concurrent requests on the same target with lock contention", func() {
+			req1JSON := fmt.Sprintf(reqJSONTemplate, req1Name, targetURI)
+			req2JSON := fmt.Sprintf(reqJSONTemplate, req2Name, targetURI)
+
+			// Note: "update" is intentionally used here — it matches no SafetyPolicy
+			// matchActions, so requests skip policy evaluation and go directly to
+			// OpsLock acquisition. This isolates the lock contention behaviour.
+
+			By("creating AgentRequest 1")
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(req1JSON)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for AgentRequest 1 to be Approved and hold the lock")
+			Eventually(func() string {
+				return getAgentRequestPhase(req1Name, ns)
+			}).Should(Equal("Approved"))
+
+			By("creating AgentRequest 2 on the same target")
+			cmd2 := exec.Command("kubectl", "apply", "-f", "-")
+			cmd2.Stdin = strings.NewReader(req2JSON)
+			_, err = utils.Run(cmd2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("asserting AgentRequest 1 still holds the lock while AgentRequest 2 waits")
+			Expect(getAgentRequestPhase(req1Name, ns)).To(Equal("Approved"))
+
+			By("waiting for AgentRequest 2 to be Denied due to contention/timeout")
+			Eventually(func() string {
+				return getAgentRequestPhase(req2Name, ns)
+			}, 3*time.Minute, 5*time.Second).Should(Equal("Denied"))
+
+			By("checking that AgentRequest 2 denial code is LOCK_TIMEOUT or LOCK_CONTENTION")
+			Eventually(func(g Gomega) {
+				var ar governancev1alpha1.AgentRequest
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: req2Name, Namespace: ns}, &ar)).To(Succeed())
+				g.Expect(ar.Status.Denial).NotTo(BeNil())
+				g.Expect(ar.Status.Denial.Code).To(Or(Equal("LOCK_TIMEOUT"), Equal("LOCK_CONTENTION")))
+			}).Should(Succeed())
+
+			By("asserting AgentRequest 1 remained Approved for the duration — proving lock exclusivity")
+			Expect(getAgentRequestPhase(req1Name, ns)).To(Equal("Approved"))
+		})
+	})
 })
 
 // serviceAccountToken returns a token for the specified service account in the given namespace.
@@ -440,27 +601,23 @@ type tokenRequest struct {
 	} `json:"status"`
 }
 
-// getAgentRequestPhase returns the current phase of the named AgentRequest, or "" on error.
+// getAgentRequestPhase returns the current phase of the named AgentRequest using client-go.
 func getAgentRequestPhase(name, ns string) string {
-	cmd := exec.Command("kubectl", "get", "agentrequest", name, "-n", ns,
-		"-o", "jsonpath={.status.phase}")
-	output, err := utils.Run(cmd)
-	if err != nil {
+	var ar governancev1alpha1.AgentRequest
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &ar); err != nil {
 		return ""
 	}
-	return strings.TrimSpace(output)
+	return ar.Status.Phase
 }
 
-// auditRecordExists returns true if at least one AuditRecord in ns references reqName with the given event type.
+// auditRecordExists returns true if at least one AuditRecord in ns references reqName with the given event.
 func auditRecordExists(reqName, ns, event string) bool {
-	cmd := exec.Command("kubectl", "get", "auditrecords", "-n", ns,
-		"-o", fmt.Sprintf("jsonpath={range .items[?(@.spec.agentRequestRef==%q)]}{.spec.event}{'\\n'}{end}", reqName))
-	output, err := utils.Run(cmd)
-	if err != nil {
+	var list governancev1alpha1.AuditRecordList
+	if err := k8sClient.List(ctx, &list, client.InNamespace(ns)); err != nil {
 		return false
 	}
-	for _, line := range utils.GetNonEmptyLines(output) {
-		if strings.TrimSpace(line) == event {
+	for _, ar := range list.Items {
+		if ar.Spec.AgentRequestRef == reqName && ar.Spec.Event == event {
 			return true
 		}
 	}
