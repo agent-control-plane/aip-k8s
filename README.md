@@ -87,14 +87,14 @@ make test
 
 ## OSS Scope and Known Limitations
 
-This repository currently implements **AIP Phases 1 through 5**. We are launching this MVP to gather early community feedback on the core Agent Intent Protocol design.
+This repository implements the AIP Core conformance tier. We are launching this as an OSS MVP to gather early community feedback on the core Agent Intent Protocol design.
 
 The following capabilities defined in the AIP specification are intentionally deferred in this MVP:
 
 | Capability | Tier | Why it matters |
 |------------|------|---------------|
-| **Transport-layer Identity Verification** (spec §6) | **Core** | *(Phase 6)* Missing `MutatingAdmissionWebhook` to extract and enforce `agentIdentity` from the K8s ServiceAccount. Currently, agents self-declare their identity. |
-| **Hard API Enforcement** | **Core** | *(Phase 6)* Missing `ValidatingAdmissionWebhook` to physically block raw K8s mutations. Safety currently relies on agents voluntarily using the AIP gateway. |
+| **Transport-layer Identity Verification** (spec §6) | **Core** | Missing `MutatingAdmissionWebhook` to extract and enforce `agentIdentity` from the K8s ServiceAccount. Currently, agents self-declare their identity. |
+| **Hard API Enforcement** | **Core** | Missing `ValidatingAdmissionWebhook` to physically block raw K8s mutations. Safety currently relies on agents voluntarily using the AIP gateway. |
 | **CalibrationEvidence verification** (spec §3.1.5) | Extended | `confidenceScore` is currently agent-self-reported rather than cryptographically verified via a signed evaluator JWT. |
 | **TOCTOU protection** (spec §3.6.2) | Extended | State can drift between policy evaluation (T1) and human approval (T2). Re-verifying live state via `ForGeneration` binding is deferred. |
 | **Approval revocation** (spec §3.6.3) | Extended | If cluster state changes after approval but before execution, a conforming control plane must automatically signal the agent. |
@@ -102,7 +102,7 @@ The following capabilities defined in the AIP specification are intentionally de
 
 **What this means in practice**: In this MVP, `agentIdentity` and `confidenceScore` are self-reported. Operators writing policies should treat these fields as unverified. However, the primary safety workflow — intent declaration, independent live state evaluation against CEL policies, OpsLocks, and immutable audit trails — is fully functional and ready to be tested!
 
-See `control_plane_implementation.md` for the full architectural breakdown and `spec.md` for the complete protocol specification.
+See `spec.md` for the complete protocol specification.
 
 ## Contributing
 All new features must conform to the core AIP specification.
