@@ -8,9 +8,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -49,6 +52,15 @@ type reasoningTraceBody struct {
 	ComponentConfidence map[string]float64 `json:"componentConfidence,omitempty"`
 	TraceReference      string             `json:"traceReference,omitempty"`
 	Alternatives        []string           `json:"alternatives,omitempty"`
+}
+
+type createAgentDiagnosticBody struct {
+	AgentIdentity  string          `json:"agentIdentity"`
+	DiagnosticType string          `json:"diagnosticType"`
+	CorrelationID  string          `json:"correlationID"`
+	Summary        string          `json:"summary"`
+	Namespace      string          `json:"namespace,omitempty"`
+	Details        json.RawMessage `json:"details,omitempty"`
 }
 
 type createAgentRequestBody struct {
@@ -142,11 +154,51 @@ func main() {
 	mux.HandleFunc("GET /agent-requests/{name}", server.handleGetAgentRequest)
 	mux.HandleFunc("POST /agent-requests/{name}/executing", server.handleExecutingAgentRequest)
 	mux.HandleFunc("POST /agent-requests/{name}/completed", server.handleCompletedAgentRequest)
+	mux.HandleFunc("POST /agent-diagnostics", server.handleCreateAgentDiagnostic)
+	mux.HandleFunc("GET /agent-diagnostics/{name}", server.handleGetAgentDiagnostic)
 
 	log.Printf("Starting AIP Demo Gateway on %s", *addr)
 	if err := http.ListenAndServe(*addr, loggingMiddleware(mux)); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
+}
+
+func buildCascadeModel(body *createAgentRequestBody) *v1alpha1.CascadeModel {
+	if body.CascadeModel == nil || len(body.CascadeModel.AffectedTargets) == 0 {
+		return nil
+	}
+	affected := make([]v1alpha1.AffectedTarget, len(body.CascadeModel.AffectedTargets))
+	for i, t := range body.CascadeModel.AffectedTargets {
+		affected[i] = v1alpha1.AffectedTarget{URI: t.URI, EffectType: t.EffectType}
+	}
+	cm := &v1alpha1.CascadeModel{AffectedTargets: affected}
+	if body.CascadeModel.ModelSourceTrust != "" {
+		cm.ModelSourceTrust = &body.CascadeModel.ModelSourceTrust
+	}
+	if body.CascadeModel.ModelSourceID != "" {
+		cm.ModelSourceID = &body.CascadeModel.ModelSourceID
+	}
+	return cm
+}
+
+func buildReasoningTrace(body *createAgentRequestBody) *v1alpha1.ReasoningTrace {
+	if body.ReasoningTrace == nil {
+		return nil
+	}
+	rt := &v1alpha1.ReasoningTrace{}
+	if body.ReasoningTrace.ConfidenceScore > 0 {
+		rt.ConfidenceScore = &body.ReasoningTrace.ConfidenceScore
+	}
+	if len(body.ReasoningTrace.ComponentConfidence) > 0 {
+		rt.ComponentConfidence = body.ReasoningTrace.ComponentConfidence
+	}
+	if body.ReasoningTrace.TraceReference != "" {
+		rt.TraceReference = &body.ReasoningTrace.TraceReference
+	}
+	if len(body.ReasoningTrace.Alternatives) > 0 {
+		rt.Alternatives = body.ReasoningTrace.Alternatives
+	}
+	return rt
 }
 
 func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request) {
@@ -166,44 +218,6 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		ns = defaultNamespace
 	}
 
-	var cascadeModel *v1alpha1.CascadeModel
-	if body.CascadeModel != nil && len(body.CascadeModel.AffectedTargets) > 0 {
-		affected := make([]v1alpha1.AffectedTarget, len(body.CascadeModel.AffectedTargets))
-		for i, t := range body.CascadeModel.AffectedTargets {
-			affected[i] = v1alpha1.AffectedTarget{
-				URI:        t.URI,
-				EffectType: t.EffectType,
-			}
-		}
-		cascadeModel = &v1alpha1.CascadeModel{
-			AffectedTargets: affected,
-		}
-		if body.CascadeModel.ModelSourceTrust != "" {
-			cascadeModel.ModelSourceTrust = &body.CascadeModel.ModelSourceTrust
-		}
-		if body.CascadeModel.ModelSourceID != "" {
-			cascadeModel.ModelSourceID = &body.CascadeModel.ModelSourceID
-		}
-	}
-
-	var reasoningTrace *v1alpha1.ReasoningTrace
-	if body.ReasoningTrace != nil {
-		rt := &v1alpha1.ReasoningTrace{}
-		if body.ReasoningTrace.ConfidenceScore > 0 {
-			rt.ConfidenceScore = &body.ReasoningTrace.ConfidenceScore
-		}
-		if len(body.ReasoningTrace.ComponentConfidence) > 0 {
-			rt.ComponentConfidence = body.ReasoningTrace.ComponentConfidence
-		}
-		if body.ReasoningTrace.TraceReference != "" {
-			rt.TraceReference = &body.ReasoningTrace.TraceReference
-		}
-		if len(body.ReasoningTrace.Alternatives) > 0 {
-			rt.Alternatives = body.ReasoningTrace.Alternatives
-		}
-		reasoningTrace = rt
-	}
-
 	var parameters *apiextensionsv1.JSON
 	if len(body.Parameters) > 0 && string(body.Parameters) != "null" {
 		parameters = &apiextensionsv1.JSON{Raw: body.Parameters}
@@ -219,8 +233,8 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 			Action:         body.Action,
 			Target:         v1alpha1.Target{URI: body.TargetURI},
 			Reason:         body.Reason,
-			CascadeModel:   cascadeModel,
-			ReasoningTrace: reasoningTrace,
+			CascadeModel:   buildCascadeModel(&body),
+			ReasoningTrace: buildReasoningTrace(&body),
 			Parameters:     parameters,
 			ExecutionMode:  body.ExecutionMode,
 			ScopeBounds:    body.ScopeBounds,
@@ -228,6 +242,10 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := s.client.Create(r.Context(), agentReq); err != nil {
+		if apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) || apierrors.IsAlreadyExists(err) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid AgentRequest: %v", err))
+			return
+		}
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to create AgentRequest: %v", err))
 		return
 	}
@@ -324,6 +342,135 @@ func (s *Server) handleExecutingAgentRequest(w http.ResponseWriter, r *http.Requ
 func (s *Server) handleCompletedAgentRequest(w http.ResponseWriter, r *http.Request) {
 	s.patchAgentRequestCondition(w, r, v1alpha1.ConditionCompleted,
 		"ActionSuccess", "Agent successfully completed the action")
+}
+
+// sanitizeDNSSegment converts an arbitrary string into a valid DNS label
+// segment suitable for use in GenerateName prefixes. maxLen should be 57 to
+// leave room for the API-server-generated suffix.
+var invalidDNSChars = regexp.MustCompile(`[^a-z0-9-]`)
+
+func sanitizeDNSSegment(s string, maxLen int) string {
+	s = strings.ToLower(s)
+	s = invalidDNSChars.ReplaceAllString(s, "-")
+	if len(s) > maxLen {
+		s = s[:maxLen]
+	}
+	s = strings.Trim(s, "-")
+	return s
+}
+
+// sanitizeLabelValue converts an arbitrary string into a valid Kubernetes label
+// value: allows [A-Za-z0-9], [-_.], max 63 chars, must begin/end alphanumeric.
+var invalidLabelChars = regexp.MustCompile(`[^A-Za-z0-9\-_.]`)
+
+func sanitizeLabelValue(s string) string {
+	s = invalidLabelChars.ReplaceAllString(s, "-")
+	if len(s) > 63 {
+		s = s[:63]
+	}
+	s = strings.Trim(s, "-_.")
+	return s
+}
+
+func (s *Server) handleCreateAgentDiagnostic(w http.ResponseWriter, r *http.Request) {
+	var body createAgentDiagnosticBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if body.AgentIdentity == "" || body.DiagnosticType == "" || body.CorrelationID == "" || body.Summary == "" {
+		writeError(w, http.StatusBadRequest, "agentIdentity, diagnosticType, correlationID, and summary are required")
+		return
+	}
+
+	ns := body.Namespace
+	if ns == "" {
+		ns = defaultNamespace
+	}
+
+	var details *apiextensionsv1.JSON
+	if len(body.Details) > 0 && string(body.Details) != "null" {
+		details = &apiextensionsv1.JSON{Raw: body.Details}
+	}
+
+	// GenerateName prefix must be a valid DNS segment.
+	// Label values use the looser Kubernetes label-value charset (allows _, .).
+	// Normalize independently so callers can see exactly which labels were stored.
+	safeIdentityForName := sanitizeDNSSegment(body.AgentIdentity, 57)
+	labelAgentIdentity := sanitizeLabelValue(body.AgentIdentity)
+	labelCorrelationID := sanitizeLabelValue(body.CorrelationID)
+	labelDiagnosticType := sanitizeLabelValue(body.DiagnosticType)
+
+	diag := &v1alpha1.AgentDiagnostic{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: fmt.Sprintf("diag-%s-", safeIdentityForName),
+			Namespace:    ns,
+			Labels: map[string]string{
+				"aip.io/correlationID":  labelCorrelationID,
+				"aip.io/agentIdentity":  labelAgentIdentity,
+				"aip.io/diagnosticType": labelDiagnosticType,
+			},
+		},
+		Spec: v1alpha1.AgentDiagnosticSpec{
+			AgentIdentity:  body.AgentIdentity,
+			DiagnosticType: body.DiagnosticType,
+			CorrelationID:  body.CorrelationID,
+			Summary:        body.Summary,
+			Details:        details,
+		},
+	}
+
+	if err := s.client.Create(r.Context(), diag); err != nil {
+		if apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) || apierrors.IsAlreadyExists(err) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid AgentDiagnostic: %v", err))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to create AgentDiagnostic: %v", err))
+		return
+	}
+
+	// Return normalized label values so callers can use them in label-selector
+	// queries without having to guess what normalization was applied.
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"name":      diag.Name,
+		"namespace": diag.Namespace,
+		"createdAt": diag.CreationTimestamp.Time,
+		"labels": map[string]string{
+			"aip.io/correlationID":  labelCorrelationID,
+			"aip.io/agentIdentity":  labelAgentIdentity,
+			"aip.io/diagnosticType": labelDiagnosticType,
+		},
+	})
+}
+
+func (s *Server) handleGetAgentDiagnostic(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		ns = defaultNamespace
+	}
+
+	var diag v1alpha1.AgentDiagnostic
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &diag); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "AgentDiagnostic not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to get AgentDiagnostic: %v", err))
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name":           diag.Name,
+		"namespace":      diag.Namespace,
+		"createdAt":      diag.CreationTimestamp.Time,
+		"agentIdentity":  diag.Spec.AgentIdentity,
+		"diagnosticType": diag.Spec.DiagnosticType,
+		"correlationID":  diag.Spec.CorrelationID,
+		"summary":        diag.Spec.Summary,
+		"details":        diag.Spec.Details,
+	})
 }
 
 func (s *Server) patchAgentRequestCondition(
