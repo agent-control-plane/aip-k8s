@@ -364,9 +364,9 @@ func (s *Server) handleCreateAgentDiagnostic(w http.ResponseWriter, r *http.Requ
 			GenerateName: fmt.Sprintf("diag-%s-", body.AgentIdentity),
 			Namespace:    ns,
 			Labels: map[string]string{
-				"aip.io/correlationID":   body.CorrelationID,
-				"aip.io/agentIdentity":   body.AgentIdentity,
-				"aip.io/diagnosticType":  body.DiagnosticType,
+				"aip.io/correlationID":  body.CorrelationID,
+				"aip.io/agentIdentity":  body.AgentIdentity,
+				"aip.io/diagnosticType": body.DiagnosticType,
 			},
 		},
 		Spec: v1alpha1.AgentDiagnosticSpec{
