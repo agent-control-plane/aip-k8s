@@ -10,7 +10,7 @@ This demo demonstrates how the AIP Control Plane prevents multiple autonomous AI
 ## Prerequisites
 1. A running Kubernetes cluster (e.g., KIND).
 2. The AIP Controller deployed to the cluster.
-3. The AIP Demo Gateway running locally (`go run demo/gateway/main.go`).
+3. The AIP Demo Gateway running locally (`go run cmd/gateway/main.go`).
 
 ## How to Run
 1. Open a terminal and watch the AgentRequests:

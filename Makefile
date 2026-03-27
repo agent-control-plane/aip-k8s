@@ -297,9 +297,13 @@ kind-deploy: kind-cluster kind-load manifests generate install ## Spin up a clus
 GATEWAY_PID_FILE ?= /tmp/aip-gateway.pid
 DASHBOARD_PID_FILE ?= /tmp/aip-dashboard.pid
 
+.PHONY: build-gateway
+build-gateway: ## Build the AIP gateway binary.
+	go build -o bin/gateway ./cmd/gateway
+
 .PHONY: build-demo
 build-demo: ## Build gateway and dashboard binaries.
-	go build -o bin/gateway ./demo/gateway
+	go build -o bin/gateway ./cmd/gateway
 	go build -o bin/dashboard ./demo/dashboard
 
 .PHONY: demo-up

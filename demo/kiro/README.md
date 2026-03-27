@@ -10,7 +10,7 @@ This demo simulates a "Kiro-style" AI coding agent attempting to perform an auto
 ## Prerequisites
 1. A running Kubernetes cluster (e.g., KIND).
 2. The AIP Controller deployed to the cluster.
-3. The AIP Demo Gateway running locally (`go run demo/gateway/main.go`).
+3. The AIP Demo Gateway running locally (`go run cmd/gateway/main.go`).
 
 ## How to Run
 1. Run the demo script:

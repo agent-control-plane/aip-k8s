@@ -26,7 +26,7 @@ echo "  ✓ Cluster ready"
 echo "[ 2/6 ] Checking AIP Gateway at ${GATEWAY_URL}..."
 if ! curl -sf "${GATEWAY_URL}/healthz" > /dev/null; then
   echo "  ✗ Gateway not running. Start it:"
-  echo "    go run ${ROOT_DIR}/demo/gateway/main.go"
+  echo "    go run ${ROOT_DIR}/cmd/gateway/main.go"
   exit 1
 fi
 echo "  ✓ Gateway running"
