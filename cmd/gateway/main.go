@@ -51,6 +51,15 @@ type reasoningTraceBody struct {
 	Alternatives        []string           `json:"alternatives,omitempty"`
 }
 
+type createAgentDiagnosticBody struct {
+	AgentIdentity  string          `json:"agentIdentity"`
+	DiagnosticType string          `json:"diagnosticType"`
+	CorrelationID  string          `json:"correlationID"`
+	Summary        string          `json:"summary"`
+	Namespace      string          `json:"namespace,omitempty"`
+	Details        json.RawMessage `json:"details,omitempty"`
+}
+
 type createAgentRequestBody struct {
 	AgentIdentity  string                `json:"agentIdentity"`
 	Action         string                `json:"action"`
@@ -142,6 +151,8 @@ func main() {
 	mux.HandleFunc("GET /agent-requests/{name}", server.handleGetAgentRequest)
 	mux.HandleFunc("POST /agent-requests/{name}/executing", server.handleExecutingAgentRequest)
 	mux.HandleFunc("POST /agent-requests/{name}/completed", server.handleCompletedAgentRequest)
+	mux.HandleFunc("POST /agent-diagnostics", server.handleCreateAgentDiagnostic)
+	mux.HandleFunc("GET /agent-diagnostics/{name}", server.handleGetAgentDiagnostic)
 
 	log.Printf("Starting AIP Demo Gateway on %s", *addr)
 	if err := http.ListenAndServe(*addr, loggingMiddleware(mux)); err != nil {
@@ -324,6 +335,84 @@ func (s *Server) handleExecutingAgentRequest(w http.ResponseWriter, r *http.Requ
 func (s *Server) handleCompletedAgentRequest(w http.ResponseWriter, r *http.Request) {
 	s.patchAgentRequestCondition(w, r, v1alpha1.ConditionCompleted,
 		"ActionSuccess", "Agent successfully completed the action")
+}
+
+func (s *Server) handleCreateAgentDiagnostic(w http.ResponseWriter, r *http.Request) {
+	var body createAgentDiagnosticBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if body.AgentIdentity == "" || body.DiagnosticType == "" || body.CorrelationID == "" || body.Summary == "" {
+		writeError(w, http.StatusBadRequest, "agentIdentity, diagnosticType, correlationID, and summary are required")
+		return
+	}
+
+	ns := body.Namespace
+	if ns == "" {
+		ns = defaultNamespace
+	}
+
+	var details *apiextensionsv1.JSON
+	if len(body.Details) > 0 && string(body.Details) != "null" {
+		details = &apiextensionsv1.JSON{Raw: body.Details}
+	}
+
+	diag := &v1alpha1.AgentDiagnostic{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: fmt.Sprintf("diag-%s-", body.AgentIdentity),
+			Namespace:    ns,
+			Labels: map[string]string{
+				"aip.io/correlationID":   body.CorrelationID,
+				"aip.io/agentIdentity":   body.AgentIdentity,
+				"aip.io/diagnosticType":  body.DiagnosticType,
+			},
+		},
+		Spec: v1alpha1.AgentDiagnosticSpec{
+			AgentIdentity:  body.AgentIdentity,
+			DiagnosticType: body.DiagnosticType,
+			CorrelationID:  body.CorrelationID,
+			Summary:        body.Summary,
+			Details:        details,
+		},
+	}
+
+	if err := s.client.Create(r.Context(), diag); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to create AgentDiagnostic: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"name":      diag.Name,
+		"namespace": diag.Namespace,
+		"createdAt": diag.CreationTimestamp.Time,
+	})
+}
+
+func (s *Server) handleGetAgentDiagnostic(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		ns = defaultNamespace
+	}
+
+	var diag v1alpha1.AgentDiagnostic
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &diag); err != nil {
+		writeError(w, http.StatusNotFound, "AgentDiagnostic not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name":           diag.Name,
+		"namespace":      diag.Namespace,
+		"createdAt":      diag.CreationTimestamp.Time,
+		"agentIdentity":  diag.Spec.AgentIdentity,
+		"diagnosticType": diag.Spec.DiagnosticType,
+		"correlationID":  diag.Spec.CorrelationID,
+		"summary":        diag.Spec.Summary,
+		"details":        diag.Spec.Details,
+	})
 }
 
 func (s *Server) patchAgentRequestCondition(

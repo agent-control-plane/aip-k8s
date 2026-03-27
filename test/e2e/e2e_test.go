@@ -562,6 +562,75 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(getAgentRequestPhase(req1Name, ns)).To(Equal("Approved"))
 		})
 	})
+
+	// Phase 5: AgentDiagnostic CRD
+	Context("Phase 5: AgentDiagnostic", Ordered, func() {
+		const (
+			diagNS            = "default"
+			diagCorrelationID = "e2e-corr-abc123"
+			diagJSON          = `{
+				"apiVersion": "governance.aip.io/v1alpha1",
+				"kind": "AgentDiagnostic",
+				"metadata": {
+					"name": "e2e-diag-test",
+					"namespace": "default",
+					"labels": {
+						"aip.io/correlationID": "e2e-corr-abc123",
+						"aip.io/agentIdentity": "e2e-diagnostic-agent",
+						"aip.io/diagnosticType": "diagnosis"
+					}
+				},
+				"spec": {
+					"agentIdentity": "e2e-diagnostic-agent",
+					"diagnosticType": "diagnosis",
+					"correlationID": "e2e-corr-abc123",
+					"summary": "e2e test: OOMKilled detected on test-app"
+				}
+			}`
+		)
+
+		AfterAll(func() {
+			By("cleaning up AgentDiagnostic")
+			cmd := exec.Command("kubectl", "delete", "agentdiagnostic", "e2e-diag-test", "-n", diagNS, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should create an AgentDiagnostic and verify it is queryable by correlationID", func() {
+			By("creating the AgentDiagnostic")
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(diagJSON)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the AgentDiagnostic exists and has the correct spec")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "agentdiagnostic", "e2e-diag-test",
+					"-n", diagNS, "-o", "jsonpath={.spec.correlationID}")
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(out).To(Equal(diagCorrelationID))
+			}).Should(Succeed())
+
+			By("verifying the AgentDiagnostic is queryable by correlationID label")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "agentdiagnostics",
+					"-n", diagNS, "-l", "aip.io/correlationID="+diagCorrelationID,
+					"-o", "jsonpath={.items[0].metadata.name}")
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(out).To(Equal("e2e-diag-test"))
+			}).Should(Succeed())
+		})
+
+		It("should reject spec mutations after creation", func() {
+			By("attempting to mutate spec.summary — must be rejected")
+			cmd := exec.Command("kubectl", "patch", "agentdiagnostic", "e2e-diag-test",
+				"-n", diagNS, "--type=merge",
+				"-p", `{"spec":{"summary":"mutated summary"}}`)
+			_, err := utils.Run(cmd)
+			Expect(err).To(HaveOccurred(), "spec mutation should be rejected by CEL immutability rule")
+		})
+	})
 })
 
 // serviceAccountToken returns a token for the specified service account in the given namespace.
