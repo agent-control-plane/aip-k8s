@@ -11,7 +11,7 @@ This repository contains the `governance.aip.io` controller, which serves as the
 - **AgentRequest**: The primary CRD agents create to request mutating actions on infrastructure.
 - **SafetyPolicy**: CEL-based rules defined by administrators to govern which agents can perform what actions.
 - **AuditRecord**: Immutable event logs generated on every state transition of an AgentRequest.
-- **AgentDiagnostic** _(coming soon)_: Agent-written, immutable records of observations and diagnoses made before acting. No controller involved — agents write directly. Designed for stateless k8s controller-based agents that need to persist diagnostic state without misusing `AgentRequest`. See [`ep/agent_diagnostic_design.md`](ep/agent_diagnostic_design.md).
+- **AgentDiagnostic**: Agent-written, immutable records of observations and diagnoses made before acting. No controller involved — agents write directly. Designed for stateless k8s controller-based agents that need to persist diagnostic state without misusing `AgentRequest`. See [`ep/agent_diagnostic_design.md`](ep/agent_diagnostic_design.md).
 
 ## Why AIP? (Real-World Validation)
 

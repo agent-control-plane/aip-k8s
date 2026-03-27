@@ -5,6 +5,7 @@ resources:
 - bases/governance.aip.io_agentrequests.yaml
 - bases/governance.aip.io_safetypolicies.yaml
 - bases/governance.aip.io_auditrecords.yaml
+- bases/governance.aip.io_agentdiagnostics.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

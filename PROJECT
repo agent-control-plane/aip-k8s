@@ -35,4 +35,12 @@ resources:
   kind: AuditRecord
   path: github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: aip.io
+  group: governance
+  kind: AgentDiagnostic
+  path: github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1
+  version: v1alpha1
 version: "3"

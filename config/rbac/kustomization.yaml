@@ -22,6 +22,9 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the aip-k8s itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+- agentdiagnostic_admin_role.yaml
+- agentdiagnostic_editor_role.yaml
+- agentdiagnostic_viewer_role.yaml
 - auditrecord_admin_role.yaml
 - auditrecord_editor_role.yaml
 - auditrecord_viewer_role.yaml

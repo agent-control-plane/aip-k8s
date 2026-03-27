@@ -30,7 +30,7 @@ A new Kind in the `governance.aip.io/v1alpha1` API group. Agent-written directly
 
 **No controller.** The Kubernetes API server validates the schema and enforces RBAC. The agent writes the record once and it is done. The aip-k8s controller never reconciles `AgentDiagnostic` objects.
 
-**Immutable after creation — spec and correlation labels.** Enforced via CEL validation rules. `spec` is fully immutable. The `aip.io/correlationID` label is separately locked because it is the primary evidence link between `AgentDiagnostic` and `AgentRequest` — allowing it to be silently rewritten after creation would allow decoupling of evidence without touching `spec`. Both rules are required; `self == oldSelf` alone only covers `spec`.
+**Immutable after creation — spec via CEL, labels via RBAC.** `spec` is fully immutable, enforced by a CEL `x-kubernetes-validations` rule (`self == oldSelf`) on the spec schema. The `aip.io/correlationID` label cannot be enforced by CRD-level CEL validation because `metadata.labels` is not in scope for the CEL type environment at the schema level. Label immutability is instead enforced by RBAC: agent service accounts are granted only `create` on `agentdiagnostics` — no `update`, `patch`, or `delete` — making label rewrites impossible without elevated permissions.
 
 **`metadata.creationTimestamp` is the authoritative timestamp.** Set by the API server on write, cannot be faked by the agent.
 
@@ -88,23 +88,12 @@ type AgentDiagnostic struct {
 
 ```yaml
 x-kubernetes-validations:
-  # Full spec immutability
-  - rule: self.spec == oldSelf.spec
+  # Full spec immutability — applied at the AgentDiagnosticSpec schema level
+  - rule: self == oldSelf
     message: "AgentDiagnostic spec is immutable after creation"
-  # Correlation label immutability — must be locked separately;
-  # self == oldSelf does not cover metadata.labels
-  - rule: >
-      !has(oldSelf.metadata.labels) ||
-      !("aip.io/correlationID" in oldSelf.metadata.labels) ||
-      oldSelf.metadata.labels["aip.io/correlationID"] == self.metadata.labels["aip.io/correlationID"]
-    message: "aip.io/correlationID label is immutable after creation"
-  # spec.correlationID must match aip.io/correlationID label at creation
-  - rule: >
-      !has(self.metadata.labels) ||
-      !("aip.io/correlationID" in self.metadata.labels) ||
-      self.metadata.labels["aip.io/correlationID"] == self.spec.correlationID
-    message: "aip.io/correlationID label must match spec.correlationID"
 ```
+
+> **Note on label immutability**: CRD-level CEL validation cannot access `metadata.labels` — it is outside the CEL type environment for schema-level rules. The `aip.io/correlationID` label is protected by RBAC instead: agent service accounts are granted only `create`, making label updates impossible without elevated permissions.
 
 ### Standard Labels
 
