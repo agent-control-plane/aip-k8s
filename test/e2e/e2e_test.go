@@ -630,12 +630,18 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		It("should reject spec mutations after creation", func() {
-			By("attempting to mutate spec.summary — must be rejected")
-			cmd := exec.Command("kubectl", "patch", "agentdiagnostic", "e2e-diag-test",
+			By("confirming the AgentDiagnostic exists before testing immutability")
+			cmd := exec.Command("kubectl", "get", "agentdiagnostic", "e2e-diag-test", "-n", diagNS)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "AgentDiagnostic must exist before testing CEL immutability")
+
+			By("attempting to mutate spec.summary — must be rejected by CEL")
+			cmd = exec.Command("kubectl", "patch", "agentdiagnostic", "e2e-diag-test",
 				"-n", diagNS, "--type=merge",
 				"-p", `{"spec":{"summary":"mutated summary"}}`)
-			_, err := utils.Run(cmd)
+			out, err := utils.Run(cmd)
 			Expect(err).To(HaveOccurred(), "spec mutation should be rejected by CEL immutability rule")
+			Expect(out).To(ContainSubstring("immutable"), "rejection message should reference immutability")
 		})
 	})
 })

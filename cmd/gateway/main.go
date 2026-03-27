@@ -340,9 +340,9 @@ func (s *Server) handleCompletedAgentRequest(w http.ResponseWriter, r *http.Requ
 		"ActionSuccess", "Agent successfully completed the action")
 }
 
-// sanitizeForDNS converts an arbitrary string into a valid DNS label segment
-// suitable for use in GenerateName (max 57 chars to leave room for the suffix)
-// and as a Kubernetes label value (max 63 chars).
+// sanitizeDNSSegment converts an arbitrary string into a valid DNS label
+// segment suitable for use in GenerateName prefixes. maxLen should be 57 to
+// leave room for the API-server-generated suffix.
 var invalidDNSChars = regexp.MustCompile(`[^a-z0-9-]`)
 
 func sanitizeDNSSegment(s string, maxLen int) string {
@@ -351,8 +351,20 @@ func sanitizeDNSSegment(s string, maxLen int) string {
 	if len(s) > maxLen {
 		s = s[:maxLen]
 	}
-	// Trim leading/trailing hyphens that would make the label invalid.
 	s = strings.Trim(s, "-")
+	return s
+}
+
+// sanitizeLabelValue converts an arbitrary string into a valid Kubernetes label
+// value: allows [A-Za-z0-9], [-_.], max 63 chars, must begin/end alphanumeric.
+var invalidLabelChars = regexp.MustCompile(`[^A-Za-z0-9\-_.]`)
+
+func sanitizeLabelValue(s string) string {
+	s = invalidLabelChars.ReplaceAllString(s, "-")
+	if len(s) > 63 {
+		s = s[:63]
+	}
+	s = strings.Trim(s, "-_.")
 	return s
 }
 
@@ -378,22 +390,22 @@ func (s *Server) handleCreateAgentDiagnostic(w http.ResponseWriter, r *http.Requ
 		details = &apiextensionsv1.JSON{Raw: body.Details}
 	}
 
-	// Sanitize fields used in GenerateName and labels: GenerateName prefix must
-	// be a valid DNS segment; label values must be ≤63 chars and match
-	// Kubernetes label-value rules.
+	// GenerateName prefix must be a valid DNS segment.
+	// Label values use the looser Kubernetes label-value charset (allows _, .).
+	// Normalize independently so callers can see exactly which labels were stored.
 	safeIdentityForName := sanitizeDNSSegment(body.AgentIdentity, 57)
-	safeIdentityForLabel := sanitizeDNSSegment(body.AgentIdentity, 63)
-	safeCorrelationID := sanitizeDNSSegment(body.CorrelationID, 63)
-	safeDiagnosticType := sanitizeDNSSegment(body.DiagnosticType, 63)
+	labelAgentIdentity := sanitizeLabelValue(body.AgentIdentity)
+	labelCorrelationID := sanitizeLabelValue(body.CorrelationID)
+	labelDiagnosticType := sanitizeLabelValue(body.DiagnosticType)
 
 	diag := &v1alpha1.AgentDiagnostic{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("diag-%s-", safeIdentityForName),
 			Namespace:    ns,
 			Labels: map[string]string{
-				"aip.io/correlationID":  safeCorrelationID,
-				"aip.io/agentIdentity":  safeIdentityForLabel,
-				"aip.io/diagnosticType": safeDiagnosticType,
+				"aip.io/correlationID":  labelCorrelationID,
+				"aip.io/agentIdentity":  labelAgentIdentity,
+				"aip.io/diagnosticType": labelDiagnosticType,
 			},
 		},
 		Spec: v1alpha1.AgentDiagnosticSpec{
@@ -410,10 +422,17 @@ func (s *Server) handleCreateAgentDiagnostic(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Return normalized label values so callers can use them in label-selector
+	// queries without having to guess what normalization was applied.
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"name":      diag.Name,
 		"namespace": diag.Namespace,
 		"createdAt": diag.CreationTimestamp.Time,
+		"labels": map[string]string{
+			"aip.io/correlationID":  labelCorrelationID,
+			"aip.io/agentIdentity":  labelAgentIdentity,
+			"aip.io/diagnosticType": labelDiagnosticType,
+		},
 	})
 }
 
