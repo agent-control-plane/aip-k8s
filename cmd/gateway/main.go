@@ -378,19 +378,22 @@ func (s *Server) handleCreateAgentDiagnostic(w http.ResponseWriter, r *http.Requ
 		details = &apiextensionsv1.JSON{Raw: body.Details}
 	}
 
-	// Sanitize agentIdentity: GenerateName prefix must be a valid DNS segment;
-	// label values must be ≤63 chars and match Kubernetes label-value rules.
+	// Sanitize fields used in GenerateName and labels: GenerateName prefix must
+	// be a valid DNS segment; label values must be ≤63 chars and match
+	// Kubernetes label-value rules.
 	safeIdentityForName := sanitizeDNSSegment(body.AgentIdentity, 57)
 	safeIdentityForLabel := sanitizeDNSSegment(body.AgentIdentity, 63)
+	safeCorrelationID := sanitizeDNSSegment(body.CorrelationID, 63)
+	safeDiagnosticType := sanitizeDNSSegment(body.DiagnosticType, 63)
 
 	diag := &v1alpha1.AgentDiagnostic{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("diag-%s-", safeIdentityForName),
 			Namespace:    ns,
 			Labels: map[string]string{
-				"aip.io/correlationID":  body.CorrelationID,
+				"aip.io/correlationID":  safeCorrelationID,
 				"aip.io/agentIdentity":  safeIdentityForLabel,
-				"aip.io/diagnosticType": body.DiagnosticType,
+				"aip.io/diagnosticType": safeDiagnosticType,
 			},
 		},
 		Spec: v1alpha1.AgentDiagnosticSpec{
