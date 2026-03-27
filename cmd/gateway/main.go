@@ -242,6 +242,10 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := s.client.Create(r.Context(), agentReq); err != nil {
+		if apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) || apierrors.IsAlreadyExists(err) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid AgentRequest: %v", err))
+			return
+		}
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to create AgentRequest: %v", err))
 		return
 	}
@@ -418,6 +422,10 @@ func (s *Server) handleCreateAgentDiagnostic(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := s.client.Create(r.Context(), diag); err != nil {
+		if apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) || apierrors.IsAlreadyExists(err) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid AgentDiagnostic: %v", err))
+			return
+		}
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to create AgentDiagnostic: %v", err))
 		return
 	}
