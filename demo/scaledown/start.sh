@@ -77,7 +77,7 @@ echo "  ✓ Controller running (PID $(cat /tmp/aip-controller.pid))"
 
 echo "[ 4/4 ] Starting AIP Gateway and Dashboard..."
 cd "${ROOT_DIR}"
-go run ./demo/gateway/main.go --addr=":${GATEWAY_PORT}" \
+go run ./cmd/gateway --addr=":${GATEWAY_PORT}" \
   > "${GATEWAY_LOG}" 2>&1 &
 echo $! > /tmp/aip-gateway.pid
 

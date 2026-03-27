@@ -8,7 +8,7 @@ echo "=== AIP OpsLock Demo: Distributed Concurrency Control ==="
 # 1. Check if gateway is running
 if ! curl -sf "$GATEWAY_URL/healthz" > /dev/null; then
   echo "❌ Error: Demo Gateway is not running at $GATEWAY_URL"
-  echo "Please start it with: go run demo/gateway/main.go"
+  echo "Please start it with: go run cmd/gateway/main.go"
   exit 1
 fi
 
