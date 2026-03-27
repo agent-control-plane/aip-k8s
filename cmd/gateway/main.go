@@ -163,6 +163,44 @@ func main() {
 	}
 }
 
+func buildCascadeModel(body *createAgentRequestBody) *v1alpha1.CascadeModel {
+	if body.CascadeModel == nil || len(body.CascadeModel.AffectedTargets) == 0 {
+		return nil
+	}
+	affected := make([]v1alpha1.AffectedTarget, len(body.CascadeModel.AffectedTargets))
+	for i, t := range body.CascadeModel.AffectedTargets {
+		affected[i] = v1alpha1.AffectedTarget{URI: t.URI, EffectType: t.EffectType}
+	}
+	cm := &v1alpha1.CascadeModel{AffectedTargets: affected}
+	if body.CascadeModel.ModelSourceTrust != "" {
+		cm.ModelSourceTrust = &body.CascadeModel.ModelSourceTrust
+	}
+	if body.CascadeModel.ModelSourceID != "" {
+		cm.ModelSourceID = &body.CascadeModel.ModelSourceID
+	}
+	return cm
+}
+
+func buildReasoningTrace(body *createAgentRequestBody) *v1alpha1.ReasoningTrace {
+	if body.ReasoningTrace == nil {
+		return nil
+	}
+	rt := &v1alpha1.ReasoningTrace{}
+	if body.ReasoningTrace.ConfidenceScore > 0 {
+		rt.ConfidenceScore = &body.ReasoningTrace.ConfidenceScore
+	}
+	if len(body.ReasoningTrace.ComponentConfidence) > 0 {
+		rt.ComponentConfidence = body.ReasoningTrace.ComponentConfidence
+	}
+	if body.ReasoningTrace.TraceReference != "" {
+		rt.TraceReference = &body.ReasoningTrace.TraceReference
+	}
+	if len(body.ReasoningTrace.Alternatives) > 0 {
+		rt.Alternatives = body.ReasoningTrace.Alternatives
+	}
+	return rt
+}
+
 func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request) {
 	var body createAgentRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -180,44 +218,6 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		ns = defaultNamespace
 	}
 
-	var cascadeModel *v1alpha1.CascadeModel
-	if body.CascadeModel != nil && len(body.CascadeModel.AffectedTargets) > 0 {
-		affected := make([]v1alpha1.AffectedTarget, len(body.CascadeModel.AffectedTargets))
-		for i, t := range body.CascadeModel.AffectedTargets {
-			affected[i] = v1alpha1.AffectedTarget{
-				URI:        t.URI,
-				EffectType: t.EffectType,
-			}
-		}
-		cascadeModel = &v1alpha1.CascadeModel{
-			AffectedTargets: affected,
-		}
-		if body.CascadeModel.ModelSourceTrust != "" {
-			cascadeModel.ModelSourceTrust = &body.CascadeModel.ModelSourceTrust
-		}
-		if body.CascadeModel.ModelSourceID != "" {
-			cascadeModel.ModelSourceID = &body.CascadeModel.ModelSourceID
-		}
-	}
-
-	var reasoningTrace *v1alpha1.ReasoningTrace
-	if body.ReasoningTrace != nil {
-		rt := &v1alpha1.ReasoningTrace{}
-		if body.ReasoningTrace.ConfidenceScore > 0 {
-			rt.ConfidenceScore = &body.ReasoningTrace.ConfidenceScore
-		}
-		if len(body.ReasoningTrace.ComponentConfidence) > 0 {
-			rt.ComponentConfidence = body.ReasoningTrace.ComponentConfidence
-		}
-		if body.ReasoningTrace.TraceReference != "" {
-			rt.TraceReference = &body.ReasoningTrace.TraceReference
-		}
-		if len(body.ReasoningTrace.Alternatives) > 0 {
-			rt.Alternatives = body.ReasoningTrace.Alternatives
-		}
-		reasoningTrace = rt
-	}
-
 	var parameters *apiextensionsv1.JSON
 	if len(body.Parameters) > 0 && string(body.Parameters) != "null" {
 		parameters = &apiextensionsv1.JSON{Raw: body.Parameters}
@@ -233,8 +233,8 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 			Action:         body.Action,
 			Target:         v1alpha1.Target{URI: body.TargetURI},
 			Reason:         body.Reason,
-			CascadeModel:   cascadeModel,
-			ReasoningTrace: reasoningTrace,
+			CascadeModel:   buildCascadeModel(&body),
+			ReasoningTrace: buildReasoningTrace(&body),
 			Parameters:     parameters,
 			ExecutionMode:  body.ExecutionMode,
 			ScopeBounds:    body.ScopeBounds,
