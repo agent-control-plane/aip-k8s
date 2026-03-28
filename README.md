@@ -84,6 +84,75 @@ make deploy IMG=<some-registry>/aip-k8s:tag
 
 > **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin privileges.
 
+## Gateway API
+
+The AIP gateway (`cmd/gateway`) is the HTTP interface for agent clients. It runs as a standalone binary alongside the controller and translates HTTP requests into Kubernetes CRD operations — agents do not need `kubectl` or a kubeconfig.
+
+### Starting the gateway
+
+```sh
+# Build
+make build-gateway
+
+# Run locally (uses ~/.kube/config by default)
+./bin/gateway --addr :8080
+```
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/agent-requests` | Submit an AgentRequest. Blocks (up to 90s) until the control plane reaches a terminal phase, then returns the result. |
+| `GET` | `/agent-requests/{name}` | Poll an AgentRequest by name. |
+| `POST` | `/agent-diagnostics` | Record an agent observation before acting. Returns the generated resource name and the normalized label values written to Kubernetes. |
+| `GET` | `/agent-diagnostics/{name}` | Retrieve a diagnostic record by name. |
+
+All endpoints accept and return `application/json`. Pass `?namespace=<ns>` to target a namespace other than `default`.
+
+### Example: record a diagnostic, then submit an intent
+
+```sh
+# 1. Record what the agent observed
+curl -s -X POST http://localhost:8080/agent-diagnostics \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agentIdentity": "sre-agent-v1",
+    "diagnosticType": "diagnosis",
+    "correlationID": "incident-abc123",
+    "summary": "OOMKilled on payment-api (3x in 10 min). Recommending restart.",
+    "namespace": "production"
+  }'
+# Response includes the generated name and the exact label values stored,
+# so you can use them in label-selector queries without guessing normalization:
+# { "name": "diag-sre-agent-v1-x7k9p", "labels": { "aip.io/correlationID": "incident-abc123", ... } }
+
+# 2. Submit the intent carrying the same correlationID
+curl -s -X POST http://localhost:8080/agent-requests \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agentIdentity": "sre-agent-v1",
+    "action": "restart",
+    "targetURI": "k8s://production/deployment/payment-api",
+    "reason": "OOMKilled 3 times in 10 minutes. Diagnostic: diag-sre-agent-v1-x7k9p",
+    "namespace": "production"
+  }'
+```
+
+### Querying the full incident chain
+
+Both the `AgentDiagnostic` and the subsequent `AgentRequest` carry the same `aip.io/correlationID` label. Retrieve the complete chain with a single command:
+
+```sh
+kubectl get agentdiagnostics,agentrequests,auditrecords \
+  -n production \
+  -l aip.io/correlationID=incident-abc123 \
+  --sort-by=.metadata.creationTimestamp
+```
+
+### Security
+
+Transport-layer security (mTLS, per-agent `AuthorizationPolicy`, rate limiting) is intended to be handled by a service mesh such as Istio placed in front of the gateway. Application-level auth is intentionally omitted — see the OSS Scope table below.
+
 ## Testing
 This project uses `envtest` for rapid integration testing without a full cluster.
 ```sh
