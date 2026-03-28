@@ -363,6 +363,7 @@ var _ = Describe("AgentRequest Controller", func() {
 			_ = k8sClient.Delete(ctx, agentReq1)
 			_ = k8sClient.Delete(ctx, agentReq2)
 		})
+
 	})
 })
 

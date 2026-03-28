@@ -27,13 +27,24 @@ import (
 )
 
 var (
-	addr = flag.String("addr", ":8080", "The address to listen on for HTTP requests")
+	addr        = flag.String("addr", ":8080", "The address to listen on for HTTP requests")
+	dedupWindow = flag.Duration("dedup-window", 24*time.Hour,
+		"Window within which duplicate active AgentRequests (same agentIdentity, action, targetURI) are rejected with 409. Set to 0 to disable.")
 )
 
 const defaultNamespace = "default"
 
+// terminalPhases are AgentRequest phases that represent a resolved request.
+// Requests in these phases do not block a new attempt for the same intent.
+var terminalPhases = map[string]bool{
+	"Denied":    true,
+	"Completed": true,
+	"Failed":    true,
+}
+
 type Server struct {
-	client client.Client
+	client      client.Client
+	dedupWindow time.Duration
 }
 
 type affectedTargetBody struct {
@@ -143,7 +154,7 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	server := &Server{client: k8sClient}
+	server := &Server{client: k8sClient, dedupWindow: *dedupWindow}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -239,6 +250,34 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 			ExecutionMode:  body.ExecutionMode,
 			ScopeBounds:    body.ScopeBounds,
 		},
+	}
+
+	// Dedup check: reject before creating if an active request for the same
+	// (agentIdentity, action, targetURI) exists within the window.
+	if s.dedupWindow > 0 {
+		var existing v1alpha1.AgentRequestList
+		if err := s.client.List(r.Context(), &existing, client.InNamespace(ns)); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to check for duplicate requests: %v", err))
+			return
+		}
+		cutoff := time.Now().Add(-s.dedupWindow)
+		for _, req := range existing.Items {
+			if terminalPhases[req.Status.Phase] {
+				continue
+			}
+			if req.CreationTimestamp.Time.Before(cutoff) {
+				continue
+			}
+			if req.Spec.AgentIdentity == body.AgentIdentity &&
+				req.Spec.Action == body.Action &&
+				req.Spec.Target.URI == body.TargetURI {
+				writeError(w, http.StatusConflict, fmt.Sprintf(
+					"duplicate request: an active request for the same agent, action, and target already exists (created %s ago)",
+					time.Since(req.CreationTimestamp.Time).Round(time.Second),
+				))
+				return
+			}
+		}
 	}
 
 	if err := s.client.Create(r.Context(), agentReq); err != nil {
