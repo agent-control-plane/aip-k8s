@@ -224,16 +224,16 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		parameters = &apiextensionsv1.JSON{Raw: body.Parameters}
 	}
 
-	labels := map[string]string{}
+	reqLabels := map[string]string{}
 	if body.CorrelationID != "" {
-		labels["aip.io/correlationID"] = sanitizeLabelValue(body.CorrelationID)
+		reqLabels["aip.io/correlationID"] = sanitizeLabelValue(body.CorrelationID)
 	}
 
 	agentReq := &v1alpha1.AgentRequest{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("%s-", sanitizeDNSSegment(body.AgentIdentity, 57)),
 			Namespace:    ns,
-			Labels:       labels,
+			Labels:       reqLabels,
 		},
 		Spec: v1alpha1.AgentRequestSpec{
 			AgentIdentity:  body.AgentIdentity,
@@ -282,6 +282,7 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 				phase == v1alpha1.PhaseCompleted || phase == v1alpha1.PhaseFailed {
 				writeJSON(w, http.StatusCreated, map[string]any{
 					"name":                     current.Name,
+					"labels":                   reqLabels,
 					"phase":                    current.Status.Phase,
 					"denial":                   current.Status.Denial,
 					"conditions":               current.Status.Conditions,
@@ -296,6 +297,7 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 				meta.IsStatusConditionTrue(current.Status.Conditions, v1alpha1.ConditionRequiresApproval) {
 				writeJSON(w, http.StatusCreated, map[string]any{
 					"name":                     current.Name,
+					"labels":                   reqLabels,
 					"phase":                    current.Status.Phase,
 					"conditions":               current.Status.Conditions,
 					"controlPlaneVerification": current.Status.ControlPlaneVerification,

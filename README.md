@@ -144,7 +144,7 @@ curl -s -X POST http://localhost:8080/agent-requests \
 
 ### Querying the full incident chain
 
-When a `correlationID` is supplied to both `POST /agent-diagnostics` and `POST /agent-requests`, the gateway stamps `aip.io/correlationID` on both resources as a label. Retrieve the complete chain with a single command:
+When a `correlationID` is supplied to both `POST /agent-diagnostics` and `POST /agent-requests`, the gateway stamps `aip.io/correlationID` on both resources as a label. The controller automatically propagates that label to every `AuditRecord` emitted for the request. Retrieve the complete chain with a single command:
 
 ```sh
 kubectl get agentdiagnostics,agentrequests,auditrecords \

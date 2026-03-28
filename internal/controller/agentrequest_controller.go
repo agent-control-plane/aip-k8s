@@ -636,10 +636,16 @@ func (r *AgentRequestReconciler) releaseLock(ctx context.Context, req *governanc
 
 // emitAuditRecord creates a new AuditRecord CR
 func (r *AgentRequestReconciler) emitAuditRecord(ctx context.Context, req *governancev1alpha1.AgentRequest, eventType string, fromPhase string, toPhase string) error {
+	auditLabels := map[string]string{}
+	if corrID, ok := req.Labels["aip.io/correlationID"]; ok && corrID != "" {
+		auditLabels["aip.io/correlationID"] = corrID
+	}
+
 	audit := &governancev1alpha1.AuditRecord{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: req.Name + "-audit-",
 			Namespace:    req.Namespace,
+			Labels:       auditLabels,
 		},
 		Spec: governancev1alpha1.AuditRecordSpec{
 			Timestamp:       metav1.NewTime(r.now()),
