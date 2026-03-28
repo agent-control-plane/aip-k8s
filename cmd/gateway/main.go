@@ -37,9 +37,9 @@ const defaultNamespace = "default"
 // terminalPhases are AgentRequest phases that represent a resolved request.
 // Requests in these phases do not block a new attempt for the same intent.
 var terminalPhases = map[string]bool{
-	"Denied":    true,
-	"Completed": true,
-	"Failed":    true,
+	v1alpha1.PhaseDenied:    true,
+	v1alpha1.PhaseCompleted: true,
+	v1alpha1.PhaseFailed:    true,
 }
 
 type Server struct {
@@ -215,6 +215,12 @@ func buildReasoningTrace(body *createAgentRequestBody) *v1alpha1.ReasoningTrace 
 // checkDuplicate returns a non-nil error and writes a 409 if an active request
 // for the same (agentIdentity, action, targetURI) exists within the dedup window.
 // Returns nil (and writes nothing) when no duplicate is found or dedup is disabled.
+//
+// Note: the List→Create sequence is not atomic. Concurrent requests with the
+// same key can both pass this check and both be created. This is intentional:
+// dedup provides best-effort protection against reconciliation-loop floods, not
+// a hard mutual-exclusion guarantee. A strict guarantee would require a
+// ValidatingAdmissionWebhook or a unique server-side constraint.
 func (s *Server) checkDuplicate(
 	r *http.Request, agentIdentity, action, targetURI, ns string, w http.ResponseWriter,
 ) error {
