@@ -1,0 +1,29 @@
+# Default values for aip-k8s.
+
+controller:
+  image:
+    repository: ghcr.io/ravisantoshgudimetla/aip-k8s/controller
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+
+gateway:
+  image:
+    repository: ghcr.io/ravisantoshgudimetla/aip-k8s/gateway
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  dedupWindow: 24h
+  service:
+    type: ClusterIP
+    port: 8080
+
+dashboard:
+  image:
+    repository: ghcr.io/ravisantoshgudimetla/aip-k8s/dashboard
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 8082

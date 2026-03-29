@@ -161,7 +161,16 @@ func main() {
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
+		_, _ = fmt.Fprint(w, "ok")
+	})
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		var list v1alpha1.AgentRequestList
+		if err := k8sClient.List(r.Context(), &list, client.Limit(1)); err != nil {
+			http.Error(w, "k8s api unavailable: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "ok")
 	})
 	mux.HandleFunc("GET /agent-requests", server.handleListAgentRequests)
 	mux.HandleFunc("POST /agent-requests", server.handleCreateAgentRequest)

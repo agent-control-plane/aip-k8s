@@ -52,6 +52,11 @@ func main() {
 		})
 	}
 
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "ok")
+	})
+
 	// All /api/* requests are proxied to the gateway (strip /api prefix).
 	mux.HandleFunc("/api/", server.proxyToGateway)
 

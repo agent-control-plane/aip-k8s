@@ -1,0 +1,6 @@
+apiVersion: v2
+name: aip-k8s
+description: Agent Intent Protocol Control Plane, Gateway, and Dashboard
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
