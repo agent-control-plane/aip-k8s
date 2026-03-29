@@ -34,7 +34,7 @@ echo "  ✓ Gateway running"
 echo "[ 3/6 ] Checking AIP Dashboard at ${DASHBOARD_URL}..."
 if ! curl -sf "${DASHBOARD_URL}" > /dev/null 2>&1; then
   echo "  ✗ Dashboard not running. Start it:"
-  echo "    go run ${ROOT_DIR}/demo/dashboard/main.go"
+  echo "    go run ${ROOT_DIR}/cmd/dashboard/main.go"
   exit 1
 fi
 echo "  ✓ Dashboard running"

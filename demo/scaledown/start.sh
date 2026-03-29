@@ -81,7 +81,7 @@ go run ./cmd/gateway --addr=":${GATEWAY_PORT}" \
   > "${GATEWAY_LOG}" 2>&1 &
 echo $! > /tmp/aip-gateway.pid
 
-go run ./demo/dashboard/main.go --port="${DASHBOARD_PORT}" \
+go run ./cmd/dashboard/main.go --port="${DASHBOARD_PORT}" \
   > "${DASHBOARD_LOG}" 2>&1 &
 echo $! > /tmp/aip-dashboard.pid
 
