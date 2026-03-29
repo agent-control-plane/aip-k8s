@@ -96,6 +96,7 @@ func main() {
 	mux.HandleFunc("/api/agent-requests", server.handleListAgentRequests)
 	mux.HandleFunc("/api/agent-requests/", server.handleAgentRequestAction)
 	mux.HandleFunc("/api/audit-records", server.handleListAuditRecords)
+	mux.HandleFunc("/api/agent-diagnostics", server.handleListAgentDiagnostics)
 
 	// Explicitly serve index.html for the root
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -141,6 +142,40 @@ func (s *DashboardServer) handleListAgentRequests(w http.ResponseWriter, r *http
 	}
 
 	data, err := json.Marshal(list.Items)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(data)
+}
+
+func (s *DashboardServer) handleListAgentDiagnostics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	namespace := r.URL.Query().Get("namespace")
+	if namespace == "" {
+		namespace = defaultNamespace
+	}
+	agentIdentity := r.URL.Query().Get("agentIdentity")
+
+	var list governancev1alpha1.AgentDiagnosticList
+	if err := s.client.List(context.Background(), &list, client.InNamespace(namespace)); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	results := []governancev1alpha1.AgentDiagnostic{}
+	for _, item := range list.Items {
+		if agentIdentity == "" || item.Spec.AgentIdentity == agentIdentity {
+			results = append(results, item)
+		}
+	}
+
+	data, err := json.Marshal(results)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

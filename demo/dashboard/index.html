@@ -15,32 +15,63 @@
             <h1>AIP Visual Audit</h1>
             <div id="connection-status" class="badge badge-completed">Live</div>
         </header>
+        
+        <nav class="tab-bar">
+            <button id="tab-requests" class="tab-button active" onclick="showTab('requests')">Agent Requests</button>
+            <button id="tab-diagnostics" class="tab-button" onclick="showTab('diagnostics')">Diagnostics</button>
+        </nav>
 
-        <div class="dashboard-grid">
-            <aside class="card">
-                <div class="card-header">
-                    <h3>Agent Requests</h3>
-                </div>
-                <div id="request-list" class="request-list">
-                    <!-- Request items will be injected here -->
-                    <div class="empty-state">Loading requests...</div>
-                </div>
-            </aside>
-
-            <main class="card">
-                <div id="details-view" class="details-view">
-                    <div class="empty-state">
-                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path>
-                            <polyline points="14 2 14 8 20 8"></polyline>
-                            <line x1="16" y1="13" x2="8" y2="13"></line>
-                            <line x1="16" y1="17" x2="8" y2="17"></line>
-                            <line x1="10" y1="9" x2="8" y2="9"></line>
-                        </svg>
-                        <p>Select an AgentRequest to view details</p>
+        <div id="requests-view">
+            <div class="dashboard-grid">
+                <aside class="card">
+                    <div class="card-header">
+                        <h3>Agent Requests</h3>
                     </div>
-                </div>
-            </main>
+                    <div id="request-list" class="request-list">
+                        <!-- Request items will be injected here -->
+                        <div class="empty-state">Loading requests...</div>
+                    </div>
+                </aside>
+
+                <main class="card">
+                    <div id="details-view" class="details-view">
+                        <div class="empty-state">
+                            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path>
+                                <polyline points="14 2 14 8 20 8"></polyline>
+                                <line x1="16" y1="13" x2="8" y2="13"></line>
+                                <line x1="16" y1="17" x2="8" y2="17"></line>
+                                <line x1="10" y1="9" x2="8" y2="9"></line>
+                            </svg>
+                            <p>Select an AgentRequest to view details</p>
+                        </div>
+                    </div>
+                </main>
+            </div>
+        </div>
+
+        <div id="diagnostics-view" style="display:none">
+            <div class="diagnostics-table-container">
+                <table class="diagnostics-table">
+                    <thead>
+                        <tr>
+                            <th>Age</th>
+                            <th>Agent Identity</th>
+                            <th>Type</th>
+                            <th>Correlation ID</th>
+                            <th>Summary</th>
+                            <th>Details</th>
+                        </tr>
+                    </thead>
+                    <tbody id="diagnostics-list">
+                        <tr class="empty-state-row">
+                            <td colspan="6" style="text-align: center; padding: 2rem; color: var(--text-secondary);">
+                                Loading diagnostics...
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
     <script src="app.js"></script>

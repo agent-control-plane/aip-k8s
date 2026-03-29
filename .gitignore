@@ -18,7 +18,7 @@ Dockerfile.cross
 # Internal planning and roadmap docs (not part of OSS release)
 control_plane_implementation.md
 implementation_phases.md
-implementation_plan.md
+#implementation_plan.md
 cncf-sandbox-proposal.md
 spec_old.md
 
@@ -46,7 +46,8 @@ go.work
 
 # Kubeconfig might contain secrets
 *.kubeconfig
-dashboard
+demo/dashboard/dashboard
+/dashboard
 demo.tape
 demo/scaledown/claude-agent-go/claude-agent
 demo/scaledown/claude-agent-go/claude-agent-go

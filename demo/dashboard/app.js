@@ -1,7 +1,9 @@
 const state = {
     requests: [],
     selectedRequest: null,
-    auditRecords: []
+    auditRecords: [],
+    diagnostics: [],
+    namespace: 'default'
 };
 
 async function fetchRequests() {
@@ -145,6 +147,107 @@ function renderList() {
             </div>
         `;
     }).join('');
+}
+
+window.showTab = function(tabName) {
+    const requestsView = document.getElementById('requests-view');
+    const diagnosticsView = document.getElementById('diagnostics-view');
+    const tabRequests = document.getElementById('tab-requests');
+    const tabDiagnostics = document.getElementById('tab-diagnostics');
+
+    if (tabName === 'requests') {
+        requestsView.style.display = 'block';
+        diagnosticsView.style.display = 'none';
+        tabRequests.classList.add('active');
+        tabDiagnostics.classList.remove('active');
+    } else {
+        requestsView.style.display = 'none';
+        diagnosticsView.style.display = 'block';
+        tabRequests.classList.remove('active');
+        tabDiagnostics.classList.add('active');
+        loadDiagnostics();
+    }
+};
+
+window.loadDiagnostics = async function() {
+    try {
+        const response = await fetch(`/api/agent-diagnostics?namespace=${state.namespace}`);
+        if (!response.ok) throw new Error('Failed to fetch diagnostics');
+        state.diagnostics = await response.json();
+        renderDiagnostics();
+    } catch (err) {
+        console.error('Error fetching diagnostics:', err);
+    }
+};
+
+function renderDiagnostics() {
+    const listEl = document.getElementById('diagnostics-list');
+    if (!listEl) return;
+
+    if (state.diagnostics.length === 0) {
+        listEl.innerHTML = `
+            <tr>
+                <td colspan="6" style="text-align: center; padding: 3rem; color: var(--text-secondary);">
+                    No diagnostics found in namespace "${state.namespace}"
+                </td>
+            </tr>
+        `;
+        return;
+    }
+
+    const sorted = [...state.diagnostics].sort((a, b) => 
+        new Date(b.metadata.creationTimestamp) - new Date(a.metadata.creationTimestamp)
+    );
+
+    listEl.innerHTML = sorted.map(diag => {
+        const age = formatAge(diag.metadata.creationTimestamp);
+        const detailsId = `details-${diag.metadata.name}`;
+        const hasDetails = diag.spec.details && Object.keys(diag.spec.details).length > 0;
+        
+        return `
+            <tr>
+                <td style="white-space: nowrap; color: var(--text-secondary);">${age}</td>
+                <td><span class="chip">${diag.spec.agentIdentity}</span></td>
+                <td><span class="badge ${getDiagnosticTypeClass(diag.spec.diagnosticType)}">${diag.spec.diagnosticType}</span></td>
+                <td><span class="chip">${diag.spec.correlationID}</span></td>
+                <td style="max-width: 300px;">${diag.spec.summary}</td>
+                <td>
+                    ${hasDetails ? 
+                        `<button class="details-btn" onclick="toggleDetails('${detailsId}')">View</button>
+                         <div id="${detailsId}" class="details-json" style="display:none">${JSON.stringify(diag.spec.details, null, 2)}</div>` 
+                        : '<span style="color: var(--text-secondary); font-size: 0.8rem;">None</span>'}
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function getDiagnosticTypeClass(type) {
+    const t = type.toLowerCase();
+    if (t.includes('error') || t.includes('fail')) return 'badge-failed';
+    if (t.includes('warn')) return 'badge-denied';
+    if (t.includes('success') || t.includes('observation') || t.includes('diagnosis')) return 'badge-completed';
+    return 'badge-executing';
+}
+
+window.toggleDetails = function(id) {
+    const el = document.getElementById(id);
+    if (el) {
+        el.style.display = el.style.display === 'none' ? 'block' : 'none';
+        const btn = el.previousElementSibling;
+        if (btn) btn.textContent = el.style.display === 'none' ? 'View' : 'Hide';
+    }
+};
+
+function formatAge(timestamp) {
+    const created = new Date(timestamp);
+    const now = new Date();
+    const diff = Math.floor((now - created) / 1000);
+
+    if (diff < 60) return diff + 's';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h';
+    return Math.floor(diff / 86400) + 'd';
 }
 
 window.selectRequestById = (name) => {
@@ -473,3 +576,4 @@ function renderDetails() {
 
 fetchRequests();
 setInterval(fetchRequests, 3000);
+setInterval(loadDiagnostics, 3000);
