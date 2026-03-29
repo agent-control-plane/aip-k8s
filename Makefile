@@ -311,7 +311,7 @@ build-demo: build-gateway build-dashboard ## Build gateway and dashboard binarie
 .PHONY: demo-up
 demo-up: build-demo ## Start the demo: gateway (:8080) and dashboard (:8082).
 	@bin/gateway & echo $$! > $(GATEWAY_PID_FILE); echo "Gateway    started on http://localhost:8080 (PID $$(cat $(GATEWAY_PID_FILE)))"
-	@bin/dashboard --static-dir cmd/dashboard & echo $$! > $(DASHBOARD_PID_FILE); echo "Dashboard  started on http://localhost:8082 (PID $$(cat $(DASHBOARD_PID_FILE)))"
+	@bin/dashboard --static-dir cmd/dashboard --gateway-url http://localhost:8080 & echo $$! > $(DASHBOARD_PID_FILE); echo "Dashboard  started on http://localhost:8082 (PID $$(cat $(DASHBOARD_PID_FILE)))"
 
 .PHONY: demo-down
 demo-down: ## Stop gateway and dashboard.

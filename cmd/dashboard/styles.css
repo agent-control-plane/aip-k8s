@@ -253,9 +253,7 @@ button.danger:hover {
     margin-bottom: -1px;
 }
 
-.tab-button:hover {
-    color: var(--text-primary);
-}
+.tab-button:hover { color: var(--text-primary); }
 
 .tab-button.active {
     color: var(--accent-color);
@@ -293,9 +291,7 @@ button.danger:hover {
     vertical-align: top;
 }
 
-.diagnostics-table tr:hover {
-    background: rgba(255, 255, 255, 0.02);
-}
+.diagnostics-table tr:hover { background: rgba(255, 255, 255, 0.02); }
 
 .chip {
     font-family: 'JetBrains Mono', monospace;
@@ -317,9 +313,7 @@ button.danger:hover {
     cursor: pointer;
 }
 
-.details-btn:hover {
-    background: rgba(59, 130, 246, 0.2);
-}
+.details-btn:hover { background: rgba(59, 130, 246, 0.2); }
 
 .details-json {
     margin-top: 0.5rem;

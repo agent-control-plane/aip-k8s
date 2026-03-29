@@ -1,60 +1,31 @@
-/*
-Copyright 2026.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
-
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/config"
-
-	governancev1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
+	"time"
 )
 
-var scheme = runtime.NewScheme()
-
-const defaultNamespace = "default"
-
-func init() {
-	_ = clientgoscheme.AddToScheme(scheme)
-	_ = governancev1alpha1.AddToScheme(scheme)
-}
-
 type DashboardServer struct {
-	client    client.Client
-	port      int
-	staticDir string
+	gatewayURL string
+	port       int
+	staticDir  string
+	httpClient *http.Client
 }
 
 func main() {
 	var port int
 	var staticDir string
+	var gatewayURL string
 	flag.IntVar(&port, "port", 8082, "Port to run the dashboard on")
 	flag.StringVar(&staticDir, "static-dir", "cmd/dashboard",
 		"Directory containing static frontend files (index.html, app.js, styles.css)")
+	flag.StringVar(&gatewayURL, "gateway-url", "http://localhost:8080", "The base URL of the AIP gateway")
 	flag.Parse()
 
 	absStaticDir, err := filepath.Abs(staticDir)
@@ -62,20 +33,13 @@ func main() {
 		log.Fatalf("Invalid static-dir %q: %v", staticDir, err)
 	}
 
-	cfg, err := config.GetConfig()
-	if err != nil {
-		log.Fatalf("Failed to get kubeconfig: %v", err)
-	}
-
-	c, err := client.New(cfg, client.Options{Scheme: scheme})
-	if err != nil {
-		log.Fatalf("Failed to create client: %v", err)
-	}
-
 	server := &DashboardServer{
-		client:    c,
-		port:      port,
-		staticDir: absStaticDir,
+		gatewayURL: strings.TrimRight(gatewayURL, "/"),
+		port:       port,
+		staticDir:  absStaticDir,
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+		},
 	}
 
 	mux := http.NewServeMux()
@@ -88,10 +52,8 @@ func main() {
 		})
 	}
 
-	mux.HandleFunc("/api/agent-requests", server.handleListAgentRequests)
-	mux.HandleFunc("/api/agent-requests/", server.handleAgentRequestAction)
-	mux.HandleFunc("/api/audit-records", server.handleListAuditRecords)
-	mux.HandleFunc("/api/agent-diagnostics", server.handleListAgentDiagnostics)
+	// All /api/* requests are proxied to the gateway (strip /api prefix).
+	mux.HandleFunc("/api/", server.proxyToGateway)
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -103,7 +65,7 @@ func main() {
 	})
 
 	fmt.Printf("AIP Visual Audit Dashboard starting on http://localhost:%d\n", port)
-	fmt.Printf("Serving static files from: %s\n", absStaticDir)
+	fmt.Printf("Proxying API calls to gateway: %s\n", server.gatewayURL)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), logMiddleware(mux)))
 }
 
@@ -117,190 +79,35 @@ func (sr *statusRecorder) WriteHeader(code int) {
 	sr.ResponseWriter.WriteHeader(code)
 }
 
-func (s *DashboardServer) handleListAgentRequests(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
+// proxyToGateway forwards /api/* requests to the gateway by stripping the
+// /api prefix. Example: /api/agent-requests?namespace=X → {gatewayURL}/agent-requests?namespace=X
+func (s *DashboardServer) proxyToGateway(w http.ResponseWriter, r *http.Request) {
+	targetPath := strings.TrimPrefix(r.URL.Path, "/api")
+	targetURL := s.gatewayURL + targetPath
+	if r.URL.RawQuery != "" {
+		targetURL += "?" + r.URL.RawQuery
 	}
 
-	namespace := r.URL.Query().Get("namespace")
-	if namespace == "" {
-		namespace = defaultNamespace
-	}
-
-	var list governancev1alpha1.AgentRequestList
-	if err := s.client.List(r.Context(), &list, client.InNamespace(namespace)); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	data, err := json.Marshal(list.Items)
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(data)
-}
 
-//nolint:dupl // same HTTP boilerplate as handleListAuditRecords but different types
-func (s *DashboardServer) handleListAgentDiagnostics(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		req.Header.Set("Content-Type", ct)
 	}
 
-	namespace := r.URL.Query().Get("namespace")
-	if namespace == "" {
-		namespace = defaultNamespace
-	}
-	agentIdentity := r.URL.Query().Get("agentIdentity")
-
-	var list governancev1alpha1.AgentDiagnosticList
-	if err := s.client.List(r.Context(), &list, client.InNamespace(namespace)); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	results := []governancev1alpha1.AgentDiagnostic{}
-	for _, item := range list.Items {
-		if agentIdentity == "" || item.Spec.AgentIdentity == agentIdentity {
-			results = append(results, item)
-		}
-	}
-
-	data, err := json.Marshal(results)
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(data)
-}
+	defer func() { _ = resp.Body.Close() }()
 
-//nolint:dupl // same HTTP boilerplate as handleListAgentDiagnostics but different types
-func (s *DashboardServer) handleListAuditRecords(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
+	if resp.StatusCode == http.StatusOK && r.Method == http.MethodGet {
+		w.Header().Set("Content-Type", "application/json")
 	}
-
-	namespace := r.URL.Query().Get("namespace")
-	if namespace == "" {
-		namespace = defaultNamespace
-	}
-	reqName := r.URL.Query().Get("agentRequest")
-
-	var list governancev1alpha1.AuditRecordList
-	if err := s.client.List(r.Context(), &list, client.InNamespace(namespace)); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	results := []governancev1alpha1.AuditRecord{}
-	for _, item := range list.Items {
-		if reqName == "" || item.Spec.AgentRequestRef == reqName {
-			results = append(results, item)
-		}
-	}
-
-	data, err := json.Marshal(results)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(data)
-}
-
-func (s *DashboardServer) handleAgentRequestAction(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/agent-requests/"), "/")
-	if len(parts) < 2 {
-		http.Error(w, "Invalid path", http.StatusBadRequest)
-		return
-	}
-
-	name := parts[0]
-	action := parts[1]
-	namespace := r.URL.Query().Get("namespace")
-	if namespace == "" {
-		namespace = defaultNamespace
-	}
-
-	var decision string
-	switch action {
-	case "approve":
-		decision = "approved"
-	case "deny":
-		decision = "denied"
-	default:
-		http.Error(w, "Invalid action", http.StatusBadRequest)
-		return
-	}
-
-	var body struct {
-		Reason string `json:"reason"`
-	}
-	if r.Header.Get("Content-Type") == "application/json" {
-		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
-	}
-
-	ctx := r.Context()
-	nn := types.NamespacedName{Name: name, Namespace: namespace}
-
-	var agentReq governancev1alpha1.AgentRequest
-	if err := s.client.Get(ctx, nn, &agentReq); err != nil {
-		log.Printf("ERROR get %s/%s: %v", namespace, name, err)
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-
-	currentPhase := agentReq.Status.Phase
-	if currentPhase == governancev1alpha1.PhaseApproved ||
-		currentPhase == governancev1alpha1.PhaseDenied ||
-		currentPhase == governancev1alpha1.PhaseCompleted ||
-		currentPhase == governancev1alpha1.PhaseExecuting {
-		msg := fmt.Sprintf("request is already in terminal phase %q — no action allowed", currentPhase)
-		http.Error(w, msg, http.StatusConflict)
-		return
-	}
-
-	if decision == "approved" {
-		cpv := agentReq.Status.ControlPlaneVerification
-		deviates := cpv != nil && cpv.HasActiveEndpoints
-		if deviates && strings.TrimSpace(body.Reason) == "" {
-			msg := "reason required: control plane verified active endpoints " +
-				"— explain why this override is safe"
-			http.Error(w, msg, http.StatusBadRequest)
-			return
-		}
-	}
-
-	humanReason := strings.TrimSpace(body.Reason)
-	if humanReason == "" {
-		humanReason = "denied via dashboard"
-	}
-
-	specPatch := client.MergeFrom(agentReq.DeepCopy())
-	agentReq.Spec.HumanApproval = &governancev1alpha1.HumanApproval{
-		Decision: decision,
-		Reason:   humanReason,
-	}
-	log.Printf("PATCH spec.humanApproval=%s reason=%q on %s/%s (RV=%s)",
-		decision, humanReason, namespace, name, agentReq.ResourceVersion)
-	if err := s.client.Patch(ctx, &agentReq, specPatch); err != nil {
-		log.Printf("ERROR patch %s/%s: %v", namespace, name, err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	log.Printf("OK spec.humanApproval=%s patched on %s/%s (new RV=%s)",
-		decision, namespace, name, agentReq.ResourceVersion)
-
-	w.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprintf(w, "Action %s applied to %s", action, name)
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
 }

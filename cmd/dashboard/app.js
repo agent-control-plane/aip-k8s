@@ -77,16 +77,13 @@ async function performAction(name, action, reason) {
 }
 
 // Called when the human clicks "Approve Override".
-// If the control plane verified live endpoints, a reason is mandatory —
-// the human must justify overriding independent cluster state evidence.
+// If the control plane verified live endpoints, a reason is mandatory.
 function promptApproval(name, hasActiveEndpoints) {
     if (!hasActiveEndpoints) {
         performAction(name, 'approve', '');
         return;
     }
 
-    // Build the reason modal. `name` is bound via data attribute, not inline JS,
-    // to avoid attribute injection.
     const overlay = document.createElement('div');
     overlay.id = 'reason-overlay';
     overlay.style.cssText = `
@@ -116,12 +113,10 @@ function promptApproval(name, hasActiveEndpoints) {
         </div>`;
 
     document.body.appendChild(overlay);
-
-    // Attach the name via closure, not via inline attribute, to avoid injection.
+    // Bind name via closure, not inline onclick, to avoid injection.
     document.getElementById('confirm-override-btn').addEventListener('click', () => {
         submitApprovalWithReason(name);
     });
-
     document.getElementById('override-reason').focus();
 }
 
@@ -152,10 +147,9 @@ function renderList() {
         const isActive = state.selectedRequest && state.selectedRequest.metadata.name === req.metadata.name;
         const phase = req.status?.phase || 'Pending';
         const time = new Date(req.metadata.creationTimestamp).toLocaleTimeString();
-        const name = escapeHtml(req.metadata.name);
 
         return `
-            <div class="request-item ${isActive ? 'active' : ''}" data-name="${name}" onclick="selectRequestById(this.dataset.name)">
+            <div class="request-item ${isActive ? 'active' : ''}" data-name="${escapeHtml(req.metadata.name)}" onclick="selectRequestById(this.dataset.name)">
                 <div class="title">${escapeHtml(req.spec.agentIdentity)}</div>
                 <div class="meta">
                     <span class="badge badge-${escapeHtml(phase.toLowerCase())}">${escapeHtml(phase)}</span>
@@ -181,17 +175,13 @@ function conditionBadge(condition) {
 
     let color, label;
     if (condition.type === 'RequiresApproval' && isTrue) {
-        color = 'var(--warning)';
-        label = 'PENDING REVIEW';
+        color = 'var(--warning)'; label = 'PENDING REVIEW';
     } else if (isPositive && isTrue) {
-        color = 'var(--success)';
-        label = 'TRUE';
+        color = 'var(--success)'; label = 'TRUE';
     } else if (!isPositive && isTrue) {
-        color = 'var(--error)';
-        label = 'TRUE';
+        color = 'var(--error)'; label = 'TRUE';
     } else {
-        color = 'var(--text-secondary)';
-        label = 'FALSE';
+        color = 'var(--text-secondary)'; label = 'FALSE';
     }
     return `<span style="color: ${color}; font-weight: 600; font-size: 0.8rem;">${label}</span>`;
 }
@@ -205,19 +195,18 @@ function renderReasoningTrace(rt) {
         ? Object.entries(rt.componentConfidence).map(([k, v]) => {
             const p = Math.round(parseFloat(v) * 100);
             const c = p >= 80 ? 'var(--success)' : p >= 60 ? 'var(--warning)' : 'var(--error)';
-            return `
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem; font-size:0.82rem;">
-                    <span style="color:var(--text-secondary);">${escapeHtml(k.replace(/_/g,' '))}</span>
-                    <span style="color:${c}; font-weight:600;">${p}%</span>
-                </div>`;
+            return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4rem;font-size:0.82rem;">
+                <span style="color:var(--text-secondary);">${escapeHtml(k.replace(/_/g,' '))}</span>
+                <span style="color:${c};font-weight:600;">${p}%</span>
+            </div>`;
         }).join('') : '';
 
     const alternatives = rt.alternatives?.length
-        ? rt.alternatives.map(a => `<span style="display:inline-block; padding:0.2rem 0.6rem; background:rgba(255,255,255,0.05); border-radius:9999px; font-size:0.78rem; margin:0.2rem 0.2rem 0 0; color:var(--text-secondary);">${escapeHtml(a)}</span>`).join('')
-        : '<span style="color:var(--text-secondary); font-size:0.82rem;">None declared</span>';
+        ? rt.alternatives.map(a => `<span style="display:inline-block;padding:0.2rem 0.6rem;background:rgba(255,255,255,0.05);border-radius:9999px;font-size:0.78rem;margin:0.2rem 0.2rem 0 0;color:var(--text-secondary);">${escapeHtml(a)}</span>`).join('')
+        : '<span style="color:var(--text-secondary);font-size:0.82rem;">None declared</span>';
 
     const traceLink = rt.traceReference
-        ? `<div style="margin-top:0.75rem; font-size:0.78rem;"><span style="color:var(--text-secondary);">Trace: </span><span style="font-family:monospace; color:var(--accent-color);">${escapeHtml(rt.traceReference)}</span></div>`
+        ? `<div style="margin-top:0.75rem;font-size:0.78rem;"><span style="color:var(--text-secondary);">Trace: </span><span style="font-family:monospace;color:var(--accent-color);">${escapeHtml(rt.traceReference)}</span></div>`
         : '';
 
     return `
@@ -227,14 +216,14 @@ function renderReasoningTrace(rt) {
                 Agent Reasoning Trace
             </div>
             ${pct !== null ? `
-                <div style="display:flex; align-items:center; gap:1rem; margin-bottom:1rem;">
-                    <span style="font-size:0.85rem; color:var(--text-secondary);">Overall confidence</span>
-                    <span style="font-size:1.4rem; font-weight:700; color:${color};">${pct}%</span>
-                    <div class="confidence-meter" style="flex:1;"><div class="confidence-fill" style="width:${pct}%; background:${color};"></div></div>
+                <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem;">
+                    <span style="font-size:0.85rem;color:var(--text-secondary);">Overall confidence</span>
+                    <span style="font-size:1.4rem;font-weight:700;color:${color};">${pct}%</span>
+                    <div class="confidence-meter" style="flex:1;"><div class="confidence-fill" style="width:${pct}%;background:${color};"></div></div>
                 </div>
                 ${componentRows ? `<div style="margin-bottom:1rem;">${componentRows}</div>` : ''}
             ` : ''}
-            <div style="font-size:0.82rem; color:var(--text-secondary); margin-bottom:0.4rem; text-transform:uppercase; letter-spacing:0.05em;">Alternatives considered</div>
+            <div style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:0.4rem;text-transform:uppercase;letter-spacing:0.05em;">Alternatives considered</div>
             <div style="margin-bottom:0.5rem;">${alternatives}</div>
             ${traceLink}
         </div>`;
@@ -243,13 +232,11 @@ function renderReasoningTrace(rt) {
 function renderParameters(params) {
     if (!params || Object.keys(params).length === 0) return '';
     const rows = Object.entries(params).map(([k, v]) => {
-        const isFalse = v === false;
-        const color = isFalse ? 'var(--error)' : 'var(--text-primary)';
-        return `
-            <div style="display:flex; justify-content:space-between; padding:0.4rem 0; border-bottom:1px solid var(--border-color); font-size:0.85rem;">
-                <span style="color:var(--text-secondary);">${escapeHtml(k)}</span>
-                <span style="font-family:monospace; color:${color};">${escapeHtml(JSON.stringify(v))}</span>
-            </div>`;
+        const color = v === false ? 'var(--error)' : 'var(--text-primary)';
+        return `<div style="display:flex;justify-content:space-between;padding:0.4rem 0;border-bottom:1px solid var(--border-color);font-size:0.85rem;">
+            <span style="color:var(--text-secondary);">${escapeHtml(k)}</span>
+            <span style="font-family:monospace;color:${color};">${escapeHtml(JSON.stringify(v))}</span>
+        </div>`;
     }).join('');
     return `
         <div class="panel" style="margin-top:1.5rem;">
@@ -263,20 +250,16 @@ function renderParameters(params) {
 
 function renderControlPlaneVerification(cpv) {
     if (!cpv) {
-        return `<div style="color:var(--text-secondary);font-size:0.82rem;padding:0.5rem 0;">
-            No verification data yet — pending evaluation.
-        </div>`;
+        return `<div style="color:var(--text-secondary);font-size:0.82rem;padding:0.5rem 0;">No verification data yet — pending evaluation.</div>`;
     }
 
-    const check  = `<span style="color:var(--error);font-weight:700;">&#x2717;</span>`;
-    const ok     = `<span style="color:var(--success);font-weight:700;">&#x2713;</span>`;
-    const endpointIcon = cpv.hasActiveEndpoints ? check : ok;
-    const replicaIcon  = cpv.readyReplicas > 1   ? check : ok;
+    const check = `<span style="color:var(--error);font-weight:700;">&#x2717;</span>`;
+    const ok    = `<span style="color:var(--success);font-weight:700;">&#x2713;</span>`;
 
     const rows = [
-        { icon: cpv.targetExists ? ok : check,  label: 'Target exists',       value: cpv.targetExists ? 'yes' : 'not found' },
-        { icon: endpointIcon,                    label: 'Active endpoints',    value: cpv.hasActiveEndpoints ? `${cpv.activeEndpointCount} detected` : 'none' },
-        { icon: replicaIcon,                     label: 'Ready replicas',      value: `${cpv.readyReplicas} / ${cpv.specReplicas} spec` },
+        { icon: cpv.targetExists ? ok : check,          label: 'Target exists',    value: cpv.targetExists ? 'yes' : 'not found' },
+        { icon: cpv.hasActiveEndpoints ? check : ok,     label: 'Active endpoints', value: cpv.hasActiveEndpoints ? `${cpv.activeEndpointCount} detected` : 'none' },
+        { icon: cpv.readyReplicas > 1 ? check : ok,      label: 'Ready replicas',   value: `${cpv.readyReplicas} / ${cpv.specReplicas} spec` },
     ];
 
     const rowsHtml = rows.map(r => `
@@ -289,7 +272,7 @@ function renderControlPlaneVerification(cpv) {
     const downstream = cpv.downstreamServices?.length
         ? cpv.downstreamServices.map(s => `
             <div style="display:flex;align-items:center;gap:0.5rem;padding:0.3rem 0;font-size:0.8rem;">
-                <span style="color:var(--error);font-weight:700;">&#x2717;</span>
+                ${check}
                 <span style="font-family:'JetBrains Mono',monospace;color:#cbd5e1;">${escapeHtml(s)}</span>
                 <span style="color:var(--text-secondary);font-size:0.72rem;">(would be disrupted)</span>
             </div>`).join('')
@@ -303,29 +286,23 @@ function renderControlPlaneVerification(cpv) {
             <div style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-secondary);margin-bottom:0.4rem;">Downstream (Control Plane Detected)</div>
             ${downstream}
         </div>
-        ${fetched ? `<div style="margin-top:0.6rem;font-size:0.7rem;color:var(--text-secondary);">Verified at ${fetched}</div>` : ''}
-    `;
+        ${fetched ? `<div style="margin-top:0.6rem;font-size:0.7rem;color:var(--text-secondary);">Verified at ${fetched}</div>` : ''}`;
 }
 
 function renderGovernanceTimeline(phase, needsApproval) {
     const steps = [
         { label: 'Intent declared',  done: true },
         { label: 'Policy evaluated', done: true },
-        { label: 'Human gate',       done: phase === 'Approved' || phase === 'Denied' || phase === 'Executing' || phase === 'Completed', active: needsApproval, denied: phase === 'Denied' },
+        { label: 'Human gate',       done: ['Approved','Denied','Executing','Completed'].includes(phase), active: needsApproval, denied: phase === 'Denied' },
         { label: 'Action executed',  done: phase === 'Completed', active: phase === 'Executing' },
     ];
 
     const stepHtml = steps.map((s, i) => {
         let dotColor, dotContent, labelColor;
-        if (s.denied) {
-            dotColor = 'var(--error)'; dotContent = '&#x2715;'; labelColor = 'var(--error)';
-        } else if (s.active) {
-            dotColor = 'var(--warning)'; dotContent = '&#x25C9;'; labelColor = 'var(--warning)';
-        } else if (s.done) {
-            dotColor = 'var(--success)'; dotContent = '&#x25CF;'; labelColor = 'var(--text-secondary)';
-        } else {
-            dotColor = 'var(--border-color)'; dotContent = '&#x25CB;'; labelColor = 'var(--border-color)';
-        }
+        if (s.denied)       { dotColor = 'var(--error)';       dotContent = '&#x2715;'; labelColor = 'var(--error)'; }
+        else if (s.active)  { dotColor = 'var(--warning)';     dotContent = '&#x25C9;'; labelColor = 'var(--warning)'; }
+        else if (s.done)    { dotColor = 'var(--success)';     dotContent = '&#x25CF;'; labelColor = 'var(--text-secondary)'; }
+        else                { dotColor = 'var(--border-color)'; dotContent = '&#x25CB;'; labelColor = 'var(--border-color)'; }
 
         const connector = i < steps.length - 1
             ? `<div style="flex:1;height:1px;background:${s.done ? 'var(--success)' : 'var(--border-color)'};margin:0 0.5rem;opacity:0.5;"></div>`
@@ -361,8 +338,7 @@ function renderDetails() {
                     <line x1="10" y1="9" x2="8" y2="9"></line>
                 </svg>
                 <p>Select an AgentRequest to view details</p>
-            </div>
-        `;
+            </div>`;
         return;
     }
 
@@ -373,26 +349,26 @@ function renderDetails() {
     const name = req.metadata.name;
 
     detailsEl.innerHTML = `
-        <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
             <div>
-                <h2 style="margin-bottom: 0.5rem;">${escapeHtml(req.spec.agentIdentity)}</h2>
-                <div style="color: var(--text-secondary); font-size: 0.9rem;">
-                    ${escapeHtml(name)} &nbsp;&middot;&nbsp; ${escapeHtml(req.spec.action)} on <code style="font-size: 0.85rem;">${escapeHtml(req.spec.target.uri)}</code>
+                <h2 style="margin-bottom:0.5rem;">${escapeHtml(req.spec.agentIdentity)}</h2>
+                <div style="color:var(--text-secondary);font-size:0.9rem;">
+                    ${escapeHtml(name)} &nbsp;&middot;&nbsp; ${escapeHtml(req.spec.action)} on <code style="font-size:0.85rem;">${escapeHtml(req.spec.target.uri)}</code>
                 </div>
             </div>
-            <span class="badge badge-${escapeHtml(phase.toLowerCase())}" style="font-size: 1rem; padding: 0.5rem 1rem;">${escapeHtml(phase)}</span>
+            <span class="badge badge-${escapeHtml(phase.toLowerCase())}" style="font-size:1rem;padding:0.5rem 1rem;">${escapeHtml(phase)}</span>
         </div>
 
         ${renderGovernanceTimeline(phase, needsApproval)}
 
-        <div class="side-by-side" style="margin-top: 1rem;">
+        <div class="side-by-side" style="margin-top:1rem;">
             <div class="panel">
                 <div class="panel-title">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
                     Agent Declared
                 </div>
                 <div class="reasoning-content" style="margin-bottom:1rem;">${escapeHtml(reason)}</div>
-                <div style="font-size:0.78rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-secondary); margin-bottom:0.5rem;">Confidence</div>
+                <div style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-secondary);margin-bottom:0.5rem;">Confidence</div>
                 ${req.spec.reasoningTrace?.confidenceScore != null ? (() => {
                     const pct = Math.round(req.spec.reasoningTrace.confidenceScore * 100);
                     const color = pct >= 80 ? 'var(--success)' : pct >= 60 ? 'var(--warning)' : 'var(--error)';
@@ -401,7 +377,7 @@ function renderDetails() {
                         <div class="confidence-meter" style="flex:1;"><div class="confidence-fill" style="width:${pct}%;background:${color};"></div></div>
                     </div>`;
                 })() : '<div style="color:var(--text-secondary);font-size:0.82rem;margin-bottom:1rem;">Not declared</div>'}
-                <div style="font-size:0.78rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-secondary); margin-bottom:0.5rem;">Downstream (Causal Model)</div>
+                <div style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-secondary);margin-bottom:0.5rem;">Downstream (Causal Model)</div>
                 ${req.spec.cascadeModel?.affectedTargets?.length
                     ? req.spec.cascadeModel.affectedTargets.map(t => {
                         const effectColors = { disrupted:'var(--error)', modified:'var(--warning)', deleted:'#ff4444', orphaned:'var(--text-secondary)' };
@@ -413,27 +389,27 @@ function renderDetails() {
                     }).join('')
                     : '<div style="color:var(--text-secondary);font-size:0.82rem;">None declared</div>'}
                 ${req.spec.cascadeModel?.modelSourceTrust
-                    ? `<div style="margin-top:0.75rem;font-size:0.75rem;color:var(--text-secondary);">Model source trust: <strong style="color:var(--text-primary);">${escapeHtml(req.spec.cascadeModel.modelSourceTrust)}</strong>${req.spec.cascadeModel.modelSourceID ? ' &middot; ' + escapeHtml(req.spec.cascadeModel.modelSourceID) : ''}</div>`
+                    ? `<div style="margin-top:0.75rem;font-size:0.75rem;color:var(--text-secondary);">Model source trust: <strong style="color:var(--text-primary);">${escapeHtml(req.spec.cascadeModel.modelSourceTrust)}</strong></div>`
                     : ''}
             </div>
 
             <div class="panel">
-                <div class="panel-title" style="color: var(--warning);">
+                <div class="panel-title" style="color:var(--warning);">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
                     Control Plane Verified
                 </div>
                 ${renderControlPlaneVerification(req.status?.controlPlaneVerification)}
                 <div style="margin-top:1.25rem;">
-                    <div style="font-size:0.78rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-secondary); margin-bottom:0.5rem;">Policy Conditions</div>
+                    <div style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-secondary);margin-bottom:0.5rem;">Policy Conditions</div>
                     ${req.status?.conditions?.map(c => `
-                        <div style="margin-bottom: 0.6rem; padding: 0.4rem 0.5rem; background: rgba(255,255,255,0.03); border-radius: 4px;">
-                            <div style="display: flex; justify-content: space-between; font-size: 0.82rem;">
-                                <span style="font-weight: 600;">${escapeHtml(c.type)}</span>
+                        <div style="margin-bottom:0.6rem;padding:0.4rem 0.5rem;background:rgba(255,255,255,0.03);border-radius:4px;">
+                            <div style="display:flex;justify-content:space-between;font-size:0.82rem;">
+                                <span style="font-weight:600;">${escapeHtml(c.type)}</span>
                                 ${conditionBadge(c)}
                             </div>
-                            <div style="font-size: 0.72rem; color: var(--text-secondary); margin-top: 0.15rem;">${escapeHtml(c.message || '')}</div>
+                            <div style="font-size:0.72rem;color:var(--text-secondary);margin-top:0.15rem;">${escapeHtml(c.message || '')}</div>
                         </div>
-                    `).join('') || '<div style="color: var(--text-secondary); font-size: 0.85rem;">No conditions yet</div>'}
+                    `).join('') || '<div style="color:var(--text-secondary);font-size:0.85rem;">No conditions yet</div>'}
                 </div>
                 ${needsApproval ? `
                     <div class="actions">
@@ -445,42 +421,39 @@ function renderDetails() {
         </div>
 
         ${req.spec.reasoningTrace?.alternatives?.length || req.spec.reasoningTrace?.componentConfidence ? renderReasoningTrace(req.spec.reasoningTrace) : ''}
-
         ${req.spec.parameters ? renderParameters(req.spec.parameters) : ''}
 
-        <div class="audit-logs" style="margin-top: 1.5rem;">
-            <h3 style="margin-bottom: 1rem;">Audit Trail</h3>
+        <div class="audit-logs" style="margin-top:1.5rem;">
+            <h3 style="margin-bottom:1rem;">Audit Trail</h3>
             ${auditLogs.length === 0
-                ? '<div style="color: var(--text-secondary); font-size: 0.85rem;">No audit records yet</div>'
+                ? '<div style="color:var(--text-secondary);font-size:0.85rem;">No audit records yet</div>'
                 : auditLogs.map(log => `
                     <div class="audit-item">
                         <span class="time">${new Date(log.spec.timestamp).toLocaleTimeString()}</span>
-                        <span style="font-weight: 600; color: var(--accent-color);">${escapeHtml(log.spec.event)}</span>
+                        <span style="font-weight:600;color:var(--accent-color);">${escapeHtml(log.spec.event)}</span>
                         ${log.spec.phaseTransition ? `
-                            <span style="color: var(--text-secondary);">&nbsp;(${escapeHtml(log.spec.phaseTransition.from)} &rarr; ${escapeHtml(log.spec.phaseTransition.to)})</span>
+                            <span style="color:var(--text-secondary);">&nbsp;(${escapeHtml(log.spec.phaseTransition.from)} &rarr; ${escapeHtml(log.spec.phaseTransition.to)})</span>
                         ` : ''}
                     </div>
-                `).join('')
-            }
-        </div>
-    `;
+                `).join('')}
+        </div>`;
 }
 
 // ── Diagnostics tab ──────────────────────────────────────────────────────────
 
 window.showTab = function(tabName) {
-    const requestsView = document.getElementById('requests-view');
+    const requestsView   = document.getElementById('requests-view');
     const diagnosticsView = document.getElementById('diagnostics-view');
-    const tabRequests = document.getElementById('tab-requests');
+    const tabRequests    = document.getElementById('tab-requests');
     const tabDiagnostics = document.getElementById('tab-diagnostics');
 
     if (tabName === 'requests') {
-        requestsView.style.display = 'block';
+        requestsView.style.display   = 'block';
         diagnosticsView.style.display = 'none';
         tabRequests.classList.add('active');
         tabDiagnostics.classList.remove('active');
     } else {
-        requestsView.style.display = 'none';
+        requestsView.style.display   = 'none';
         diagnosticsView.style.display = 'block';
         tabRequests.classList.remove('active');
         tabDiagnostics.classList.add('active');
@@ -503,14 +476,11 @@ function renderDiagnostics() {
     const listEl = document.getElementById('diagnostics-list');
     if (!listEl) return;
 
-    if (state.diagnostics.length === 0) {
+    if (!state.diagnostics || state.diagnostics.length === 0) {
         listEl.innerHTML = `
-            <tr>
-                <td colspan="6" style="text-align: center; padding: 3rem; color: var(--text-secondary);">
-                    No diagnostics found in namespace &ldquo;${escapeHtml(state.namespace)}&rdquo;
-                </td>
-            </tr>
-        `;
+            <tr><td colspan="6" style="text-align:center;padding:3rem;color:var(--text-secondary);">
+                No diagnostics found in namespace &ldquo;${escapeHtml(state.namespace)}&rdquo;
+            </td></tr>`;
         return;
     }
 
@@ -520,29 +490,25 @@ function renderDiagnostics() {
 
     listEl.innerHTML = sorted.map(diag => {
         const age = formatAge(diag.metadata.creationTimestamp);
-        // diag.metadata.name is a DNS label — safe for use as an element ID,
-        // but we still escape for defence in depth.
         const detailsId = `details-${escapeHtml(diag.metadata.name)}`;
         const hasDetails = diag.spec.details && Object.keys(diag.spec.details).length > 0;
 
         return `
             <tr>
-                <td style="white-space: nowrap; color: var(--text-secondary);">${age}</td>
+                <td style="white-space:nowrap;color:var(--text-secondary);">${age}</td>
                 <td><span class="chip">${escapeHtml(diag.spec.agentIdentity)}</span></td>
                 <td><span class="badge ${getDiagnosticTypeClass(diag.spec.diagnosticType)}">${escapeHtml(diag.spec.diagnosticType)}</span></td>
                 <td><span class="chip">${escapeHtml(diag.spec.correlationID)}</span></td>
-                <td style="max-width: 300px;">${escapeHtml(diag.spec.summary)}</td>
-                <td>
-                    ${hasDetails ?
-                        `<button class="details-btn" data-target="${escapeHtml(detailsId)}" onclick="toggleDetails(this.dataset.target)">View</button>
-                         <div id="${escapeHtml(detailsId)}" class="details-json" style="display:none"></div>`
-                        : '<span style="color: var(--text-secondary); font-size: 0.8rem;">None</span>'}
-                </td>
-            </tr>
-        `;
+                <td style="max-width:300px;">${escapeHtml(diag.spec.summary)}</td>
+                <td>${hasDetails
+                    ? `<button class="details-btn" data-target="${escapeHtml(detailsId)}" onclick="toggleDetails(this.dataset.target)">View</button>
+                       <div id="${escapeHtml(detailsId)}" class="details-json" style="display:none"></div>`
+                    : '<span style="color:var(--text-secondary);font-size:0.8rem;">None</span>'
+                }</td>
+            </tr>`;
     }).join('');
 
-    // Populate details JSON as text content (not innerHTML) to prevent injection.
+    // Populate JSON as textContent (not innerHTML) to prevent injection.
     sorted.forEach(diag => {
         if (!diag.spec.details || Object.keys(diag.spec.details).length === 0) return;
         const el = document.getElementById(`details-${diag.metadata.name}`);
@@ -560,11 +526,10 @@ function getDiagnosticTypeClass(type) {
 
 window.toggleDetails = function(id) {
     const el = document.getElementById(id);
-    if (el) {
-        el.style.display = el.style.display === 'none' ? 'block' : 'none';
-        const btn = el.previousElementSibling;
-        if (btn) btn.textContent = el.style.display === 'none' ? 'View' : 'Hide';
-    }
+    if (!el) return;
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+    const btn = el.previousElementSibling;
+    if (btn) btn.textContent = el.style.display === 'none' ? 'View' : 'Hide';
 };
 
 function formatAge(timestamp) {

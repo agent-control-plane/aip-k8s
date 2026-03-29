@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -162,10 +163,15 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	mux.HandleFunc("GET /agent-requests", server.handleListAgentRequests)
 	mux.HandleFunc("POST /agent-requests", server.handleCreateAgentRequest)
 	mux.HandleFunc("GET /agent-requests/{name}", server.handleGetAgentRequest)
 	mux.HandleFunc("POST /agent-requests/{name}/executing", server.handleExecutingAgentRequest)
 	mux.HandleFunc("POST /agent-requests/{name}/completed", server.handleCompletedAgentRequest)
+	mux.HandleFunc("POST /agent-requests/{name}/approve", server.handleApproveAgentRequest)
+	mux.HandleFunc("POST /agent-requests/{name}/deny", server.handleDenyAgentRequest)
+	mux.HandleFunc("GET /audit-records", server.handleListAuditRecords)
+	mux.HandleFunc("GET /agent-diagnostics", server.handleListAgentDiagnostics)
 	mux.HandleFunc("POST /agent-diagnostics", server.handleCreateAgentDiagnostic)
 	mux.HandleFunc("GET /agent-diagnostics/{name}", server.handleGetAgentDiagnostic)
 
@@ -566,4 +572,169 @@ func (s *Server) patchAgentRequestCondition(
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message": fmt.Sprintf("successfully patched condition %s", conditionType),
 	})
+}
+
+func (s *Server) handleListAgentRequests(w http.ResponseWriter, r *http.Request) {
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		ns = defaultNamespace
+	}
+
+	var list v1alpha1.AgentRequestList
+	if err := s.client.List(r.Context(), &list, client.InNamespace(ns)); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	items := list.Items
+	if items == nil {
+		items = []v1alpha1.AgentRequest{}
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+//nolint:dupl // similar to handleListAgentDiagnostics
+func (s *Server) handleListAuditRecords(w http.ResponseWriter, r *http.Request) {
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		ns = defaultNamespace
+	}
+	agentReq := r.URL.Query().Get("agentRequest")
+
+	var list v1alpha1.AuditRecordList
+	if err := s.client.List(r.Context(), &list, client.InNamespace(ns)); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	var results []v1alpha1.AuditRecord
+	for _, item := range list.Items {
+		if agentReq == "" || item.Spec.AgentRequestRef == agentReq {
+			results = append(results, item)
+		}
+	}
+	if results == nil {
+		results = []v1alpha1.AuditRecord{}
+	}
+
+	writeJSON(w, http.StatusOK, results)
+}
+
+//nolint:dupl // similar to handleListAuditRecords
+func (s *Server) handleListAgentDiagnostics(w http.ResponseWriter, r *http.Request) {
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		ns = defaultNamespace
+	}
+	agentID := r.URL.Query().Get("agentIdentity")
+	correlID := r.URL.Query().Get("correlationID")
+
+	var err error
+	var ca, cb time.Time
+	if caStr := r.URL.Query().Get("createdAfter"); caStr != "" {
+		if ca, err = time.Parse(time.RFC3339, caStr); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid createdAfter")
+			return
+		}
+	}
+	if cbStr := r.URL.Query().Get("createdBefore"); cbStr != "" {
+		if cb, err = time.Parse(time.RFC3339, cbStr); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid createdBefore")
+			return
+		}
+	}
+
+	var list v1alpha1.AgentDiagnosticList
+	if err := s.client.List(r.Context(), &list, client.InNamespace(ns)); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	results := make([]v1alpha1.AgentDiagnostic, 0)
+	for _, item := range list.Items {
+		if agentID != "" && item.Spec.AgentIdentity != agentID {
+			continue
+		}
+		if correlID != "" && item.Labels["aip.io/correlationID"] != correlID {
+			continue
+		}
+		if !ca.IsZero() && !item.CreationTimestamp.After(ca) {
+			continue
+		}
+		if !cb.IsZero() && !item.CreationTimestamp.Time.Before(cb) {
+			continue
+		}
+		results = append(results, item)
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].CreationTimestamp.After(results[j].CreationTimestamp.Time)
+	})
+
+	writeJSON(w, http.StatusOK, results)
+}
+
+func (s *Server) handleApproveAgentRequest(w http.ResponseWriter, r *http.Request) {
+	s.handleHumanDecision(w, r, "approved")
+}
+
+func (s *Server) handleDenyAgentRequest(w http.ResponseWriter, r *http.Request) {
+	s.handleHumanDecision(w, r, "denied")
+}
+
+func (s *Server) handleHumanDecision(w http.ResponseWriter, r *http.Request, decision string) {
+	name := r.PathValue("name")
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		ns = defaultNamespace
+	}
+
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if r.Header.Get("Content-Type") == "application/json" {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+
+	var agentReq v1alpha1.AgentRequest
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &agentReq); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	phase := agentReq.Status.Phase
+	if phase != v1alpha1.PhasePending {
+		msg := fmt.Sprintf("request is in phase %q — can only approve/deny when Pending", phase)
+		writeError(w, http.StatusConflict, msg)
+		return
+	}
+
+	if decision == "approved" {
+		cpv := agentReq.Status.ControlPlaneVerification
+		if cpv != nil && cpv.HasActiveEndpoints && strings.TrimSpace(body.Reason) == "" {
+			msg := "reason required: control plane verified active endpoints " +
+				"— explain why this override is safe"
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+	}
+
+	humanReason := strings.TrimSpace(body.Reason)
+	if humanReason == "" && decision == "denied" {
+		humanReason = "denied via dashboard"
+	}
+
+	patch := client.MergeFrom(agentReq.DeepCopy())
+	agentReq.Spec.HumanApproval = &v1alpha1.HumanApproval{
+		Decision:      decision,
+		Reason:        humanReason,
+		ForGeneration: agentReq.Status.EvaluationGeneration,
+	}
+
+	if err := s.client.Patch(r.Context(), &agentReq, patch); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }

@@ -46,8 +46,8 @@ go.work
 
 # Kubeconfig might contain secrets
 *.kubeconfig
-cmd/dashboard/dashboard
 /dashboard
+cmd/dashboard/dashboard
 demo.tape
 demo/scaledown/claude-agent-go/claude-agent
 demo/scaledown/claude-agent-go/claude-agent-go
