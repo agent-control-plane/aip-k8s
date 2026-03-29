@@ -258,6 +258,42 @@ func (s *Server) checkDuplicate(
 	return nil
 }
 
+// checkDiagnosticDuplicate returns a non-nil error and writes a 409 if an active
+// diagnostic for the same (agentIdentity, diagnosticType, correlationID) exists
+// within the dedup window.
+//
+//nolint:dupl // structurally similar to checkDuplicate
+func (s *Server) checkDiagnosticDuplicate(
+	r *http.Request, agentIdentity, diagnosticType, correlationID, ns string, w http.ResponseWriter,
+) error {
+	if s.dedupWindow == 0 {
+		return nil
+	}
+	var existing v1alpha1.AgentDiagnosticList
+	if err := s.client.List(r.Context(), &existing, client.InNamespace(ns)); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to check for duplicate diagnostics: %v", err))
+		return err
+	}
+	cutoff := time.Now().Add(-s.dedupWindow)
+	for _, diag := range existing.Items {
+		if diag.CreationTimestamp.Time.Before(cutoff) {
+			continue
+		}
+		if diag.Spec.AgentIdentity == agentIdentity &&
+			diag.Spec.DiagnosticType == diagnosticType &&
+			diag.Spec.CorrelationID == correlationID {
+			err := fmt.Errorf("duplicate")
+			writeError(w, http.StatusConflict, fmt.Sprintf(
+				"duplicate diagnostic: an active diagnostic for the same "+
+					"agent, type, and correlationID already exists (created %s ago)",
+				time.Since(diag.CreationTimestamp.Time).Round(time.Second),
+			))
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request) {
 	var body createAgentRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -456,6 +492,12 @@ func (s *Server) handleCreateAgentDiagnostic(w http.ResponseWriter, r *http.Requ
 	ns := body.Namespace
 	if ns == "" {
 		ns = defaultNamespace
+	}
+
+	err := s.checkDiagnosticDuplicate(
+		r, body.AgentIdentity, body.DiagnosticType, body.CorrelationID, ns, w)
+	if err != nil {
+		return
 	}
 
 	var details *apiextensionsv1.JSON
