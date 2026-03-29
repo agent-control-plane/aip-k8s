@@ -1,19 +1,3 @@
-/*
-Copyright 2026.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package main
 
 import (
@@ -24,6 +8,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type DashboardServer struct {
@@ -35,12 +20,12 @@ type DashboardServer struct {
 
 func main() {
 	var port int
-	var staticDir, gatewayURL string
+	var staticDir string
+	var gatewayURL string
 	flag.IntVar(&port, "port", 8082, "Port to run the dashboard on")
 	flag.StringVar(&staticDir, "static-dir", "cmd/dashboard",
 		"Directory containing static frontend files (index.html, app.js, styles.css)")
-	flag.StringVar(&gatewayURL, "gateway-url", "http://localhost:8080",
-		"Base URL of the AIP gateway")
+	flag.StringVar(&gatewayURL, "gateway-url", "http://localhost:8080", "The base URL of the AIP gateway")
 	flag.Parse()
 
 	absStaticDir, err := filepath.Abs(staticDir)
@@ -52,7 +37,9 @@ func main() {
 		gatewayURL: strings.TrimRight(gatewayURL, "/"),
 		port:       port,
 		staticDir:  absStaticDir,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+		},
 	}
 
 	mux := http.NewServeMux()
@@ -101,24 +88,25 @@ func (s *DashboardServer) proxyToGateway(w http.ResponseWriter, r *http.Request)
 		targetURL += "?" + r.URL.RawQuery
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
+	req, err := http.NewRequest(r.Method, targetURL, r.Body)
 	if err != nil {
-		http.Error(w, "failed to build upstream request", http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
 	if ct := r.Header.Get("Content-Type"); ct != "" {
 		req.Header.Set("Content-Type", ct)
 	}
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		http.Error(w, "gateway unavailable: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer func() { _ = resp.Body.Close() }()
 
-	if ct := resp.Header.Get("Content-Type"); ct != "" {
-		w.Header().Set("Content-Type", ct)
+	if resp.StatusCode == http.StatusOK && r.Method == http.MethodGet {
+		w.Header().Set("Content-Type", "application/json")
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)

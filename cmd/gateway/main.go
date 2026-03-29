@@ -699,10 +699,8 @@ func (s *Server) handleHumanDecision(w http.ResponseWriter, r *http.Request, dec
 	}
 
 	phase := agentReq.Status.Phase
-	if phase == v1alpha1.PhaseApproved || phase == v1alpha1.PhaseDenied ||
-		phase == v1alpha1.PhaseCompleted || phase == v1alpha1.PhaseFailed ||
-		phase == v1alpha1.PhaseExecuting {
-		msg := fmt.Sprintf("request is already in terminal phase %q — no action allowed", phase)
+	if phase != v1alpha1.PhasePending {
+		msg := fmt.Sprintf("request is in phase %q — can only approve/deny when Pending", phase)
 		writeError(w, http.StatusConflict, msg)
 		return
 	}
