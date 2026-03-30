@@ -51,7 +51,41 @@ The agent will attempt to delete `payment-api` twice (direct delete, then scale-
 
 ## Getting Started
 
-### Prerequisites
+### Install via Helm (Recommended)
+
+The quickest way to get the full AIP stack (controller + gateway + dashboard) running on any Kubernetes cluster:
+
+```sh
+helm install aip-k8s \
+  oci://ghcr.io/ravisantoshgudimetla/aip-k8s/charts/aip-k8s \
+  --version 0.1.0 \
+  --namespace aip-k8s-system \
+  --create-namespace
+```
+
+This single command installs CRDs, the governance controller, the gateway (port 8080), and the dashboard (port 8082). No separate `kubectl apply` for CRDs is needed — Helm hooks handle install and upgrade automatically.
+
+**Verify the installation:**
+
+```sh
+kubectl get pods -n aip-k8s-system
+# NAME                                          READY   STATUS    RESTARTS
+# aip-k8s-controller-manager-...               1/1     Running   0
+# aip-k8s-gateway-...                          1/1     Running   0
+# aip-k8s-dashboard-...                        1/1     Running   0
+```
+
+**Access the gateway and dashboard:**
+
+```sh
+kubectl port-forward -n aip-k8s-system svc/aip-k8s-gateway 8080:8080 &
+kubectl port-forward -n aip-k8s-system svc/aip-k8s-dashboard 8082:8082 &
+
+curl http://localhost:8080/healthz   # → ok
+curl http://localhost:8082/healthz   # → ok
+```
+
+### Prerequisites (for local development)
 - `go` version v1.22.0+
 - `docker` version 17.03+.
 - `kind` version v0.31.0+ (for local testing).
@@ -61,7 +95,7 @@ The agent will attempt to delete `payment-api` twice (direct delete, then scale-
 You can automatically spin up a local Kubernetes cluster using `kind` and deploy the `aip-k8s` controller directly to it for integration testing using our provided Makefile targets:
 
 ```sh
-# This will: 
+# This will:
 # 1. Create a local 'aip-test' kind cluster (if it doesn't exist)
 # 2. Build the 'aip-controller:test' docker image
 # 3. Load the image into the cluster
