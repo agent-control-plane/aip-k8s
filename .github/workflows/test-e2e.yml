@@ -32,6 +32,9 @@ jobs:
       - name: Verify kind installation
         run: kind version
 
+      - name: Create Kind cluster
+        run: make setup-test-e2e
+
       - name: Install cert-manager
         run: |
           kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/${{ env.CERT_MANAGER_VERSION }}/cert-manager.yaml
