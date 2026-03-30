@@ -2,7 +2,12 @@ name: E2E Tests
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+
+env:
+  KIND_VERSION: v0.31.0
 
 jobs:
   test-e2e:
@@ -17,16 +22,24 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install the latest version of kind
+      - name: Install kind
         run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-$(go env GOARCH)
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-$(go env GOARCH)
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
 
       - name: Verify kind installation
         run: kind version
 
+      - name: Create Kind cluster
+        run: make setup-test-e2e
+
       - name: Running Test e2e
         run: |
           go mod tidy
           make test-e2e
+        env:
+          # No admission webhooks yet — cert-manager not needed.
+          # When webhooks are added, remove this and add an
+          # "Install cert-manager" step before this one.
+          CERT_MANAGER_INSTALL_SKIP: "true"

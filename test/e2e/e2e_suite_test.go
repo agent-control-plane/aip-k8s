@@ -63,16 +63,21 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	By("building the manager image")
-	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", managerImage))
-	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager image")
+	// When GATEWAY_URL is set the suite is running against an already-deployed
+	// Helm release. Skip image build/load and CertManager — everything is in
+	// the cluster already.
+	if os.Getenv("GATEWAY_URL") == "" {
+		By("building the manager image")
+		cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", managerImage))
+		_, err := utils.Run(cmd)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager image")
 
-	By("loading the manager image on Kind")
-	err = utils.LoadImageToKindClusterWithName(managerImage)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
+		By("loading the manager image on Kind")
+		err = utils.LoadImageToKindClusterWithName(managerImage)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
 
-	setupCertManager()
+		setupCertManager()
+	}
 
 	By("setting up typed Kubernetes client for assertions")
 	scheme := runtime.NewScheme()

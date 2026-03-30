@@ -292,9 +292,9 @@ kind-load: docker-build ## Build the docker image and load it into the KIND clus
 kind-deploy: kind-cluster kind-load manifests generate install ## Spin up a cluster, load the image, and deploy the controller
 	$(MAKE) deploy IMG=$(IMG)
 
-##@ Demo
+##@ Local Development
 
-GATEWAY_PID_FILE ?= /tmp/aip-gateway.pid
+GATEWAY_PID_FILE  ?= /tmp/aip-gateway.pid
 DASHBOARD_PID_FILE ?= /tmp/aip-dashboard.pid
 
 .PHONY: build-gateway
@@ -305,19 +305,54 @@ build-gateway: ## Build the AIP gateway binary.
 build-dashboard: ## Build the AIP dashboard binary.
 	go build -o bin/dashboard ./cmd/dashboard
 
-.PHONY: build-demo
-build-demo: build-gateway build-dashboard ## Build gateway and dashboard binaries.
-
-.PHONY: demo-up
-demo-up: build-demo ## Start the demo: gateway (:8080) and dashboard (:8082).
+.PHONY: local
+local: build-gateway build-dashboard ## Start gateway (:8080) and dashboard (:8082) against the active cluster.
 	@bin/gateway & echo $$! > $(GATEWAY_PID_FILE); echo "Gateway    started on http://localhost:8080 (PID $$(cat $(GATEWAY_PID_FILE)))"
 	@bin/dashboard --static-dir cmd/dashboard --gateway-url http://localhost:8080 & echo $$! > $(DASHBOARD_PID_FILE); echo "Dashboard  started on http://localhost:8082 (PID $$(cat $(DASHBOARD_PID_FILE)))"
 
-.PHONY: demo-down
-demo-down: ## Stop gateway and dashboard.
+.PHONY: local-down
+local-down: ## Stop the local gateway and dashboard.
 	@[ -f $(GATEWAY_PID_FILE) ] && kill $$(cat $(GATEWAY_PID_FILE)) 2>/dev/null && echo "Gateway stopped" || true; rm -f $(GATEWAY_PID_FILE)
 	@[ -f $(DASHBOARD_PID_FILE) ] && kill $$(cat $(DASHBOARD_PID_FILE)) 2>/dev/null && echo "Dashboard stopped" || true; rm -f $(DASHBOARD_PID_FILE)
 
-.PHONY: demo-clean
-demo-clean: ## Delete all AIP objects from the cluster (AgentRequests, AuditRecords, SafetyPolicies, Leases).
+.PHONY: local-clean
+local-clean: ## Delete all AIP objects from the cluster (AgentRequests, AuditRecords, SafetyPolicies, Leases).
 	@bash demo/cleanup.sh
+
+##@ Chart E2E
+
+IMAGE_REPO          ?= ghcr.io/ravisantoshgudimetla/aip-k8s
+CHART_IMAGE_TAG     ?= local
+CHART_KIND_CLUSTER  ?= aip-test
+CHART_GW_PORT       ?= 18080
+CHART_DASH_PORT     ?= 18082
+CHART_PF_GW_PID     ?= /tmp/aip-chart-gw.pid
+CHART_PF_DASH_PID   ?= /tmp/aip-chart-dash.pid
+
+.PHONY: chart-images
+chart-images: ## Build and load all three images into Kind (tag: CHART_IMAGE_TAG=local).
+	docker build -t $(IMAGE_REPO)/controller:$(CHART_IMAGE_TAG) -f Dockerfile .
+	docker build -t $(IMAGE_REPO)/gateway:$(CHART_IMAGE_TAG) -f Dockerfile.gateway .
+	docker build -t $(IMAGE_REPO)/dashboard:$(CHART_IMAGE_TAG) -f Dockerfile.dashboard .
+	$(KIND) load docker-image $(IMAGE_REPO)/controller:$(CHART_IMAGE_TAG) --name $(CHART_KIND_CLUSTER)
+	$(KIND) load docker-image $(IMAGE_REPO)/gateway:$(CHART_IMAGE_TAG) --name $(CHART_KIND_CLUSTER)
+	$(KIND) load docker-image $(IMAGE_REPO)/dashboard:$(CHART_IMAGE_TAG) --name $(CHART_KIND_CLUSTER)
+
+.PHONY: chart-e2e
+chart-e2e: ## Install Helm chart and run chart e2e tests (images must already be in Kind).
+	helm upgrade --install aip-k8s charts/aip-k8s/ \
+	  --namespace aip-k8s-system --create-namespace \
+	  --set controller.image.tag=$(CHART_IMAGE_TAG) \
+	  --set gateway.image.tag=$(CHART_IMAGE_TAG) \
+	  --set dashboard.image.tag=$(CHART_IMAGE_TAG) \
+	  --wait --timeout 3m
+	@pkill -f "kubectl port-forward.*$(CHART_GW_PORT)" 2>/dev/null || true
+	@pkill -f "kubectl port-forward.*$(CHART_DASH_PORT)" 2>/dev/null || true
+	@kubectl port-forward -n aip-k8s-system svc/aip-k8s-gateway $(CHART_GW_PORT):8080 >/dev/null 2>&1 & echo $$! > $(CHART_PF_GW_PID)
+	@kubectl port-forward -n aip-k8s-system svc/aip-k8s-dashboard $(CHART_DASH_PORT):8082 >/dev/null 2>&1 & echo $$! > $(CHART_PF_DASH_PID)
+	@sleep 3
+	@GATEWAY_URL=http://localhost:$(CHART_GW_PORT) DASHBOARD_URL=http://localhost:$(CHART_DASH_PORT) IMAGE_TAG=$(CHART_IMAGE_TAG) \
+	  go test -v -tags=e2e ./test/e2e/... -ginkgo.v -ginkgo.focus "Chart"; EXIT=$$?; \
+	  [ -f $(CHART_PF_GW_PID) ]   && kill $$(cat $(CHART_PF_GW_PID))   2>/dev/null; rm -f $(CHART_PF_GW_PID); \
+	  [ -f $(CHART_PF_DASH_PID) ] && kill $$(cat $(CHART_PF_DASH_PID)) 2>/dev/null; rm -f $(CHART_PF_DASH_PID); \
+	  exit $$EXIT

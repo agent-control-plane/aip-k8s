@@ -58,8 +58,15 @@ var _ = Describe("Manager", Ordered, func() {
 	// and deploying the controller.
 	BeforeAll(func() {
 		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, err := utils.Run(cmd)
+		// Use apply instead of create so this is idempotent: if Phase 6 BeforeAll
+		// ran first (Ginkgo randomises top-level Describe order) it will have
+		// already created the namespace via make deploy.
+		cmd := exec.Command("kubectl", "create", "ns", namespace, "--dry-run=client", "-o", "yaml")
+		nsYAML, err := cmd.Output()
+		Expect(err).NotTo(HaveOccurred(), "Failed to render namespace manifest")
+		applyCmd := exec.Command("kubectl", "apply", "-f", "-")
+		applyCmd.Stdin = strings.NewReader(string(nsYAML))
+		_, err = utils.Run(applyCmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to create namespace")
 
 		By("labeling the namespace to enforce the restricted security policy")
@@ -81,6 +88,10 @@ var _ = Describe("Manager", Ordered, func() {
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
 	// and deleting the namespace.
+	// After all tests have been executed, clean up by deleting local test files.
+	// We DO NOT uninstall CRDs or remove the manager namespace here because 
+	// subsequent test specs (like gateway_test.go) require them.
+	// The cluster is destroyed entirely by `make cleanup-test-e2e` later.
 	AfterAll(func() {
 		By("cleaning up the curl pod for metrics")
 		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
@@ -88,18 +99,6 @@ var _ = Describe("Manager", Ordered, func() {
 
 		By("cleaning up the metrics ClusterRoleBinding")
 		cmd = exec.Command("kubectl", "delete", "clusterrolebinding", metricsRoleBindingName, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-
-		By("undeploying the controller-manager")
-		cmd = exec.Command("make", "undeploy")
-		_, _ = utils.Run(cmd)
-
-		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
-		_, _ = utils.Run(cmd)
-
-		By("removing manager namespace")
-		cmd = exec.Command("kubectl", "delete", "ns", namespace)
 		_, _ = utils.Run(cmd)
 	})
 
