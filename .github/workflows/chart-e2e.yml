@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 env:
-  KIND_VERSION: v0.25.0
+  KIND_VERSION: v0.31.0
 
 jobs:
   chart-e2e:
