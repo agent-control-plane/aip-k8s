@@ -80,10 +80,14 @@ var _ = Describe("Manager", Ordered, func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
-		By("deploying the controller-manager")
-		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+		By("deploying the controller-manager (skips if already running)")
+		checkCmd := exec.Command("kubectl", "get", "deployment",
+			"aip-k8s-controller-manager", "-n", namespace)
+		if _, checkErr := utils.Run(checkCmd); checkErr != nil {
+			cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+		}
 	})
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
