@@ -39,4 +39,7 @@ jobs:
           go mod tidy
           make test-e2e
         env:
+          # No admission webhooks yet — cert-manager not needed.
+          # When webhooks are added, remove this and add an
+          # "Install cert-manager" step before this one.
           CERT_MANAGER_INSTALL_SKIP: "true"
