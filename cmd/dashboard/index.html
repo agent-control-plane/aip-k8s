@@ -50,6 +50,13 @@
         </div>
 
         <div id="diagnostics-view" style="display:none">
+            <div style="display:flex;align-items:center;gap:0.5rem;padding:0.75rem 1rem;border-bottom:1px solid var(--border-color);">
+                <label for="ns-input" style="font-size:0.85rem;color:var(--text-secondary);white-space:nowrap;">Namespace</label>
+                <input id="ns-input" type="text" value="default"
+                    style="font-size:0.85rem;padding:0.3rem 0.6rem;background:var(--surface-color);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);width:160px;"
+                    onchange="loadDiagnostics()"
+                    onkeydown="if(event.key==='Enter')loadDiagnostics()" />
+            </div>
             <div class="diagnostics-table-container">
                 <table class="diagnostics-table">
                     <thead>
