@@ -61,8 +61,6 @@ A new Kind that stores running verdict counts and a computed accuracy ratio per 
 
 ```go
 // DiagnosticAccuracySummarySpec identifies the agent this summary tracks.
-// +kubebuilder:object:root=true
-// +kubebuilder:subresource:status
 type DiagnosticAccuracySummarySpec struct {
     // AgentIdentity specifies the agent this summary tracks.
     // +kubebuilder:validation:Required
@@ -93,6 +91,16 @@ type DiagnosticAccuracySummaryStatus struct {
     // LastUpdatedAt is the timestamp of the most recent verdict that
     // contributed to this summary.
     LastUpdatedAt *metav1.Time `json:"lastUpdatedAt,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Namespaced
+type DiagnosticAccuracySummary struct {
+    metav1.TypeMeta   `json:",inline"`
+    metav1.ObjectMeta `json:"metadata,omitempty"`
+    Spec   DiagnosticAccuracySummarySpec   `json:"spec"`
+    Status DiagnosticAccuracySummaryStatus `json:"status,omitempty"`
 }
 ```
 
@@ -135,7 +143,10 @@ The spec proposal in agent-intent-protocol#7 will advocate for this formula rath
 
 1. Read the existing `AgentDiagnostic` to capture the current verdict (may be empty) and `agentIdentity`.
 2. Patch the `AgentDiagnostic` status subresource with the new verdict, `reviewedBy` (from caller), and `reviewedAt` (server time).
-3. Upsert the `DiagnosticAccuracySummary` for the diagnostic's `agentIdentity`: if the old verdict was non-empty, decrement its counter; increment the new verdict's counter; recompute the ratio; write with `resourceVersion` for optimistic concurrency.
+3. Upsert the `DiagnosticAccuracySummary` for the diagnostic's `agentIdentity`:
+   - If old verdict was **empty** (first-time review): increment `totalReviewed` and the new verdict's counter.
+   - If old verdict was **non-empty** (changing an existing verdict): decrement the old verdict's counter, increment the new verdict's counter. `totalReviewed` is unchanged — the diagnostic was already counted.
+   - Recompute `diagnosticAccuracy` ratio. Write with `resourceVersion` for optimistic concurrency.
 
 Step 3 is retried on `409 Conflict` (optimistic concurrency failure) using a short exponential backoff.
 
