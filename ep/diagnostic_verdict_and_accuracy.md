@@ -121,19 +121,21 @@ The spec proposal in agent-intent-protocol#7 will advocate for this formula rath
 
 ### Part 3: Gateway write path
 
-`PATCH /agent-diagnostics/{name}/status` executes a two-step write:
+`PATCH /agent-diagnostics/{name}/status` executes a three-step write (one read, two writes):
 
-1. Read the existing `AgentDiagnostic` to capture the current verdict (may be empty).
+1. Read the existing `AgentDiagnostic` to capture the current verdict (may be empty) and `agentIdentity`.
 2. Patch the `AgentDiagnostic` status subresource with the new verdict, `reviewedBy` (from caller), and `reviewedAt` (server time).
 3. Upsert the `DiagnosticAccuracySummary` for the diagnostic's `agentIdentity`: if the old verdict was non-empty, decrement its counter; increment the new verdict's counter; recompute the ratio; write with `resourceVersion` for optimistic concurrency.
 
 Step 3 is retried on `409 Conflict` (optimistic concurrency failure) using a short exponential backoff.
 
-#### Consistency trade-off
+#### Consistency trade-offs
 
-Steps 2 and 3 are **not atomic** — Kubernetes has no cross-resource transactions. If step 2 succeeds and step 3 fails after exhausting retries, the diagnostic holds the new verdict but the summary counters are stale. This is acceptable for v1alpha1: `DiagnosticAccuracySummary` is an observability signal, not a safety-critical gate. The recompute endpoint provides a recovery path.
+**Step-failure drift.** Steps 2 and 3 are **not atomic** — Kubernetes has no cross-resource transactions. If step 2 succeeds and step 3 fails after exhausting retries, the diagnostic holds the new verdict but the summary counters are stale. This is acceptable for v1alpha1: `DiagnosticAccuracySummary` is an observability signal, not a safety-critical gate.
 
-A `POST /agent-diagnostics/recompute-accuracy?namespace=X` endpoint (or a `kubectl`-friendly one-liner) allows an operator to reconstruct any drifted summary by scanning all `AgentDiagnostic` CRs and recomputing from scratch.
+**Concurrent double-review race.** If two SREs submit verdicts for the same previously-unreviewed diagnostic simultaneously, both requests will read `oldVerdict = ""` at step 1 and both will increment `totalReviewed`, causing double-counting. The optimistic concurrency retry on step 3 serializes the summary writes but does not eliminate the double-increment because both requests already read the same empty old verdict before either write lands.
+
+Both scenarios are mitigated by the recompute endpoint: `POST /agent-diagnostics/recompute-accuracy?namespace=X` reconstructs the summary from scratch by scanning all `AgentDiagnostic` CRs in the namespace and recomputing counters from their current `status.verdict` values. Operators should run this after any suspected drift.
 
 ### Part 4: Dashboard
 
@@ -149,8 +151,13 @@ The diagnostics tab gains:
 |---------|----------|-------|
 | Agent service account | `agentdiagnostics` | `create`, `get`, `list` |
 | Agent service account | `agentdiagnostics/status` | — (no access) |
+| Agent service account | `diagnosticaccuracysummaries` | — (no access) |
 | SRE / editor | `agentdiagnostics/status` | `update`, `patch` |
-| SRE / editor | `diagnosticaccuracysummaries/status` | `update`, `patch` |
+| SRE / editor | `diagnosticaccuracysummaries` | `get`, `list`, `watch` |
+| SRE / editor | `diagnosticaccuracysummaries/status` | — (no access) |
+| Gateway service account | `agentdiagnostics/status` | `update`, `patch` |
+| Gateway service account | `diagnosticaccuracysummaries` | `get`, `list`, `create` |
+| Gateway service account | `diagnosticaccuracysummaries/status` | `update`, `patch` |
 | Viewer | `agentdiagnostics`, `diagnosticaccuracysummaries` | `get`, `list`, `watch` |
 
 ## Migration path to `AgentTrustProfile`
@@ -167,7 +174,7 @@ The diagnostics tab gains:
 - [ ] Add `DiagnosticAccuracySummary` type to `api/v1alpha1/`
 - [ ] Run `make generate manifests` to regenerate CRDs and deep copy
 - [ ] Update RBAC roles: `agentdiagnostic_editor_role.yaml` gains `/status` update; new `diagnosticaccuracysummary_editor_role.yaml`
-- [ ] Gateway: `PATCH /agent-diagnostics/{name}/status` handler with two-step write and retry on 409
+- [ ] Gateway: `PATCH /agent-diagnostics/{name}/status` handler with three-step write (read + two writes) and retry on 409 for summary upsert
 - [ ] Gateway: `POST /agent-diagnostics/recompute-accuracy` handler (scan + reconstruct summary)
 - [ ] Dashboard: verdict badge column + inline review form
 - [ ] Dashboard: per-agent accuracy chip above diagnostics table
