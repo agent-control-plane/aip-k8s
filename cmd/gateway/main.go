@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -488,6 +489,22 @@ func sanitizeDNSSegment(s string, maxLen int) string {
 	return s
 }
 
+// summaryNameForAgent returns a stable, collision-resistant DNS name for a
+// DiagnosticAccuracySummary CR from an arbitrary agentIdentity string.
+// It combines a human-readable prefix (up to 54 chars) with an 8-char hex
+// suffix derived from the SHA-256 of the full identity, giving 4B distinct
+// keys. The fallback prefix "agent" is used when the identity sanitizes to empty
+// (e.g., an identity consisting entirely of non-DNS characters).
+func summaryNameForAgent(agentIdentity string) string {
+	h := sha256.Sum256([]byte(agentIdentity))
+	suffix := fmt.Sprintf("%x", h[:4]) // 8 hex chars
+	prefix := sanitizeDNSSegment(agentIdentity, 54)
+	if prefix == "" {
+		prefix = "agent"
+	}
+	return prefix + "-" + suffix
+}
+
 // sanitizeLabelValue converts an arbitrary string into a valid Kubernetes label
 // value: allows [A-Za-z0-9], [-_.], max 63 chars, must begin/end alphanumeric.
 var invalidLabelChars = regexp.MustCompile(`[^A-Za-z0-9\-_.]`)
@@ -663,12 +680,16 @@ func (s *Server) handlePatchAgentDiagnosticStatus(w http.ResponseWriter, r *http
 	diag.Status.ReviewedAt = &now
 
 	if err := s.client.Status().Patch(r.Context(), &diag, patch); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to patch status: %v", err))
+		if apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid status patch: %v", err))
+		} else {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to patch status: %v", err))
+		}
 		return
 	}
 
 	agentId := diag.Spec.AgentIdentity
-	summaryName := sanitizeDNSSegment(agentId, 63)
+	summaryName := summaryNameForAgent(agentId)
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var summary v1alpha1.DiagnosticAccuracySummary
 		err := s.client.Get(r.Context(), types.NamespacedName{Name: summaryName, Namespace: ns}, &summary)
@@ -682,6 +703,16 @@ func (s *Server) handlePatchAgentDiagnosticStatus(w http.ResponseWriter, r *http
 				}
 			} else {
 				return err
+			}
+		}
+
+		// Guard against accidental cross-agent reuse: the hash suffix makes
+		// collisions essentially impossible, but verify defensively.
+		if exists && summary.Spec.AgentIdentity != agentId {
+			exists = false
+			summary = v1alpha1.DiagnosticAccuracySummary{
+				ObjectMeta: metav1.ObjectMeta{Name: summaryName, Namespace: ns},
+				Spec:       v1alpha1.DiagnosticAccuracySummarySpec{AgentIdentity: agentId},
 			}
 		}
 
@@ -731,6 +762,9 @@ func (s *Server) handlePatchAgentDiagnosticStatus(w http.ResponseWriter, r *http
 
 	if err != nil {
 		log.Printf("failed to update DiagnosticAccuracySummary for agent %q: %v", agentId, err)
+		writeError(w, http.StatusInternalServerError,
+			"verdict saved but accuracy summary update failed — run POST /agent-diagnostics/recompute-accuracy to repair")
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"message": "verdict saved"})
@@ -760,7 +794,7 @@ func (s *Server) handleRecomputeAccuracy(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 
-		summaryName := sanitizeDNSSegment(id, 63)
+		summaryName := summaryNameForAgent(id)
 		summary, ok := stats[summaryName]
 		if !ok {
 			summary = &v1alpha1.DiagnosticAccuracySummary{
@@ -804,6 +838,11 @@ func (s *Server) handleRecomputeAccuracy(w http.ResponseWriter, r *http.Request)
 					return s.client.Status().Update(r.Context(), summary)
 				}
 				return err
+			}
+			// Verify the existing CR belongs to the same agent before overwriting.
+			if existing.Spec.AgentIdentity != summary.Spec.AgentIdentity {
+				return fmt.Errorf("summary %q identity mismatch: got %q, want %q",
+					id, existing.Spec.AgentIdentity, summary.Spec.AgentIdentity)
 			}
 			existing.Status = summary.Status
 			return s.client.Status().Update(r.Context(), &existing)
