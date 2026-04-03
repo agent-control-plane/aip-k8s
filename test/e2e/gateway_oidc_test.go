@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os/exec"
@@ -62,6 +63,27 @@ var _ = Describe("Phase 7: Gateway OIDC Authentication", Ordered, func() {
 		cmd.Dir = projDir
 		out, err := cmd.CombinedOutput()
 		Expect(err).NotTo(HaveOccurred(), "failed to install CRDs: %s", string(out))
+
+		By("ensuring controller-manager is deployed (skips if already running)")
+		checkCmd := exec.Command("kubectl", "get", "deployment",
+			"aip-k8s-controller-manager", "-n", "aip-k8s-system")
+		if _, checkErr := utils.Run(checkCmd); checkErr != nil {
+			cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
+			cmd.Dir = projDir
+			out, err = cmd.CombinedOutput()
+			Expect(err).NotTo(HaveOccurred(), "failed to deploy controller-manager: %s", string(out))
+		}
+
+		By("waiting for controller-manager to be ready")
+		Eventually(func(g Gomega) {
+			readyCmd := exec.Command("kubectl", "get", "pods",
+				"-l", "control-plane=controller-manager",
+				"-n", "aip-k8s-system",
+				"-o", "jsonpath={.items[0].status.phase}")
+			phase, err := utils.Run(readyCmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(phase).To(Equal("Running"), "controller-manager pod not yet running")
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 
 		// 2. Build gateway binary
 		cmd = exec.Command("go", "build", "-o", binPath, cmdPath)
