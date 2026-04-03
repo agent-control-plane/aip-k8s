@@ -31,7 +31,7 @@ deployments without such a proxy, the gateway must validate identity itself.
 
 Two new flags on the gateway binary:
 
-```
+```text
 --oidc-issuer-url   string   OIDC provider URL (e.g. https://accounts.google.com).
                              When set, all non-healthz endpoints require a valid
                              Bearer token. When unset, auth is disabled (dev/test only).
@@ -90,7 +90,7 @@ IdP's claim vocabulary.
 
 Instead, roles are declared in gateway config via two flags:
 
-```
+```text
 --agent-subjects     string   Comma-separated list of JWT `sub` values that are
                               permitted to act as agents (create requests, record
                               diagnostics, transition state).
@@ -139,6 +139,12 @@ gateway reads the `AgentRequest`'s `spec.agentIdentity` and compares it to the
 validated `sub`. If they don't match, 403. This prevents one agent from
 transitioning another agent's request.
 
+The non-self-approval constraint on `approve` and `deny`: even a valid reviewer
+MUST NOT approve or deny their own agent request. The gateway reads the
+`AgentRequest`'s `spec.agentIdentity` and compares it to the validated `sub`.
+If they match, return 403 with `"self-approval not permitted"` before any state
+transition or side effect. This check runs after the `reviewer` role check.
+
 Authorization enforcement is a thin wrapper per handler, not middleware, because
 each endpoint has different role requirements. A helper covers the common cases:
 
@@ -164,12 +170,35 @@ func requireRole(rc *roleConfig, role string, sub string, w http.ResponseWriter)
 
 Deployments behind an authenticating proxy (Istio + OIDC, oauth2-proxy) that
 inject `X-Remote-User` / `X-Forwarded-User` continue to work when `--oidc-issuer-url`
-is unset. The gateway then falls back to the existing header-based identity
-resolution. This means zero breaking change for the Apple internal deployment
-while the OIDC rollout is prepared.
+is unset. When OIDC is enabled, proxy headers are ignored — the validated `sub`
+from the JWT is authoritative.
 
-When OIDC is enabled, the proxy headers are ignored — the validated `sub` from
-the JWT is authoritative.
+When OIDC is disabled, proxy headers are accepted only from trusted source IPs.
+Accepting these headers from arbitrary clients is equivalent to having no auth
+at all — any client can forge `X-Remote-User: sre@example.com`.
+
+One new flag:
+
+```text
+--trusted-proxy-cidrs   string   Comma-separated list of CIDR ranges whose
+                                 requests may supply X-Remote-User /
+                                 X-Forwarded-User headers (e.g. "10.0.0.0/8,
+                                 192.168.0.0/16"). When unset, proxy headers
+                                 are accepted from any source (dev/test only).
+                                 Ignored when --oidc-issuer-url is set.
+```
+
+Identity resolution when OIDC is disabled:
+
+1. Parse `r.RemoteAddr` to extract the source IP.
+2. If `--trusted-proxy-cidrs` is set and the source IP does not fall within any
+   listed CIDR, reject proxy headers and treat the request as unauthenticated
+   (401 if the endpoint requires identity, passthrough for read-only endpoints).
+3. If the source IP is trusted (or `--trusted-proxy-cidrs` is unset), read
+   `X-Remote-User` then `X-Forwarded-User` as before.
+
+This preserves zero breaking change for the Apple internal deployment (Istio
+runs in a known CIDR) while closing the header-spoofing hole.
 
 ### Part 5: Body size limit
 
