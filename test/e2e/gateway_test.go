@@ -84,10 +84,10 @@ var _ = Describe("Phase 6: Gateway API", Ordered, func() {
 			readyCmd := exec.Command("kubectl", "get", "pods",
 				"-l", "control-plane=controller-manager",
 				"-n", "aip-k8s-system",
-				"-o", "jsonpath={.items[0].status.phase}")
-			phase, err := utils.Run(readyCmd)
+				"-o", `jsonpath={.items[0].status.conditions[?(@.type=="Ready")].status}`)
+			status, err := utils.Run(readyCmd)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(phase).To(Equal("Running"), "controller-manager pod not yet running")
+			g.Expect(status).To(Equal("True"), "controller-manager pod not yet ready")
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 
 		By("building the gateway binary")
