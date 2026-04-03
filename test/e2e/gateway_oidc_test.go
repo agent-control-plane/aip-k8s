@@ -115,6 +115,12 @@ var _ = Describe("Phase 7: Gateway OIDC Authentication", Ordered, func() {
 		applyCmd.Stdin = strings.NewReader(policyJSON)
 		applyOut, applyErr := applyCmd.CombinedOutput()
 		Expect(applyErr).NotTo(HaveOccurred(), "failed to create SafetyPolicy: %s", string(applyOut))
+
+		By("waiting for SafetyPolicy to be visible before sending requests")
+		Eventually(func() error {
+			return exec.Command("kubectl", "get", "safetypolicy",
+				"gw-require-human", "-n", "default").Run()
+		}, 15*time.Second, time.Second).Should(Succeed())
 	})
 
 	AfterAll(func() {
