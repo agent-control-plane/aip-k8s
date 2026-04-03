@@ -27,6 +27,19 @@ spec:
           args:
             - --addr=:8080
             - --dedup-window={{ .Values.gateway.dedupWindow }}
+            {{- if .Values.gateway.auth.oidcIssuerURL }}
+            - --oidc-issuer-url={{ .Values.gateway.auth.oidcIssuerURL }}
+            - --oidc-audience={{ .Values.gateway.auth.oidcAudience }}
+            {{- end }}
+            {{- if .Values.gateway.auth.agentSubjects }}
+            - --agent-subjects={{ .Values.gateway.auth.agentSubjects }}
+            {{- end }}
+            {{- if .Values.gateway.auth.reviewerSubjects }}
+            - --reviewer-subjects={{ .Values.gateway.auth.reviewerSubjects }}
+            {{- end }}
+            {{- if .Values.gateway.auth.trustedProxyCIDRs }}
+            - --trusted-proxy-cidrs={{ .Values.gateway.auth.trustedProxyCIDRs }}
+            {{- end }}
           ports:
             - name: http
               containerPort: 8080
@@ -44,7 +57,12 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
             capabilities:
               drop:
                 - "ALL"

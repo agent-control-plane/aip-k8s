@@ -187,9 +187,114 @@ kubectl get agentdiagnostics,agentrequests,auditrecords \
   --sort-by=.metadata.creationTimestamp
 ```
 
-### Security
+### Gateway Authentication
 
-Transport-layer security (mTLS, per-agent `AuthorizationPolicy`, rate limiting) is intended to be handled by a service mesh such as Istio placed in front of the gateway. Application-level auth is intentionally omitted — see the OSS Scope table below.
+The gateway supports OIDC/JWT authentication. When enabled, every non-healthz request must carry a valid `Authorization: Bearer <token>` header. When disabled (default), the gateway falls back to proxy headers (`X-Remote-User` / `X-Forwarded-User`) injected by an upstream authenticating proxy.
+
+#### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--oidc-issuer-url` | `""` | OIDC provider URL (e.g. `https://accounts.google.com`). When set, Bearer token validation is required. When unset, auth is disabled (dev/test only). |
+| `--oidc-audience` | `aip-gateway` | Expected JWT `aud` claim. |
+| `--agent-subjects` | `""` | Comma-separated JWT `sub` values permitted to create requests, record diagnostics, and transition state. When empty, any caller is permitted (dev/test only). |
+| `--reviewer-subjects` | `""` | Comma-separated JWT `sub` values permitted to approve/deny requests and write verdicts. When empty, any caller is permitted (dev/test only). |
+| `--trusted-proxy-cidrs` | `""` | CIDRs from which `X-Remote-User`/`X-Forwarded-User` headers are accepted. When empty, any source is trusted (dev/test only). Ignored when `--oidc-issuer-url` is set. |
+
+#### Authorization rules
+
+| Endpoint | Required role |
+|---|---|
+| `GET /healthz`, `GET /readyz` | None |
+| `GET /agent-requests`, `GET /agent-requests/{name}` | Any authenticated |
+| `POST /agent-requests` | `agent` |
+| `POST /agent-requests/{name}/executing` | `agent` (creator only) |
+| `POST /agent-requests/{name}/completed` | `agent` (creator only) |
+| `POST /agent-requests/{name}/approve` | `reviewer` (non-self-approval enforced) |
+| `POST /agent-requests/{name}/deny` | `reviewer` (non-self-approval enforced) |
+| `GET /agent-diagnostics`, `GET /agent-diagnostics/{name}` | Any authenticated |
+| `POST /agent-diagnostics` | `agent` |
+| `PATCH /agent-diagnostics/{name}/status` | `reviewer` |
+| `POST /agent-diagnostics/recompute-accuracy` | `reviewer` |
+| `GET /diagnostic-accuracy-summaries`, `GET /audit-records` | Any authenticated |
+
+#### Production setup (Helm)
+
+1. Configure your OIDC provider (Keycloak, Okta, Auth0, Google, etc.) to issue tokens with `aud: aip-gateway`.
+2. Install with auth enabled:
+
+```sh
+helm upgrade --install aip-k8s \
+  oci://ghcr.io/ravisantoshgudimetla/aip-k8s/charts/aip-k8s \
+  --namespace aip-k8s-system --create-namespace \
+  --set gateway.auth.oidcIssuerURL=https://accounts.google.com \
+  --set gateway.auth.agentSubjects=<agent-service-account-sub> \
+  --set gateway.auth.reviewerSubjects=sre1@example.com,sre2@example.com
+```
+
+3. Agents attach a Bearer token when calling the gateway:
+
+```sh
+TOKEN=$(gcloud auth print-identity-token --audiences=aip-gateway)
+curl -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"agentIdentity":"my-agent","action":"restart","targetURI":"...","reason":"...","namespace":"production"}' \
+     http://localhost:8080/agent-requests
+```
+
+#### Testing OIDC locally with Dex
+
+[Dex](https://dexidp.io) is the easiest way to run a real OIDC provider locally:
+
+```sh
+# 1. Install Dex
+helm repo add dex https://charts.dexidp.io
+helm install dex dex/dex --namespace dex --create-namespace \
+  --set config.issuer=http://localhost:5556 \
+  --set config.staticClients[0].id=aip-gateway \
+  --set config.staticClients[0].secret=aip-secret \
+  --set config.staticClients[0].redirectURIs[0]=http://localhost:8080/callback \
+  --set config.staticPasswords[0].email=agent@example.com \
+  --set "config.staticPasswords[0].hash=\$2y\$10\$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W" \
+  --set config.staticPasswords[0].userID=agent-id \
+  --set config.staticPasswords[0].username=agent
+
+kubectl port-forward -n dex svc/dex 5556:5556 &
+
+# 2. Start the gateway pointing at Dex
+./bin/gateway \
+  --addr :8080 \
+  --oidc-issuer-url http://localhost:5556 \
+  --oidc-audience aip-gateway \
+  --agent-subjects agent-id \
+  --reviewer-subjects reviewer-id
+
+# 3. Fetch a token (client_credentials or password grant depending on Dex config)
+TOKEN=$(curl -s -X POST http://localhost:5556/token \
+  -d grant_type=password \
+  -d client_id=aip-gateway \
+  -d client_secret=aip-secret \
+  -d username=agent@example.com \
+  -d password=password \
+  -d scope="openid" | jq -r .id_token)
+
+# 4. Call the gateway
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/agent-requests
+```
+
+#### Proxy-header fallback (no OIDC)
+
+When `--oidc-issuer-url` is unset, the gateway reads `X-Remote-User` / `X-Forwarded-User` headers. To prevent header spoofing, restrict which source IPs may supply these headers:
+
+```sh
+./bin/gateway \
+  --addr :8080 \
+  --trusted-proxy-cidrs 10.0.0.0/8,172.16.0.0/12 \
+  --agent-subjects sre-agent \
+  --reviewer-subjects sre@example.com
+```
+
+Requests from outside the trusted CIDRs that supply proxy headers will have those headers ignored. For transport-layer security (mTLS, per-agent `AuthorizationPolicy`, rate limiting), place a service mesh such as Istio in front of the gateway.
 
 ## Testing
 This project uses `envtest` for rapid integration testing without a full cluster.

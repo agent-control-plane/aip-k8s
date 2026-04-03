@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"flag"
@@ -33,7 +34,25 @@ var (
 	addr        = flag.String("addr", ":8080", "The address to listen on for HTTP requests")
 	dedupWindow = flag.Duration("dedup-window", 24*time.Hour,
 		"Duration within which duplicate active requests are rejected with 409. Set to 0 to disable.")
+	oidcIssuerURL     = flag.String("oidc-issuer-url", "", "OIDC provider URL. When set, Bearer token validation is required on all non-healthz endpoints.")
+	oidcAudience      = flag.String("oidc-audience", "aip-gateway", "Expected JWT aud claim.")
+	agentSubjects     = flag.String("agent-subjects", "", "Comma-separated JWT sub values permitted to act as agents.")
+	reviewerSubjects  = flag.String("reviewer-subjects", "", "Comma-separated JWT sub values permitted to act as reviewers.")
+	trustedProxyCIDRs = flag.String("trusted-proxy-cidrs", "", "Comma-separated CIDRs from which X-Remote-User/X-Forwarded-User headers are accepted. When empty, any source is trusted (dev only). Ignored when --oidc-issuer-url is set.")
 )
+
+type contextKey string
+
+const callerSubKey contextKey = "callerSub"
+
+func withCallerSub(ctx context.Context, sub string) context.Context {
+	return context.WithValue(ctx, callerSubKey, sub)
+}
+
+func callerSubFromCtx(ctx context.Context) string {
+	s, _ := ctx.Value(callerSubKey).(string)
+	return s
+}
 
 const defaultNamespace = "default"
 
@@ -52,8 +71,10 @@ var terminalPhases = map[string]bool{
 }
 
 type Server struct {
-	client      client.Client
-	dedupWindow time.Duration
+	client       client.Client
+	dedupWindow  time.Duration
+	roles        *roleConfig
+	authRequired bool // true when --oidc-issuer-url is set or any subject list is non-empty
 }
 
 type affectedTargetBody struct {
@@ -164,7 +185,9 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	server := &Server{client: k8sClient, dedupWindow: *dedupWindow}
+	rc := newRoleConfig(*agentSubjects, *reviewerSubjects)
+	authRequired := *oidcIssuerURL != "" || *agentSubjects != "" || *reviewerSubjects != ""
+	server := &Server{client: k8sClient, dedupWindow: *dedupWindow, roles: rc, authRequired: authRequired}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -195,8 +218,19 @@ func main() {
 	mux.HandleFunc("POST /agent-diagnostics/recompute-accuracy", server.handleRecomputeAccuracy)
 	mux.HandleFunc("GET /diagnostic-accuracy-summaries", server.handleListAccuracySummaries)
 
+	var authMiddleware func(http.Handler) http.Handler
+	if *oidcIssuerURL != "" {
+		mw, err := newOIDCMiddleware(context.Background(), *oidcIssuerURL, *oidcAudience)
+		if err != nil {
+			log.Fatalf("OIDC setup failed: %v", err)
+		}
+		authMiddleware = mw
+	} else {
+		authMiddleware = newProxyHeaderMiddleware(*trustedProxyCIDRs)
+	}
+
 	log.Printf("Starting AIP Demo Gateway on %s", *addr)
-	if err := http.ListenAndServe(*addr, loggingMiddleware(mux)); err != nil {
+	if err := http.ListenAndServe(*addr, loggingMiddleware(authMiddleware(mux))); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 }
@@ -320,6 +354,17 @@ func (s *Server) checkDiagnosticDuplicate(
 }
 
 func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
+
+	sub := callerSubFromCtx(r.Context())
+	if s.authRequired && sub == "" {
+		writeError(w, http.StatusUnauthorized, "caller identity required")
+		return
+	}
+	if !requireRole(s.roles, "agent", sub, w) {
+		return
+	}
+
 	var body createAgentRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -466,10 +511,74 @@ func (s *Server) handleGetAgentRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleExecutingAgentRequest(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
+
+	sub := callerSubFromCtx(r.Context())
+	if s.authRequired && sub == "" {
+		writeError(w, http.StatusUnauthorized, "caller identity required")
+		return
+	}
+	if !requireRole(s.roles, "agent", sub, w) {
+		return
+	}
+
+	name := r.PathValue("name")
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		ns = defaultNamespace
+	}
+
+	var req v1alpha1.AgentRequest
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &req); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "AgentRequest not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	if req.Spec.AgentIdentity != sub {
+		writeError(w, http.StatusForbidden, "forbidden: only the creating agent may transition this request")
+		return
+	}
+
 	s.patchAgentRequestCondition(w, r, v1alpha1.ConditionExecuting, "AgentStarted", "Agent is now executing action")
 }
 
 func (s *Server) handleCompletedAgentRequest(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
+
+	sub := callerSubFromCtx(r.Context())
+	if s.authRequired && sub == "" {
+		writeError(w, http.StatusUnauthorized, "caller identity required")
+		return
+	}
+	if !requireRole(s.roles, "agent", sub, w) {
+		return
+	}
+
+	name := r.PathValue("name")
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		ns = defaultNamespace
+	}
+
+	var req v1alpha1.AgentRequest
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &req); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "AgentRequest not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	if req.Spec.AgentIdentity != sub {
+		writeError(w, http.StatusForbidden, "forbidden: only the creating agent may transition this request")
+		return
+	}
+
 	s.patchAgentRequestCondition(w, r, v1alpha1.ConditionCompleted,
 		"ActionSuccess", "Agent successfully completed the action")
 }
@@ -519,6 +628,17 @@ func sanitizeLabelValue(s string) string {
 }
 
 func (s *Server) handleCreateAgentDiagnostic(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
+
+	sub := callerSubFromCtx(r.Context())
+	if s.authRequired && sub == "" {
+		writeError(w, http.StatusUnauthorized, "caller identity required")
+		return
+	}
+	if !requireRole(s.roles, "agent", sub, w) {
+		return
+	}
+
 	var body createAgentDiagnosticBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -633,6 +753,17 @@ func (s *Server) handlePatchAgentDiagnosticStatus(w http.ResponseWriter, r *http
 		ns = defaultNamespace
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
+
+	sub := callerSubFromCtx(r.Context())
+	if s.authRequired && sub == "" {
+		writeError(w, http.StatusUnauthorized, "caller identity required")
+		return
+	}
+	if !requireRole(s.roles, "reviewer", sub, w) {
+		return
+	}
+
 	var body struct {
 		Verdict      string `json:"verdict"`
 		ReviewerNote string `json:"reviewerNote,omitempty"`
@@ -644,19 +775,6 @@ func (s *Server) handlePatchAgentDiagnosticStatus(w http.ResponseWriter, r *http
 
 	if body.Verdict != verdictCorrect && body.Verdict != verdictIncorrect && body.Verdict != verdictPartial {
 		writeError(w, http.StatusBadRequest, "invalid verdict")
-		return
-	}
-
-	// reviewedBy is always set server-side from the upstream identity headers
-	// (injected by the service mesh / authenticating proxy). If neither header
-	// is present the gateway cannot establish caller identity and must refuse
-	// the request to prevent unauthorised or anonymous reviews.
-	caller := r.Header.Get("X-Remote-User")
-	if caller == "" {
-		caller = r.Header.Get("X-Forwarded-User")
-	}
-	if caller == "" {
-		writeError(w, http.StatusUnauthorized, "caller identity required: X-Remote-User or X-Forwarded-User header missing")
 		return
 	}
 
@@ -675,7 +793,7 @@ func (s *Server) handlePatchAgentDiagnosticStatus(w http.ResponseWriter, r *http
 		base := diag.DeepCopy()
 		diag.Status.Verdict = body.Verdict
 		diag.Status.ReviewerNote = body.ReviewerNote
-		diag.Status.ReviewedBy = caller
+		diag.Status.ReviewedBy = sub
 		diag.Status.ReviewedAt = &now
 		return s.client.Status().Patch(r.Context(), &diag,
 			client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
@@ -774,6 +892,17 @@ func (s *Server) handlePatchAgentDiagnosticStatus(w http.ResponseWriter, r *http
 }
 
 func (s *Server) handleRecomputeAccuracy(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
+
+	sub := callerSubFromCtx(r.Context())
+	if s.authRequired && sub == "" {
+		writeError(w, http.StatusUnauthorized, "caller identity required")
+		return
+	}
+	if !requireRole(s.roles, "reviewer", sub, w) {
+		return
+	}
+
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
 		ns = defaultNamespace
@@ -1043,6 +1172,17 @@ func (s *Server) handleDenyAgentRequest(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleHumanDecision(w http.ResponseWriter, r *http.Request, decision string) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
+
+	sub := callerSubFromCtx(r.Context())
+	if s.authRequired && sub == "" {
+		writeError(w, http.StatusUnauthorized, "caller identity required")
+		return
+	}
+	if !requireRole(s.roles, "reviewer", sub, w) {
+		return
+	}
+
 	name := r.PathValue("name")
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
@@ -1059,6 +1199,11 @@ func (s *Server) handleHumanDecision(w http.ResponseWriter, r *http.Request, dec
 	var agentReq v1alpha1.AgentRequest
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &agentReq); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	if agentReq.Spec.AgentIdentity == sub {
+		writeError(w, http.StatusForbidden, "forbidden: self-approval not permitted")
 		return
 	}
 

@@ -21,6 +21,8 @@ rules:
   - auditrecords
   - agentdiagnostics
   - agentdiagnostics/status
+  - diagnosticaccuracysummaries
+  - diagnosticaccuracysummaries/status
   - safetypolicies
   verbs:
   - get

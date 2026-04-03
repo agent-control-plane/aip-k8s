@@ -14,6 +14,12 @@ gateway:
     pullPolicy: IfNotPresent
   replicaCount: 1
   dedupWindow: 24h
+  auth:
+    oidcIssuerURL: ""
+    oidcAudience: "aip-gateway"
+    agentSubjects: ""
+    reviewerSubjects: ""
+    trustedProxyCIDRs: ""
   service:
     type: ClusterIP
     port: 8080
