@@ -94,6 +94,27 @@ var _ = Describe("Phase 7: Gateway OIDC Authentication", Ordered, func() {
 		}, 30*time.Second, time.Second).Should(Equal(http.StatusOK))
 
 		gwCleanup("default")
+
+		// Create the same SafetyPolicy used by Phase 6 so the controller sets
+		// RequiresApproval on "gw-human-action" requests, allowing the gateway's
+		// create handler to return 201 via the early-return path instead of
+		// blocking until the 90s timeout.
+		By("creating SafetyPolicy that requires human approval for gw-human-action")
+		policyJSON := `{
+			"apiVersion": "governance.aip.io/v1alpha1",
+			"kind": "SafetyPolicy",
+			"metadata": {"name": "gw-require-human", "namespace": "default"},
+			"spec": {
+				"targetSelector": {"matchActions": ["gw-human-action"]},
+				"rules": [{"name": "require-human", "type": "StateEvaluation",
+				           "action": "RequireApproval", "expression": "true"}],
+				"failureMode": "FailClosed"
+			}
+		}`
+		applyCmd := exec.Command("kubectl", "apply", "-f", "-")
+		applyCmd.Stdin = strings.NewReader(policyJSON)
+		applyOut, applyErr := applyCmd.CombinedOutput()
+		Expect(applyErr).NotTo(HaveOccurred(), "failed to create SafetyPolicy: %s", string(applyOut))
 	})
 
 	AfterAll(func() {
