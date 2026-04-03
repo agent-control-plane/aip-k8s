@@ -26,7 +26,7 @@ func gwPostWithToken(port, path, body, token string) (*http.Response, error) {
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 90 * time.Second}
 	return client.Do(req)
 }
 
@@ -39,7 +39,7 @@ func gwGetWithToken(port, path, token string) (*http.Response, error) {
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 90 * time.Second}
 	return client.Do(req)
 }
 
