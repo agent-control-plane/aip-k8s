@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os/exec"
@@ -26,7 +27,7 @@ func gwPostWithToken(port, path, body, token string) (*http.Response, error) {
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 90 * time.Second}
 	return client.Do(req)
 }
 
@@ -39,7 +40,7 @@ func gwGetWithToken(port, path, token string) (*http.Response, error) {
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 90 * time.Second}
 	return client.Do(req)
 }
 
@@ -62,6 +63,27 @@ var _ = Describe("Phase 7: Gateway OIDC Authentication", Ordered, func() {
 		cmd.Dir = projDir
 		out, err := cmd.CombinedOutput()
 		Expect(err).NotTo(HaveOccurred(), "failed to install CRDs: %s", string(out))
+
+		By("ensuring controller-manager is deployed (skips if already running)")
+		checkCmd := exec.Command("kubectl", "get", "deployment",
+			"aip-k8s-controller-manager", "-n", "aip-k8s-system")
+		if _, checkErr := utils.Run(checkCmd); checkErr != nil {
+			cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
+			cmd.Dir = projDir
+			out, err = cmd.CombinedOutput()
+			Expect(err).NotTo(HaveOccurred(), "failed to deploy controller-manager: %s", string(out))
+		}
+
+		By("waiting for controller-manager to be ready")
+		Eventually(func(g Gomega) {
+			readyCmd := exec.Command("kubectl", "get", "pods",
+				"-l", "control-plane=controller-manager",
+				"-n", "aip-k8s-system",
+				"-o", `jsonpath={.items[0].status.conditions[?(@.type=="Ready")].status}`)
+			status, err := utils.Run(readyCmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(status).To(Equal("True"), "controller-manager pod not yet ready")
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 
 		// 2. Build gateway binary
 		cmd = exec.Command("go", "build", "-o", binPath, cmdPath)
@@ -94,6 +116,33 @@ var _ = Describe("Phase 7: Gateway OIDC Authentication", Ordered, func() {
 		}, 30*time.Second, time.Second).Should(Equal(http.StatusOK))
 
 		gwCleanup("default")
+
+		// Create the same SafetyPolicy used by Phase 6 so the controller sets
+		// RequiresApproval on "gw-human-action" requests, allowing the gateway's
+		// create handler to return 201 via the early-return path instead of
+		// blocking until the 90s timeout.
+		By("creating SafetyPolicy that requires human approval for gw-human-action")
+		policyJSON := `{
+			"apiVersion": "governance.aip.io/v1alpha1",
+			"kind": "SafetyPolicy",
+			"metadata": {"name": "gw-require-human", "namespace": "default"},
+			"spec": {
+				"targetSelector": {"matchActions": ["gw-human-action"]},
+				"rules": [{"name": "require-human", "type": "StateEvaluation",
+				           "action": "RequireApproval", "expression": "true"}],
+				"failureMode": "FailClosed"
+			}
+		}`
+		applyCmd := exec.Command("kubectl", "apply", "-f", "-")
+		applyCmd.Stdin = strings.NewReader(policyJSON)
+		applyOut, applyErr := applyCmd.CombinedOutput()
+		Expect(applyErr).NotTo(HaveOccurred(), "failed to create SafetyPolicy: %s", string(applyOut))
+
+		By("waiting for SafetyPolicy to be visible before sending requests")
+		Eventually(func() error {
+			return exec.Command("kubectl", "get", "safetypolicy",
+				"gw-require-human", "-n", "default").Run()
+		}, 15*time.Second, time.Second).Should(Succeed())
 	})
 
 	AfterAll(func() {

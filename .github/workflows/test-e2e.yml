@@ -34,6 +34,11 @@ jobs:
       - name: Create Kind cluster
         run: make setup-test-e2e
 
+      - name: Pre-load curl image into Kind
+        run: |
+          docker pull curlimages/curl:latest
+          kind load docker-image curlimages/curl:latest --name aip-k8s-test-e2e
+
       - name: Running Test e2e
         run: |
           go mod tidy
