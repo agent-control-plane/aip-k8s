@@ -31,12 +31,19 @@ spec:
             - --oidc-issuer-url={{ .Values.gateway.auth.oidcIssuerURL }}
             - --oidc-audience={{ .Values.gateway.auth.oidcAudience }}
             - --oidc-identity-claim={{ .Values.gateway.auth.oidcIdentityClaim }}
+            - --oidc-groups-claim={{ .Values.gateway.auth.oidcGroupsClaim }}
             {{- end }}
             {{- if .Values.gateway.auth.agentSubjects }}
             - --agent-subjects={{ .Values.gateway.auth.agentSubjects }}
             {{- end }}
             {{- if .Values.gateway.auth.reviewerSubjects }}
             - --reviewer-subjects={{ .Values.gateway.auth.reviewerSubjects }}
+            {{- end }}
+            {{- if .Values.gateway.auth.agentGroups }}
+            - --agent-groups={{ .Values.gateway.auth.agentGroups }}
+            {{- end }}
+            {{- if .Values.gateway.auth.reviewerGroups }}
+            - --reviewer-groups={{ .Values.gateway.auth.reviewerGroups }}
             {{- end }}
             {{- if .Values.gateway.auth.trustedProxyCIDRs }}
             - --trusted-proxy-cidrs={{ .Values.gateway.auth.trustedProxyCIDRs }}
