@@ -133,14 +133,23 @@ spec:
 When an `AgentRequest` is submitted, the gateway validates in order:
 
 1. **Resource is governed**: At least one `GovernedResource` URI pattern matches `spec.target.uri`. If none match → reject with `ACTION_NOT_PERMITTED`.
-2. **Agent is permitted**: The caller's identity (from `--oidc-identity-claim`) is in `permittedAgents` (or `permittedAgents` is empty). If not → reject with `IDENTITY_INVALID`.
-3. **Action is permitted**: `spec.action` is in `permittedActions` for the matching `GovernedResource`. If not → reject with `ACTION_NOT_PERMITTED`.
+   - **Multiple matches**: When multiple `GovernedResource` patterns match `spec.target.uri`, the gateway selects the single `GovernedResource` with the longest matching URI pattern (most-specific match). If multiple patterns have the same length, selection is stable-sorted by `metadata.name` (alphabetically) and the first is chosen. This ensures deterministic, reproducible admission decisions.
+   - **Permission evaluation**: Once the matching `GovernedResource` is selected, only that resource's `permittedActions` and `permittedAgents` are evaluated. There is no union or aggregation across multiple matches — the single most-specific `GovernedResource` is authoritative.
+
+2. **Agent identity is authoritative**: The caller's identity parsed from the OIDC token (via `--oidc-identity-claim`) is the sole source of truth for `AgentRequest.spec.agentIdentity`. The gateway enforces this invariant:
+   - When an `AgentRequest` is created, the gateway overwrites `spec.agentIdentity` with the parsed OIDC identity claim, ignoring any client-supplied value.
+   - When validating an existing `AgentRequest`, the gateway verifies that `spec.agentIdentity` exactly matches the caller's OIDC identity. If they differ → reject with `IDENTITY_INVALID`.
+   - This prevents identity spoofing: `spec.agentIdentity` cannot drift from the authenticated caller identity.
+
+3. **Agent is permitted**: The caller's identity (from step 2) is in the matching `GovernedResource`'s `permittedAgents` list (or `permittedAgents` is empty, meaning any authenticated agent is allowed). If not → reject with `IDENTITY_INVALID`.
+
+4. **Action is permitted**: `spec.action` is in `permittedActions` for the matching `GovernedResource` (selected in step 1). If not → reject with `ACTION_NOT_PERMITTED`.
 
 These checks happen before `SafetyPolicy` evaluation — they are hard gates, not policy rules. A `SafetyPolicy` can further restrict what is allowed within a `GovernedResource`'s envelope, but cannot expand beyond it.
 
 ## Context Fetchers
 
-After admission, the control plane invokes the context fetcher named in the matching `GovernedResource` and writes the result to `AgentRequestStatus.ProviderContext`. This field is surfaced to reviewers alongside the agent's declared intent, so the reviewer sees both sides: what the agent declared and what AIP independently verified.
+After admission, the control plane invokes the context fetcher named in the matching `GovernedResource` (selected via the deterministic most-specific pattern match described in Admission Enforcement) and writes the result to `AgentRequestStatus.ProviderContext`. This field is surfaced to reviewers alongside the agent's declared intent, so the reviewer sees both sides: what the agent declared and what AIP independently verified.
 
 ### Karpenter fetcher
 
