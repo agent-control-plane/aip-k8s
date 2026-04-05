@@ -147,27 +147,27 @@ The gateway needs four flags set:
 | `--agent-subjects` | `aip-agent-1` | `sub` values allowed to act as agents |
 | `--reviewer-subjects` | `aip-reviewer-1` | `sub` values allowed to approve/deny |
 
-If you installed AIP with the default Helm chart, upgrade with the OIDC flags:
+If you installed AIP with the default Helm chart, upgrade with the OIDC values:
 
 ```bash
 helm upgrade aip-k8s charts/aip-k8s \
   --reuse-values \
-  --set "gateway.extraArgs[0]=--oidc-issuer-url=http://dex.dex.svc.cluster.local:5556" \
-  --set "gateway.extraArgs[1]=--oidc-audience=aip-gateway" \
-  --set "gateway.extraArgs[2]=--agent-subjects=aip-agent-1" \
-  --set "gateway.extraArgs[3]=--reviewer-subjects=aip-reviewer-1"
+  --set gateway.auth.oidcIssuerURL="http://dex.dex.svc.cluster.local:5556" \
+  --set gateway.auth.oidcAudience="aip-gateway" \
+  --set gateway.auth.agentSubjects="aip-agent-1" \
+  --set gateway.auth.reviewerSubjects="aip-reviewer-1"
 ```
 
-Alternatively add them directly to your values file:
+Alternatively add them to a values override file:
 
 ```yaml
 # values-override.yaml
 gateway:
-  extraArgs:
-    - --oidc-issuer-url=http://dex.dex.svc.cluster.local:5556
-    - --oidc-audience=aip-gateway
-    - --agent-subjects=aip-agent-1
-    - --reviewer-subjects=aip-reviewer-1
+  auth:
+    oidcIssuerURL: "http://dex.dex.svc.cluster.local:5556"
+    oidcAudience: "aip-gateway"
+    agentSubjects: "aip-agent-1"
+    reviewerSubjects: "aip-reviewer-1"
 ```
 
 ```bash
@@ -390,18 +390,13 @@ Upgrade Dex:
 helm upgrade dex dex/dex -n dex --values dex-values.yaml
 ```
 
-Add the new client ID to the gateway's `--agent-subjects`
-(comma-separated) and restart:
+Add the new client ID to `gateway.auth.agentSubjects` (comma-separated)
+and restart:
 
 ```bash
-# Update your values override
-gateway:
-  extraArgs:
-    - --agent-subjects=aip-agent-1,aip-agent-2
-```
-
-```bash
-helm upgrade aip-k8s charts/aip-k8s -f values-override.yaml
+helm upgrade aip-k8s charts/aip-k8s \
+  --reuse-values \
+  --set gateway.auth.agentSubjects="aip-agent-1,aip-agent-2"
 kubectl rollout restart deployment/aip-k8s-gateway -n aip-k8s-system
 ```
 
