@@ -1,0 +1,225 @@
+# Design: GovernedResource CRD
+
+**Status**: Draft
+
+## Problem
+
+AIP currently has no concept of *what resources agents are permitted to mutate*. Platform engineering teams have no way to declare "Karpenter NodePools and GitHub PRs are in-scope for agent actions" without writing bespoke SafetyPolicy rules. There is no registry of governed resource types, no per-resource context fetchers, and no enforcement that an agent is even targeting a resource type the platform team has approved for agent mutation.
+
+This gap means:
+
+- An agent can submit an `AgentRequest` targeting *any* URI — there is no admission-time check that the target resource type is sanctioned.
+- Reviewers have no live context when evaluating requests (current nodepool utilization, pending pods, PR diff) — they are approving based on agent-declared intent alone.
+- There is no canonical mapping from resource type → which agents are permitted to mutate it.
+
+## Design Goals
+
+1. **Resource registry**: Platform engineering declares which resource types agents may mutate. Requests targeting unsanctioned resource types are rejected at admission time.
+2. **Agent-to-resource binding**: A `GovernedResource` scopes which agent identities may target it, eliminating the need for a full RBAC system by leveraging naming conventions.
+3. **Context fetchers**: When an `AgentRequest` is submitted, the control plane independently fetches live context for the target resource and surfaces it to the reviewer.
+4. **Clear role separation**: Platform engineering owns `GovernedResource` creation. App teams own their agents and `SafetyPolicy`. Agents submit `AgentRequest` only.
+
+## Non-Goals
+
+- A full RBAC system with custom roles and bindings. The three-role model (admin / reviewer / agent) covers the majority of enterprise use cases.
+- Namespace-scoped `GovernedResource`. Most governed resources (Karpenter NodePools, GitHub repos) are inherently cluster-scoped or external. Start cluster-scoped.
+- A UI for `GovernedResource` management. kubectl and GitOps are sufficient for the initial version.
+
+## Roles
+
+AIP defines three roles enforced at the gateway:
+
+| Role | Gateway flag | Responsibilities |
+|---|---|---|
+| **Admin** | `--admin-subjects` | Create/modify `GovernedResource` and `SafetyPolicy` via gateway API. Owned by platform engineering. |
+| **Reviewer** | `--reviewer-subjects` | Approve or deny `AgentRequest`. Owned by platform engineering — not the team running the agent. |
+| **Agent** | `--agent-subjects` | Submit `AgentRequest` only. Cannot modify policy or approve requests. |
+
+### Why platform engineering owns review
+
+The team proposing a change should not approve it. Platform engineering has cluster-wide context (cost, capacity, blast radius) that application teams lack. This separation is the same model as change management in mature engineering organizations and produces a stronger audit trail: "a platform engineer approved this agent action" is a defensible governance posture; "the agent's own team approved it" is not.
+
+### Why a full RBAC system is not needed
+
+Multi-team isolation is achieved through naming conventions and URI pattern matching in `GovernedResource`, not through a role/binding system. If Team A's nodepool is `nodepool/team-a-workers`, then:
+
+```yaml
+spec:
+  uriPattern: "k8s://prod/karpenter/nodepool/team-a-*"
+  permittedAgents: ["aip-agent-team-a"]
+```
+
+An agent submitting a request for `nodepool/team-b-workers` is rejected at admission — no `GovernedResource` matches that pattern for that agent identity. The naming convention *is* the access control. Full RBAC becomes relevant only when you have many teams with overlapping resource namespaces — add it then, not now.
+
+## GovernedResource CRD
+
+### Schema
+
+```go
+type GovernedResourceSpec struct {
+    // URIPattern is a glob pattern matched against AgentRequest.spec.target.uri.
+    // Requests targeting URIs that do not match any GovernedResource are rejected.
+    // Examples:
+    //   "k8s://prod/karpenter/nodepool/team-a-*"
+    //   "github://org/repo-*"
+    //   "k8s://*/default/deployment/*"
+    // +kubebuilder:validation:MinLength=1
+    URIPattern string `json:"uriPattern"`
+
+    // PermittedActions lists the action strings agents may request on this resource.
+    // Requests with actions not in this list are rejected.
+    // +kubebuilder:validation:MinItems=1
+    PermittedActions []string `json:"permittedActions"`
+
+    // PermittedAgents lists agent identity values (matched against --oidc-identity-claim)
+    // that may submit AgentRequests targeting this resource.
+    // Empty means any authenticated agent may target this resource.
+    // +optional
+    PermittedAgents []string `json:"permittedAgents,omitempty"`
+
+    // ContextFetcher names the built-in fetcher to invoke when an AgentRequest
+    // targets this resource type. The fetcher populates status.providerContext
+    // so reviewers see live resource state alongside the agent's declared intent.
+    // Supported values: "karpenter", "github", "k8s-deployment", "none"
+    // +kubebuilder:validation:Enum=karpenter;github;k8s-deployment;none
+    // +kubebuilder:default=none
+    ContextFetcher string `json:"contextFetcher"`
+
+    // Description is a human-readable explanation of this governed resource type,
+    // shown to reviewers during the approval decision.
+    // +optional
+    Description string `json:"description,omitempty"`
+}
+```
+
+### Example: Karpenter NodePool
+
+```yaml
+apiVersion: governance.aip.io/v1alpha1
+kind: GovernedResource
+metadata:
+  name: karpenter-nodepool-team-a
+spec:
+  uriPattern: "k8s://prod/karpenter/nodepool/team-a-*"
+  permittedActions:
+    - scale-up
+    - scale-down
+  permittedAgents:
+    - aip-agent-team-a
+  contextFetcher: karpenter
+  description: "Team A Karpenter NodePools. Scaling requires platform engineering approval."
+```
+
+### Example: GitHub PRs
+
+```yaml
+apiVersion: governance.aip.io/v1alpha1
+kind: GovernedResource
+metadata:
+  name: github-prs-infra
+spec:
+  uriPattern: "github://myorg/infra-*"
+  permittedActions:
+    - open-pr
+    - close-pr
+  permittedAgents:
+    - aip-agent-team-a
+  contextFetcher: github
+  description: "Infrastructure repos. PRs opened by agents require platform engineering review."
+```
+
+## Admission Enforcement
+
+When an `AgentRequest` is submitted, the gateway validates in order:
+
+1. **Resource is governed**: At least one `GovernedResource` URI pattern matches `spec.target.uri`. If none match → reject with `ACTION_NOT_PERMITTED`.
+2. **Agent is permitted**: The caller's identity (from `--oidc-identity-claim`) is in `permittedAgents` (or `permittedAgents` is empty). If not → reject with `IDENTITY_INVALID`.
+3. **Action is permitted**: `spec.action` is in `permittedActions` for the matching `GovernedResource`. If not → reject with `ACTION_NOT_PERMITTED`.
+
+These checks happen before `SafetyPolicy` evaluation — they are hard gates, not policy rules. A `SafetyPolicy` can further restrict what is allowed within a `GovernedResource`'s envelope, but cannot expand beyond it.
+
+## Context Fetchers
+
+After admission, the control plane invokes the context fetcher named in the matching `GovernedResource` and writes the result to `AgentRequestStatus.ProviderContext`. This field is surfaced to reviewers alongside the agent's declared intent, so the reviewer sees both sides: what the agent declared and what AIP independently verified.
+
+### Karpenter fetcher
+
+Reads the target `NodePool` via the K8s client:
+
+```json
+{
+  "currentLimitCPU": "100",
+  "currentLimitMemory": "400Gi",
+  "currentNodeCount": 47,
+  "pendingPods": 12,
+  "estimatedCostDeltaPerHour": "$8.40",
+  "recentScalingEvents": [
+    {"time": "2026-04-05T02:14:00Z", "direction": "up", "delta": 5}
+  ]
+}
+```
+
+Reviewer sees: *"Agent wants to raise the CPU limit from 100→150. Right now: 47 nodes, 12 pods pending, estimated +$8.40/hr."*
+
+### GitHub fetcher
+
+Reads the PR draft via GitHub API (token from a cluster Secret):
+
+```json
+{
+  "title": "chore: bump node image to 1.31",
+  "filesChanged": 3,
+  "linesAdded": 12,
+  "linesRemoved": 8,
+  "codeowners": ["@platform-team"],
+  "ciStatus": "pending"
+}
+```
+
+### k8s-deployment fetcher
+
+The existing `ControlPlaneVerification` logic — ready replicas, active endpoints, downstream services. Already implemented; this fetcher wraps it under the new model.
+
+## AgentRequestStatus extension
+
+`ControlPlaneVerification` is currently hardcoded for K8s Deployments. To support arbitrary resource types, add:
+
+```go
+// ProviderContext holds live resource state fetched by the context fetcher
+// named in the matching GovernedResource. Schema is fetcher-specific.
+// +optional
+ProviderContext *apiextensionsv1.JSON `json:"providerContext,omitempty"`
+```
+
+`ControlPlaneVerification` is retained for backward compatibility; new fetchers write to `ProviderContext`.
+
+## Trust Boundaries
+
+```
+Platform Engineering (Admin + Reviewer)
+  ├── Creates GovernedResource   — what resource types agents may touch
+  ├── Creates SafetyPolicy       — what requires approval within that envelope
+  └── Approves/denies AgentRequest — runtime decisions
+
+App Team
+  ├── Builds and operates their agent
+  └── Configures agent identity and SafetyPolicy within GovernedResource bounds
+
+Agent (runtime identity)
+  └── Submits AgentRequest only
+      Cannot create GovernedResource, SafetyPolicy, or approve requests
+```
+
+## Implementation Sequence
+
+| Step | What | Notes |
+|---|---|---|
+| 1 | Add `GovernedResource` CRD | `api/v1alpha1/governedresource_types.go` |
+| 2 | Add `--admin-subjects` flag to gateway | Mirrors existing `--agent-subjects` pattern |
+| 3 | Admission check in gateway | Validate URI + agent identity + action against `GovernedResource` list |
+| 4 | Add `ProviderContext` to `AgentRequestStatus` | `*apiextensionsv1.JSON`, additive change |
+| 5 | Karpenter context fetcher in controller | Pure K8s client, no external credentials |
+| 6 | GitHub context fetcher in controller | Requires GitHub token Secret in cluster |
+| 7 | Update Helm chart and docs | |
+
+Steps 1–4 are the first milestone: hard admission gates with no context fetching yet. Steps 5–6 are the demo-worthy payoff for the blog post.
