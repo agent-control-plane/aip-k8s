@@ -63,13 +63,13 @@ func TestClaimStringSlice(t *testing.T) {
 	g := gomega.NewWithT(t)
 
 	// JSON array ([]interface{} after json.Unmarshal)
-	claims := map[string]interface{}{
-		"groups": []interface{}{"sre-team", "platform-eng"},
+	claims := map[string]any{
+		"groups": []any{"sre-team", "platform-eng"},
 	}
 	g.Expect(claimStringSlice(claims, "groups")).To(gomega.ConsistOf("sre-team", "platform-eng"))
 
 	// native []string
-	claims2 := map[string]interface{}{
+	claims2 := map[string]any{
 		"roles": []string{"admin", "viewer"},
 	}
 	g.Expect(claimStringSlice(claims2, "roles")).To(gomega.ConsistOf("admin", "viewer"))
@@ -78,7 +78,7 @@ func TestClaimStringSlice(t *testing.T) {
 	g.Expect(claimStringSlice(claims, "missing")).To(gomega.BeNil())
 
 	// wrong type (string, not array)
-	claims3 := map[string]interface{}{"groups": "single-string"}
+	claims3 := map[string]any{"groups": "single-string"}
 	g.Expect(claimStringSlice(claims3, "groups")).To(gomega.BeNil())
 }
 
@@ -125,6 +125,11 @@ func TestRequireRole(t *testing.T) {
 	t.Run("wrong group denied", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		g.Expect(requireRole(rcGroups, "agent", "bot-1", []string{"other-group"}, w)).To(gomega.BeFalse())
+		g.Expect(w.Code).To(gomega.Equal(http.StatusForbidden))
+	})
+	t.Run("unknown role denied", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		g.Expect(requireRole(rcGroups, "unknown", "user-1", nil, w)).To(gomega.BeFalse())
 		g.Expect(w.Code).To(gomega.Equal(http.StatusForbidden))
 	})
 }

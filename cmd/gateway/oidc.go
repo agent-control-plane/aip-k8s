@@ -88,6 +88,9 @@ func requireRole(rc *roleConfig, role, sub string, groups []string, w http.Respo
 			writeError(w, http.StatusForbidden, "reviewer role required")
 			return false
 		}
+	default:
+		writeError(w, http.StatusForbidden, "unknown role")
+		return false
 	}
 	return true
 }
@@ -121,7 +124,7 @@ func newOIDCMiddleware(
 				writeError(w, http.StatusUnauthorized, "invalid token")
 				return
 			}
-			var allClaims map[string]interface{}
+			var allClaims map[string]any
 			if err := idToken.Claims(&allClaims); err != nil {
 				writeError(w, http.StatusUnauthorized, "token missing claims")
 				return
@@ -143,14 +146,14 @@ func newOIDCMiddleware(
 }
 
 // claimString extracts a string value from a decoded claims map.
-func claimString(claims map[string]interface{}, name string) string {
+func claimString(claims map[string]any, name string) string {
 	v, _ := claims[name].(string)
 	return v
 }
 
 // claimStringSlice extracts a []string from a decoded claims map.
-// The claim value may be []interface{} (JSON array) or []string.
-func claimStringSlice(claims map[string]interface{}, name string) []string {
+// The claim value may be []any (JSON array) or []string.
+func claimStringSlice(claims map[string]any, name string) []string {
 	raw, ok := claims[name]
 	if !ok {
 		return nil
@@ -158,7 +161,7 @@ func claimStringSlice(claims map[string]interface{}, name string) []string {
 	switch v := raw.(type) {
 	case []string:
 		return v
-	case []interface{}:
+	case []any:
 		out := make([]string, 0, len(v))
 		for _, item := range v {
 			if s, ok := item.(string); ok {
