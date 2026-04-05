@@ -39,6 +39,14 @@ jobs:
           docker pull curlimages/curl:latest
           kind load docker-image curlimages/curl:latest --name aip-k8s-test-e2e
 
+      - name: Pre-load Keycloak image into Kind
+        run: |
+          docker pull quay.io/keycloak/keycloak:26.0.7
+          kind load docker-image quay.io/keycloak/keycloak:26.0.7 --name aip-k8s-test-e2e
+
+      - name: Build and load AIP images into Kind
+        run: make chart-images CHART_KIND_CLUSTER=aip-k8s-test-e2e
+
       - name: Running Test e2e
         run: |
           go mod tidy

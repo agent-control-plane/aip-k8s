@@ -12,11 +12,13 @@ import (
 )
 
 type roleConfig struct {
-	agentSubs    map[string]bool
-	reviewerSubs map[string]bool
+	agentSubs      map[string]bool
+	reviewerSubs   map[string]bool
+	agentGroups    map[string]bool
+	reviewerGroups map[string]bool
 }
 
-func newRoleConfig(agentList, reviewerList string) *roleConfig {
+func newRoleConfig(agentList, reviewerList, agentGroupList, reviewerGroupList string) *roleConfig {
 	parse := func(s string) map[string]bool {
 		m := map[string]bool{}
 		for v := range strings.SplitSeq(s, ",") {
@@ -27,48 +29,80 @@ func newRoleConfig(agentList, reviewerList string) *roleConfig {
 		return m
 	}
 	return &roleConfig{
-		agentSubs:    parse(agentList),
-		reviewerSubs: parse(reviewerList),
+		agentSubs:      parse(agentList),
+		reviewerSubs:   parse(reviewerList),
+		agentGroups:    parse(agentGroupList),
+		reviewerGroups: parse(reviewerGroupList),
 	}
 }
 
-// isAgent returns true if sub is permitted to act as an agent.
-// Open mode (both lists empty) permits any caller; once either list is non-empty
-// both roles are enforced so that partial configuration cannot leave one role open.
-func (rc *roleConfig) isAgent(sub string) bool {
-	if len(rc.agentSubs) == 0 && len(rc.reviewerSubs) == 0 {
+// openMode returns true when no subjects or groups are configured — any caller is permitted.
+// Once any list is non-empty all roles are enforced so that partial configuration
+// cannot leave one role open.
+func (rc *roleConfig) openMode() bool {
+	return len(rc.agentSubs) == 0 && len(rc.reviewerSubs) == 0 &&
+		len(rc.agentGroups) == 0 && len(rc.reviewerGroups) == 0
+}
+
+// isAgent returns true if sub or any of groups is permitted to act as an agent.
+func (rc *roleConfig) isAgent(sub string, groups []string) bool {
+	if rc.openMode() {
 		return true
 	}
-	return rc.agentSubs[sub]
-}
-
-// isReviewer returns true if sub is permitted to act as a reviewer.
-// Open mode (both lists empty) permits any caller; once either list is non-empty
-// both roles are enforced so that partial configuration cannot leave one role open.
-func (rc *roleConfig) isReviewer(sub string) bool {
-	if len(rc.agentSubs) == 0 && len(rc.reviewerSubs) == 0 {
+	if rc.agentSubs[sub] {
 		return true
 	}
-	return rc.reviewerSubs[sub]
+	for _, g := range groups {
+		if rc.agentGroups[g] {
+			return true
+		}
+	}
+	return false
 }
 
-func requireRole(rc *roleConfig, role, sub string, w http.ResponseWriter) bool {
+// isReviewer returns true if sub or any of groups is permitted to act as a reviewer.
+func (rc *roleConfig) isReviewer(sub string, groups []string) bool {
+	if rc.openMode() {
+		return true
+	}
+	if rc.reviewerSubs[sub] {
+		return true
+	}
+	for _, g := range groups {
+		if rc.reviewerGroups[g] {
+			return true
+		}
+	}
+	return false
+}
+
+func requireRole(rc *roleConfig, role, sub string, groups []string, w http.ResponseWriter) bool {
 	switch role {
 	case "agent":
-		if !rc.isAgent(sub) {
+		if !rc.isAgent(sub, groups) {
 			writeError(w, http.StatusForbidden, "agent role required")
 			return false
 		}
 	case "reviewer":
-		if !rc.isReviewer(sub) {
+		if !rc.isReviewer(sub, groups) {
 			writeError(w, http.StatusForbidden, "reviewer role required")
 			return false
 		}
+	default:
+		writeError(w, http.StatusForbidden, "unknown role")
+		return false
 	}
 	return true
 }
 
-func newOIDCMiddleware(ctx context.Context, issuerURL, audience string) (func(http.Handler) http.Handler, error) {
+// newOIDCMiddleware creates JWT validation middleware.
+// identityClaim is the token claim used as the caller identity (e.g. "azp",
+// "sub", "appid", "email"). If the claim is absent the middleware falls back
+// to "sub". groupsClaim is the token claim that carries group memberships
+// (typically "groups"); its value is stored in context for role checks.
+func newOIDCMiddleware(
+	ctx context.Context, issuerURL, audience, identityClaim, groupsClaim string,
+) (func(http.Handler) http.Handler, error) {
 	provider, err := oidc.NewProvider(ctx, issuerURL)
 	if err != nil {
 		return nil, fmt.Errorf("oidc provider: %w", err)
@@ -90,16 +124,53 @@ func newOIDCMiddleware(ctx context.Context, issuerURL, audience string) (func(ht
 				writeError(w, http.StatusUnauthorized, "invalid token")
 				return
 			}
-			var claims struct {
-				Sub string `json:"sub"`
-			}
-			if err := idToken.Claims(&claims); err != nil || claims.Sub == "" {
-				writeError(w, http.StatusUnauthorized, "token missing sub claim")
+			var allClaims map[string]any
+			if err := idToken.Claims(&allClaims); err != nil {
+				writeError(w, http.StatusUnauthorized, "token missing claims")
 				return
 			}
-			next.ServeHTTP(w, r.WithContext(withCallerSub(r.Context(), claims.Sub)))
+			identity := claimString(allClaims, identityClaim)
+			if identity == "" {
+				identity = claimString(allClaims, "sub") // fallback
+			}
+			if identity == "" {
+				writeError(w, http.StatusUnauthorized, "token missing identity claim")
+				return
+			}
+			groups := claimStringSlice(allClaims, groupsClaim)
+			rctx := withCallerSub(r.Context(), identity)
+			rctx = withCallerGroups(rctx, groups)
+			next.ServeHTTP(w, r.WithContext(rctx))
 		})
 	}, nil
+}
+
+// claimString extracts a string value from a decoded claims map.
+func claimString(claims map[string]any, name string) string {
+	v, _ := claims[name].(string)
+	return v
+}
+
+// claimStringSlice extracts a []string from a decoded claims map.
+// The claim value may be []any (JSON array) or []string.
+func claimStringSlice(claims map[string]any, name string) []string {
+	raw, ok := claims[name]
+	if !ok {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 func newProxyHeaderMiddleware(trustedCIDRs string) func(http.Handler) http.Handler {

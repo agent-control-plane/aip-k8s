@@ -17,8 +17,20 @@ gateway:
   auth:
     oidcIssuerURL: ""
     oidcAudience: "aip-gateway"
+    # oidcIdentityClaim: the JWT claim used as caller identity.
+    # "sub" (default) works for most OIDC providers.
+    # Use "azp" for Keycloak client_credentials, "appid" for Azure AD,
+    # "email" for Google service accounts.
+    oidcIdentityClaim: "sub"
+    # oidcGroupsClaim: JWT claim carrying group memberships (array of strings).
+    # Common values: "groups", "roles", "group_memberships".
+    oidcGroupsClaim: "groups"
     agentSubjects: ""
     reviewerSubjects: ""
+    # agentGroups/reviewerGroups: grant roles to all members of a group.
+    # "anyone in sre-team can review" instead of listing every individual.
+    agentGroups: ""
+    reviewerGroups: ""
     trustedProxyCIDRs: ""
   service:
     type: ClusterIP

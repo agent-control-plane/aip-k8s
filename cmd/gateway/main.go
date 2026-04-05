@@ -38,10 +38,20 @@ var (
 		"OIDC provider URL. When set, Bearer token validation is required on all non-healthz endpoints.")
 	oidcAudience = flag.String("oidc-audience", "aip-gateway",
 		"Expected JWT aud claim.")
+	oidcIdentityClaim = flag.String("oidc-identity-claim", "sub",
+		"JWT claim used as the caller identity. Default 'sub' is compatible with most OIDC providers. "+
+			"Use 'azp' for Keycloak client_credentials, 'appid' for Azure AD, 'email' for Google service accounts. "+
+			"Falls back to 'sub' if the configured claim is absent from the token.")
 	agentSubjects = flag.String("agent-subjects", "",
-		"Comma-separated JWT sub values permitted to act as agents.")
+		"Comma-separated identity values permitted to act as agents (matched against --oidc-identity-claim).")
 	reviewerSubjects = flag.String("reviewer-subjects", "",
-		"Comma-separated JWT sub values permitted to act as reviewers.")
+		"Comma-separated identity values permitted to act as reviewers (matched against --oidc-identity-claim).")
+	oidcGroupsClaim = flag.String("oidc-groups-claim", "groups",
+		"JWT claim that carries group memberships (array of strings). Common values: 'groups', 'roles', 'group_memberships'.")
+	agentGroups = flag.String("agent-groups", "",
+		"Comma-separated group names permitted to act as agents (matched against --oidc-groups-claim).")
+	reviewerGroups = flag.String("reviewer-groups", "",
+		"Comma-separated group names permitted to act as reviewers (matched against --oidc-groups-claim).")
 	trustedProxyCIDRs = flag.String("trusted-proxy-cidrs", "",
 		"Comma-separated CIDRs for proxy-header trust. Empty = any source (dev only). Ignored when --oidc-issuer-url is set.")
 )
@@ -49,6 +59,7 @@ var (
 type contextKey string
 
 const callerSubKey contextKey = "callerSub"
+const callerGroupsKey contextKey = "callerGroups"
 
 func withCallerSub(ctx context.Context, sub string) context.Context {
 	return context.WithValue(ctx, callerSubKey, sub)
@@ -57,6 +68,15 @@ func withCallerSub(ctx context.Context, sub string) context.Context {
 func callerSubFromCtx(ctx context.Context) string {
 	s, _ := ctx.Value(callerSubKey).(string)
 	return s
+}
+
+func withCallerGroups(ctx context.Context, groups []string) context.Context {
+	return context.WithValue(ctx, callerGroupsKey, groups)
+}
+
+func callerGroupsFromCtx(ctx context.Context) []string {
+	g, _ := ctx.Value(callerGroupsKey).([]string)
+	return g
 }
 
 const defaultNamespace = "default"
@@ -190,8 +210,9 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	rc := newRoleConfig(*agentSubjects, *reviewerSubjects)
-	authRequired := *oidcIssuerURL != "" || *agentSubjects != "" || *reviewerSubjects != ""
+	rc := newRoleConfig(*agentSubjects, *reviewerSubjects, *agentGroups, *reviewerGroups)
+	authRequired := *oidcIssuerURL != "" || *agentSubjects != "" || *reviewerSubjects != "" ||
+		*agentGroups != "" || *reviewerGroups != ""
 
 	// Refuse to start in a configuration where role allowlists are set but no trust boundary is
 	// defined: without --oidc-issuer-url, any client can forge X-Remote-User to claim any sub.
@@ -237,7 +258,7 @@ func main() {
 	if *oidcIssuerURL != "" {
 		discoverCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		mw, err := newOIDCMiddleware(discoverCtx, *oidcIssuerURL, *oidcAudience)
+		mw, err := newOIDCMiddleware(discoverCtx, *oidcIssuerURL, *oidcAudience, *oidcIdentityClaim, *oidcGroupsClaim)
 		if err != nil {
 			log.Fatalf("OIDC setup failed: %v", err)
 		}
@@ -378,7 +399,7 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusUnauthorized, "caller identity required")
 		return
 	}
-	if !requireRole(s.roles, "agent", sub, w) {
+	if !requireRole(s.roles, "agent", sub, callerGroupsFromCtx(r.Context()), w) {
 		return
 	}
 
@@ -547,7 +568,7 @@ func (s *Server) handleExecutingAgentRequest(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusUnauthorized, "caller identity required")
 		return
 	}
-	if !requireRole(s.roles, "agent", sub, w) {
+	if !requireRole(s.roles, "agent", sub, callerGroupsFromCtx(r.Context()), w) {
 		return
 	}
 
@@ -590,7 +611,7 @@ func (s *Server) handleCompletedAgentRequest(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusUnauthorized, "caller identity required")
 		return
 	}
-	if !requireRole(s.roles, "agent", sub, w) {
+	if !requireRole(s.roles, "agent", sub, callerGroupsFromCtx(r.Context()), w) {
 		return
 	}
 
@@ -677,7 +698,7 @@ func (s *Server) handleCreateAgentDiagnostic(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusUnauthorized, "caller identity required")
 		return
 	}
-	if !requireRole(s.roles, "agent", sub, w) {
+	if !requireRole(s.roles, "agent", sub, callerGroupsFromCtx(r.Context()), w) {
 		return
 	}
 
@@ -813,7 +834,7 @@ func (s *Server) handlePatchAgentDiagnosticStatus(w http.ResponseWriter, r *http
 		writeError(w, http.StatusUnauthorized, "caller identity required")
 		return
 	}
-	if !requireRole(s.roles, "reviewer", sub, w) {
+	if !requireRole(s.roles, "reviewer", sub, callerGroupsFromCtx(r.Context()), w) {
 		return
 	}
 
@@ -953,7 +974,7 @@ func (s *Server) handleRecomputeAccuracy(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusUnauthorized, "caller identity required")
 		return
 	}
-	if !requireRole(s.roles, "reviewer", sub, w) {
+	if !requireRole(s.roles, "reviewer", sub, callerGroupsFromCtx(r.Context()), w) {
 		return
 	}
 
@@ -1257,7 +1278,7 @@ func (s *Server) handleHumanDecision(w http.ResponseWriter, r *http.Request, dec
 		writeError(w, http.StatusUnauthorized, "caller identity required")
 		return
 	}
-	if !requireRole(s.roles, "reviewer", sub, w) {
+	if !requireRole(s.roles, "reviewer", sub, callerGroupsFromCtx(r.Context()), w) {
 		return
 	}
 

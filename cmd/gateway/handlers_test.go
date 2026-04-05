@@ -39,7 +39,7 @@ func newTestServer(objs ...client.Object) *Server {
 	return &Server{
 		client:       fc,
 		dedupWindow:  0,
-		roles:        newRoleConfig("agent-sub", "reviewer-sub"),
+		roles:        newRoleConfig("agent-sub", "reviewer-sub", "", ""),
 		authRequired: true,
 	}
 }
@@ -148,7 +148,7 @@ func TestExecutingByNonCreatorRejected(t *testing.T) {
 	s := &Server{
 		client:       fc,
 		dedupWindow:  0,
-		roles:        newRoleConfig("agent-sub,other-agent", "reviewer-sub"),
+		roles:        newRoleConfig("agent-sub,other-agent", "reviewer-sub", "", ""),
 		authRequired: true,
 	}
 	if err := s.client.Status().Update(context.Background(), ar); err != nil {
@@ -177,7 +177,7 @@ func TestCompletedByNonCreatorRejected(t *testing.T) {
 	s := &Server{
 		client:       fc,
 		dedupWindow:  0,
-		roles:        newRoleConfig("agent-sub,other-agent", "reviewer-sub"),
+		roles:        newRoleConfig("agent-sub,other-agent", "reviewer-sub", "", ""),
 		authRequired: true,
 	}
 	if err := s.client.Status().Update(context.Background(), ar); err != nil {
