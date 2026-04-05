@@ -30,6 +30,7 @@ spec:
             {{- if .Values.gateway.auth.oidcIssuerURL }}
             - --oidc-issuer-url={{ .Values.gateway.auth.oidcIssuerURL }}
             - --oidc-audience={{ .Values.gateway.auth.oidcAudience }}
+            - --oidc-identity-claim={{ .Values.gateway.auth.oidcIdentityClaim }}
             {{- end }}
             {{- if .Values.gateway.auth.agentSubjects }}
             - --agent-subjects={{ .Values.gateway.auth.agentSubjects }}

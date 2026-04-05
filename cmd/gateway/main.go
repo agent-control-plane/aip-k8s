@@ -38,10 +38,14 @@ var (
 		"OIDC provider URL. When set, Bearer token validation is required on all non-healthz endpoints.")
 	oidcAudience = flag.String("oidc-audience", "aip-gateway",
 		"Expected JWT aud claim.")
+	oidcIdentityClaim = flag.String("oidc-identity-claim", "azp",
+		"JWT claim used as the caller identity. Default 'azp' works for Keycloak client_credentials. "+
+			"Use 'sub' for Okta/standard flows, 'appid' for Azure AD, 'email' for Google service accounts. "+
+			"Falls back to 'sub' if the configured claim is absent from the token.")
 	agentSubjects = flag.String("agent-subjects", "",
-		"Comma-separated JWT sub values permitted to act as agents.")
+		"Comma-separated identity values permitted to act as agents (matched against --oidc-identity-claim).")
 	reviewerSubjects = flag.String("reviewer-subjects", "",
-		"Comma-separated JWT sub values permitted to act as reviewers.")
+		"Comma-separated identity values permitted to act as reviewers (matched against --oidc-identity-claim).")
 	trustedProxyCIDRs = flag.String("trusted-proxy-cidrs", "",
 		"Comma-separated CIDRs for proxy-header trust. Empty = any source (dev only). Ignored when --oidc-issuer-url is set.")
 )
@@ -237,7 +241,7 @@ func main() {
 	if *oidcIssuerURL != "" {
 		discoverCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		mw, err := newOIDCMiddleware(discoverCtx, *oidcIssuerURL, *oidcAudience)
+		mw, err := newOIDCMiddleware(discoverCtx, *oidcIssuerURL, *oidcAudience, *oidcIdentityClaim)
 		if err != nil {
 			log.Fatalf("OIDC setup failed: %v", err)
 		}

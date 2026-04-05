@@ -17,6 +17,11 @@ gateway:
   auth:
     oidcIssuerURL: ""
     oidcAudience: "aip-gateway"
+    # oidcIdentityClaim: the JWT claim used as caller identity.
+    # "azp" (authorized party) works for Keycloak client_credentials.
+    # Use "sub" for Okta/standard flows, "appid" for Azure AD,
+    # "email" for Google service accounts.
+    oidcIdentityClaim: "azp"
     agentSubjects: ""
     reviewerSubjects: ""
     trustedProxyCIDRs: ""

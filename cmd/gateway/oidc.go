@@ -68,7 +68,11 @@ func requireRole(rc *roleConfig, role, sub string, w http.ResponseWriter) bool {
 	return true
 }
 
-func newOIDCMiddleware(ctx context.Context, issuerURL, audience string) (func(http.Handler) http.Handler, error) {
+// newOIDCMiddleware creates JWT validation middleware.
+// identityClaim is the token claim used as the caller identity (e.g. "azp",
+// "sub", "appid", "email"). If the claim is absent the middleware falls back
+// to "sub".
+func newOIDCMiddleware(ctx context.Context, issuerURL, audience, identityClaim string) (func(http.Handler) http.Handler, error) {
 	provider, err := oidc.NewProvider(ctx, issuerURL)
 	if err != nil {
 		return nil, fmt.Errorf("oidc provider: %w", err)
@@ -90,16 +94,28 @@ func newOIDCMiddleware(ctx context.Context, issuerURL, audience string) (func(ht
 				writeError(w, http.StatusUnauthorized, "invalid token")
 				return
 			}
-			var claims struct {
-				Sub string `json:"sub"`
-			}
-			if err := idToken.Claims(&claims); err != nil || claims.Sub == "" {
-				writeError(w, http.StatusUnauthorized, "token missing sub claim")
+			var allClaims map[string]interface{}
+			if err := idToken.Claims(&allClaims); err != nil {
+				writeError(w, http.StatusUnauthorized, "token missing claims")
 				return
 			}
-			next.ServeHTTP(w, r.WithContext(withCallerSub(r.Context(), claims.Sub)))
+			identity := claimString(allClaims, identityClaim)
+			if identity == "" {
+				identity = claimString(allClaims, "sub") // fallback
+			}
+			if identity == "" {
+				writeError(w, http.StatusUnauthorized, "token missing identity claim")
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(withCallerSub(r.Context(), identity)))
 		})
 	}, nil
+}
+
+// claimString extracts a string value from a decoded claims map.
+func claimString(claims map[string]interface{}, name string) string {
+	v, _ := claims[name].(string)
+	return v
 }
 
 func newProxyHeaderMiddleware(trustedCIDRs string) func(http.Handler) http.Handler {
