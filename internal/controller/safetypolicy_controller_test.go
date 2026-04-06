@@ -52,8 +52,10 @@ var _ = Describe("SafetyPolicy Controller", func() {
 						Namespace: "default",
 					},
 					Spec: governancev1alpha1.SafetyPolicySpec{
-						TargetSelector: governancev1alpha1.TargetSelector{
-							MatchResourceTypes: []string{"Pod"},
+						GovernedResourceSelector: metav1.LabelSelector{
+							MatchLabels: map[string]string{
+								"app": "test",
+							},
 						},
 						Rules: []governancev1alpha1.Rule{
 							{

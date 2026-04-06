@@ -53,6 +53,18 @@ type AgentRequestSpec struct {
 	// The controller watches this field and drives the status state machine accordingly.
 	// +optional
 	HumanApproval *HumanApproval `json:"humanApproval,omitempty"`
+
+	// GovernedResourceRef records which GovernedResource admitted this AgentRequest.
+	// Set by the gateway at admission time. Immutable after creation.
+	// Empty only when --require-governed-resource=false and no GovernedResources exist.
+	// +optional
+	GovernedResourceRef *GovernedResourceRef `json:"governedResourceRef,omitempty"`
+}
+
+// GovernedResourceRef records which GovernedResource admitted this AgentRequest.
+type GovernedResourceRef struct {
+	Name       string `json:"name"`
+	Generation int64  `json:"generation"`
 }
 
 // HumanApproval captures a human reviewer's explicit decision on an AgentRequest.
@@ -141,19 +153,20 @@ const (
 
 // Denial error codes (from AIP spec Section 3.1.1)
 const (
-	DenialCodePolicyViolation    = "POLICY_VIOLATION"
-	DenialCodeLockContention     = "LOCK_CONTENTION"
-	DenialCodeLockTimeout        = "LOCK_TIMEOUT"
-	DenialCodeRateLimited        = "RATE_LIMITED"
-	DenialCodeEvaluationFailure  = "EVALUATION_FAILURE"
-	DenialCodeIdentityInvalid    = "IDENTITY_INVALID"
-	DenialCodePlanAborted        = "PLAN_ABORTED"
-	DenialCodeActionNotPermitted = "ACTION_NOT_PERMITTED"
-	DenialCodeCascadeDenied      = "CASCADE_DENIED"
-	DenialCodeApprovalRevoked    = "APPROVAL_REVOKED"
-	DenialCodeStateDrifted       = "STATE_DRIFTED"
-	DenialCodeGenerationMismatch = "GENERATION_MISMATCH"
-	DenialCodeScopeTooBoard      = "SCOPE_TOO_BROAD"
+	DenialCodePolicyViolation         = "POLICY_VIOLATION"
+	DenialCodeLockContention          = "LOCK_CONTENTION"
+	DenialCodeLockTimeout             = "LOCK_TIMEOUT"
+	DenialCodeRateLimited             = "RATE_LIMITED"
+	DenialCodeEvaluationFailure       = "EVALUATION_FAILURE"
+	DenialCodeIdentityInvalid         = "IDENTITY_INVALID"
+	DenialCodePlanAborted             = "PLAN_ABORTED"
+	DenialCodeActionNotPermitted      = "ACTION_NOT_PERMITTED"
+	DenialCodeCascadeDenied           = "CASCADE_DENIED"
+	DenialCodeApprovalRevoked         = "APPROVAL_REVOKED"
+	DenialCodeStateDrifted            = "STATE_DRIFTED"
+	DenialCodeGenerationMismatch      = "GENERATION_MISMATCH"
+	DenialCodeScopeTooBoard           = "SCOPE_TOO_BROAD"
+	DenialCodeGovernedResourceDeleted = "GOVERNED_RESOURCE_DELETED"
 )
 
 type AgentRequestStatus struct {
@@ -220,6 +233,10 @@ type PolicyResult struct {
 	PolicyName string `json:"policyName"`
 	RuleName   string `json:"ruleName"`
 	Result     string `json:"result"` // Use Result* constants
+
+	// PolicyGeneration records the generation of the policy at the time of evaluation.
+	// +optional
+	PolicyGeneration int64 `json:"policyGeneration,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -30,10 +30,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+
+	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	governancev1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
 	"github.com/ravisantoshgudimetla/aip-k8s/internal/evaluation"
+	"github.com/ravisantoshgudimetla/aip-k8s/internal/evaluation/fetchers"
 )
 
 var _ = Describe("AgentRequest Controller", func() {
@@ -48,9 +55,28 @@ var _ = Describe("AgentRequest Controller", func() {
 		}
 
 		BeforeEach(func() {
+			By("creating the GovernedResource")
+			gr := &governancev1alpha1.GovernedResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-gr",
+					Labels: map[string]string{
+						"app": "test",
+					},
+				},
+				Spec: governancev1alpha1.GovernedResourceSpec{
+					URIPattern:       "k8s://prod/*",
+					PermittedActions: []string{"create", "update", "delete"},
+					ContextFetcher:   "none",
+				},
+			}
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: "test-gr"}, gr)
+			if err != nil && errors.IsNotFound(err) {
+				Expect(k8sClient.Create(ctx, gr)).To(Succeed())
+			}
+
 			By("creating the custom resource for the Kind AgentRequest")
 			agentReq := &governancev1alpha1.AgentRequest{}
-			err := k8sClient.Get(ctx, typeNamespacedName, agentReq)
+			err = k8sClient.Get(ctx, typeNamespacedName, agentReq)
 			if err != nil && errors.IsNotFound(err) {
 				resource := &governancev1alpha1.AgentRequest{
 					ObjectMeta: metav1.ObjectMeta{
@@ -63,7 +89,8 @@ var _ = Describe("AgentRequest Controller", func() {
 						Target: governancev1alpha1.Target{
 							URI: "k8s://prod/default/pod/test-pod",
 						},
-						Reason: "test execution",
+						Reason:              "test execution",
+						GovernedResourceRef: &governancev1alpha1.GovernedResourceRef{Name: "test-gr"},
 					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
@@ -227,8 +254,10 @@ var _ = Describe("AgentRequest Controller", func() {
 					Namespace: "default",
 				},
 				Spec: governancev1alpha1.SafetyPolicySpec{
-					TargetSelector: governancev1alpha1.TargetSelector{
-						MatchActions: []string{"delete"},
+					GovernedResourceSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"app": "test",
+						},
 					},
 					Rules: []governancev1alpha1.Rule{
 						{
@@ -258,7 +287,8 @@ var _ = Describe("AgentRequest Controller", func() {
 					Target: governancev1alpha1.Target{
 						URI: "k8s://prod/default/pod/critical-pod",
 					},
-					Reason: "maintenance",
+					Reason:              "maintenance",
+					GovernedResourceRef: &governancev1alpha1.GovernedResourceRef{Name: "test-gr"},
 				},
 			}
 			Expect(k8sClient.Create(ctx, agentReq)).To(Succeed())
@@ -301,10 +331,11 @@ var _ = Describe("AgentRequest Controller", func() {
 			agentReq1 := &governancev1alpha1.AgentRequest{
 				ObjectMeta: metav1.ObjectMeta{Name: req1Name, Namespace: "default"},
 				Spec: governancev1alpha1.AgentRequestSpec{
-					AgentIdentity: "agent-1",
-					Action:        "update",
-					Target:        governancev1alpha1.Target{URI: "k8s://prod/default/deployment/backend"},
-					Reason:        "scale up",
+					AgentIdentity:       "agent-1",
+					Action:              "update",
+					Target:              governancev1alpha1.Target{URI: "k8s://prod/default/deployment/backend"},
+					Reason:              "scale up",
+					GovernedResourceRef: &governancev1alpha1.GovernedResourceRef{Name: "test-gr"},
 				},
 			}
 			Expect(k8sClient.Create(ctx, agentReq1)).To(Succeed())
@@ -315,10 +346,11 @@ var _ = Describe("AgentRequest Controller", func() {
 			agentReq2 := &governancev1alpha1.AgentRequest{
 				ObjectMeta: metav1.ObjectMeta{Name: req2Name, Namespace: "default"},
 				Spec: governancev1alpha1.AgentRequestSpec{
-					AgentIdentity: "agent-2",
-					Action:        "update",
-					Target:        governancev1alpha1.Target{URI: "k8s://prod/default/deployment/backend"},
-					Reason:        "config change",
+					AgentIdentity:       "agent-2",
+					Action:              "update",
+					Target:              governancev1alpha1.Target{URI: "k8s://prod/default/deployment/backend"},
+					Reason:              "config change",
+					GovernedResourceRef: &governancev1alpha1.GovernedResourceRef{Name: "test-gr"},
 				},
 			}
 			// Set creation timestamp to 61 seconds ago to simulate timeout
@@ -362,6 +394,90 @@ var _ = Describe("AgentRequest Controller", func() {
 			// Cleanup
 			_ = k8sClient.Delete(ctx, agentReq1)
 			_ = k8sClient.Delete(ctx, agentReq2)
+		})
+
+		It("should set FetcherSchemaViolation condition when fetcher output mismatches schema", func() {
+			grName := "gr-with-schema"
+			schemaJSON := `{"type":"object","properties":{"title":{"type":"integer"}},"required":["title"]}`
+			gr := &governancev1alpha1.GovernedResource{
+				ObjectMeta: metav1.ObjectMeta{Name: grName},
+				Spec: governancev1alpha1.GovernedResourceSpec{
+					URIPattern:       "github://*",
+					ContextFetcher:   "github",
+					ContextSchema:    &apiextensionsv1.JSON{Raw: []byte(schemaJSON)},
+					PermittedActions: []string{"update"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gr)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, gr) }()
+
+			By("Creating aip-system namespace")
+			aipNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "aip-system"}}
+			_ = k8sClient.Create(ctx, aipNS)
+
+			// Mock GitHub token secret
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "aip-github-token", Namespace: "aip-system"},
+				Data:       map[string][]byte{"token": []byte("test")},
+			}
+			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+
+			// Mock GitHub API server to return JSON that MISMATCHES schema
+			// Schema requires "title", but we return "wrong_field"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintln(w, `{"wrong_field":"data"}`)
+			}))
+			defer server.Close()
+			fetchers.GitHubBaseURL = server.URL
+			defer func() { fetchers.GitHubBaseURL = "https://api.github.com" }()
+
+			reqName := "schema-fail-req"
+			reqNN := types.NamespacedName{Name: reqName, Namespace: "default"}
+			agentReq := &governancev1alpha1.AgentRequest{
+				ObjectMeta: metav1.ObjectMeta{Name: reqName, Namespace: "default"},
+				Spec: governancev1alpha1.AgentRequestSpec{
+					AgentIdentity:       "test-agent",
+					Action:              "update",
+					Target:              governancev1alpha1.Target{URI: "github://org/repo"},
+					Reason:              "testing schema violation",
+					GovernedResourceRef: &governancev1alpha1.GovernedResourceRef{Name: grName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, agentReq)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, agentReq) }()
+
+			eval, _ := evaluation.NewEvaluator()
+			controllerReconciler := &AgentRequestReconciler{
+				Client:    k8sClient,
+				APIReader: k8sClient, // Use direct client to avoid cache latency
+				Scheme:    k8sClient.Scheme(),
+				Evaluator: eval,
+			}
+
+			// Reconcile 1: Init -> Pending
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: reqNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			var fetchedReq1 governancev1alpha1.AgentRequest
+			Expect(k8sClient.Get(ctx, reqNN, &fetchedReq1)).To(Succeed())
+			Expect(fetchedReq1.Status.Phase).To(Equal(governancev1alpha1.PhasePending))
+
+			// Reconcile 2: Pending -> (fetch context)
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: reqNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			var fetchedReq2 governancev1alpha1.AgentRequest
+			Expect(k8sClient.Get(ctx, reqNN, &fetchedReq2)).To(Succeed())
+
+			// Verify condition
+			cond := meta.FindStatusCondition(fetchedReq2.Status.Conditions, "FetcherSchemaViolation")
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Reason).To(Equal("SchemaMismatch"))
+
+			// ProviderContext should be nil
+			Expect(fetchedReq2.Status.ProviderContext).To(BeNil())
 		})
 
 	})

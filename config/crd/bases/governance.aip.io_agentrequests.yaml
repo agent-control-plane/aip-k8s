@@ -105,6 +105,21 @@ spec:
                 - single
                 - scoped
                 type: string
+              governedResourceRef:
+                description: |-
+                  GovernedResourceRef records which GovernedResource admitted this AgentRequest.
+                  Set by the gateway at admission time. Immutable after creation.
+                  Empty only when --require-governed-resource=false and no GovernedResources exist.
+                properties:
+                  generation:
+                    format: int64
+                    type: integer
+                  name:
+                    type: string
+                required:
+                - generation
+                - name
+                type: object
               humanApproval:
                 description: |-
                   HumanApproval holds the human reviewer's decision when a policy requires manual approval.
@@ -333,6 +348,11 @@ spec:
                   policyResults:
                     items:
                       properties:
+                        policyGeneration:
+                          description: PolicyGeneration records the generation of
+                            the policy at the time of evaluation.
+                          format: int64
+                          type: integer
                         policyName:
                           type: string
                         result:

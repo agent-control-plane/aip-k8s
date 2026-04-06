@@ -62,6 +62,18 @@ spec:
                 - k8s-deployment
                 - none
                 type: string
+              contextSchema:
+                description: |-
+                  ContextSchema is an OpenAPI schema (restricted subset) describing the JSON
+                  object the ContextFetcher returns. SafetyPolicy CEL rules that reference
+                  context.* fields are type-checked against this schema at policy creation time.
+
+                  Restricted subset: type (object/string/integer/number/boolean/array),
+                  properties, items, required, nullable, description only. All other keywords
+                  are rejected at admission.
+
+                  May be omitted when ContextFetcher is "none".
+                x-kubernetes-preserve-unknown-fields: true
               description:
                 description: |-
                   Description is a human-readable explanation of this governed resource type,

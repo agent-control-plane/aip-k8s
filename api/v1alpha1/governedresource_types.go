@@ -17,8 +17,11 @@ limitations under the License.
 package v1alpha1
 
 import (
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+const GovernedResourceFinalizer = "governance.aip.io/active-requests"
 
 // GovernedResourceSpec defines the desired state of GovernedResource
 type GovernedResourceSpec struct {
@@ -49,6 +52,18 @@ type GovernedResourceSpec struct {
 	// +kubebuilder:validation:Enum=karpenter;github;k8s-deployment;none
 	// +kubebuilder:default=none
 	ContextFetcher string `json:"contextFetcher"`
+
+	// ContextSchema is an OpenAPI schema (restricted subset) describing the JSON
+	// object the ContextFetcher returns. SafetyPolicy CEL rules that reference
+	// context.* fields are type-checked against this schema at policy creation time.
+	//
+	// Restricted subset: type (object/string/integer/number/boolean/array),
+	// properties, items, required, nullable, description only. All other keywords
+	// are rejected at admission.
+	//
+	// May be omitted when ContextFetcher is "none".
+	// +optional
+	ContextSchema *apiextensionsv1.JSON `json:"contextSchema,omitempty"`
 
 	// Description is a human-readable explanation of this governed resource type,
 	// shown to reviewers during the approval decision.

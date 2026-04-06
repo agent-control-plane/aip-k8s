@@ -186,3 +186,40 @@ func TestGR_MostSpecificMatchUsed(t *testing.T) {
 	g.Expect(w.Code).To(gomega.Equal(http.StatusForbidden))
 	g.Expect(w.Body.String()).To(gomega.ContainSubstring(v1alpha1.DenialCodeIdentityInvalid))
 }
+
+func TestGR_AdmissionSetsGovernedResourceRef(t *testing.T) {
+	g := gomega.NewWithT(t)
+	gr := newGR("gr1", "k8s://prod/nodepool/*", []string{"agent-sub"}, []string{"scale-up"})
+	gr.Generation = 42
+	s := newTestServer(gr)
+	s.requireGovernedResource = true
+
+	// Use a longer timeout just in case, though 4xx/2xx usually happen fast
+	w := postCreateCtx(s, "agent-sub", "k8s://prod/nodepool/team-a", "scale-up", 500*time.Millisecond)
+	// If it passes admission, it might return 201 or block on the poll loop (returning 201 eventually or timing out)
+	// In fake client, Create is instant.
+	g.Expect(w.Code).To(gomega.Or(gomega.Equal(http.StatusCreated), gomega.Equal(http.StatusOK)))
+
+	var list v1alpha1.AgentRequestList
+	g.Expect(s.client.List(context.Background(), &list)).To(gomega.Succeed())
+	g.Expect(list.Items).To(gomega.HaveLen(1))
+	req := list.Items[0]
+	g.Expect(req.Spec.GovernedResourceRef).NotTo(gomega.BeNil())
+	g.Expect(req.Spec.GovernedResourceRef.Name).To(gomega.Equal("gr1"))
+	g.Expect(req.Spec.GovernedResourceRef.Generation).To(gomega.Equal(int64(42)))
+}
+
+func TestGR_NoGRs_RequireFalse_RefIsNil(t *testing.T) {
+	g := gomega.NewWithT(t)
+	s := newTestServer()
+	s.requireGovernedResource = false
+
+	w := postCreate(s, "agent-sub", "k8s://prod/nodepool/team-a", "scale-up")
+	g.Expect(w.Code).To(gomega.Or(gomega.Equal(http.StatusCreated), gomega.Equal(http.StatusOK)))
+
+	var list v1alpha1.AgentRequestList
+	g.Expect(s.client.List(context.Background(), &list)).To(gomega.Succeed())
+	g.Expect(list.Items).To(gomega.HaveLen(1))
+	req := list.Items[0]
+	g.Expect(req.Spec.GovernedResourceRef).To(gomega.BeNil())
+}

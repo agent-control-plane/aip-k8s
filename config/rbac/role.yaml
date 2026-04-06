@@ -5,6 +5,21 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
+  - ""
+  resources:
+  - nodes
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+- apiGroups:
   - apps
   resources:
   - deployments
@@ -37,6 +52,7 @@ rules:
   resources:
   - agentrequests
   - auditrecords
+  - governedresources
   - safetypolicies
   verbs:
   - create
@@ -50,6 +66,7 @@ rules:
   - governance.aip.io
   resources:
   - agentrequests/finalizers
+  - governedresources/finalizers
   - safetypolicies/finalizers
   verbs:
   - update
@@ -58,8 +75,17 @@ rules:
   resources:
   - agentrequests/status
   - auditrecords/status
+  - governedresources/status
   - safetypolicies/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - karpenter.sh
+  resources:
+  - nodepools
+  verbs:
+  - get
+  - list
+  - watch

@@ -88,6 +88,20 @@ type GovernedResourceSpec struct {
     // +kubebuilder:default=none
     ContextFetcher string `json:"contextFetcher"`
 
+    // ContextSchema is an OpenAPI schema (restricted subset) that describes the
+    // structure of the JSON object the named ContextFetcher will return.
+    // SafetyPolicy CEL rules that reference context fields are type-checked against
+    // this schema at creation time — malformed rules are rejected immediately rather
+    // than failing at evaluation time.
+    //
+    // All GovernedResources with the same ContextFetcher value must declare
+    // canonically-identical schemas (sorted-key JSON comparison). This invariant is
+    // enforced at admission time.
+    //
+    // May be omitted when ContextFetcher is "none".
+    // +optional
+    ContextSchema *apiextensionsv1.JSON `json:"contextSchema,omitempty"`
+
     // Description is a human-readable explanation of this governed resource type,
     // shown to reviewers during the approval decision.
     // +optional
@@ -270,20 +284,22 @@ type GovernedResourceRef struct {
 }
 ```
 
-The controller reads `spec.governedResourceRef` on each reconcile and compares `generation` against the current `GovernedResource.metadata.generation`. On mismatch:
+The controller reads `spec.governedResourceRef` to establish which `GovernedResource` admitted the request. The controller does **not** re-validate permissions on generation change — that would be incorrect. K8s objects follow eventual consistency: by the time the controller reconciles, the object may have changed again. More importantly, `generation` alone cannot distinguish a tightening change from a loosening one; treating every change as a denial would kill in-flight requests on description-only updates.
 
-| Change direction | Action |
+The only safe invariant to check is existence:
+
+| Condition | Action |
 |---|---|
-| GovernedResource **tightened** (generation incremented, agent/action no longer permitted) | Deny with `GOVERNED_RESOURCE_CHANGED` |
-| GovernedResource **loosened** (generation incremented, permissions expanded) | Allow re-evaluation — the original admission was valid |
 | GovernedResource **deleted** | Deny with `GOVERNED_RESOURCE_DELETED` |
+| GovernedResource **generation changed** | No action — re-admission is not the controller's job |
 
-This mirrors how a `Deployment` uses `observedGeneration` to detect template changes.
+`GOVERNED_RESOURCE_DELETED` is the safety net: an admin explicitly removing a governed resource while requests are in flight is a decisive policy statement. The finalizer (section below) prevents accidental deletion.
+
+This is the same model as how `kube-scheduler` handles a `Pod` whose `PriorityClass` is deleted after scheduling — the scheduler does not evict the pod; the garbage collection path is explicit and separate.
 
 ### New denial codes
 
 ```go
-DenialCodeGovernedResourceChanged = "GOVERNED_RESOURCE_CHANGED"
 DenialCodeGovernedResourceDeleted = "GOVERNED_RESOURCE_DELETED"
 ```
 
@@ -312,6 +328,127 @@ type PolicyResult struct {
     PolicyGeneration int64  `json:"policyGeneration"` // SafetyPolicy.metadata.generation
 }
 ```
+
+## SafetyPolicy CRD
+
+`SafetyPolicy` is namespace-scoped. It binds to `GovernedResource` objects via a label selector on the `GovernedResource` metadata, not via a hard name reference. This allows a single `SafetyPolicy` to cover a family of resources (e.g., all `GovernedResource` objects labelled `team: platform`) without requiring a new `SafetyPolicy` every time a new `GovernedResource` is created.
+
+### Schema additions (delta from current)
+
+```go
+type SafetyPolicySpec struct {
+    // GovernedResourceSelector selects which GovernedResources this policy applies to.
+    // An empty selector matches all GovernedResources.
+    // +optional
+    GovernedResourceSelector metav1.LabelSelector `json:"governedResourceSelector,omitempty"`
+
+    // ContextType binds this SafetyPolicy's CEL rules to a specific context fetcher type.
+    // CEL expressions in this policy that reference `context.*` fields are type-checked
+    // against the contextSchema of all GovernedResources whose contextFetcher matches
+    // this value. Must be a valid contextFetcher value (e.g. "karpenter", "github").
+    //
+    // Empty means no context-aware rules — CEL expressions may not reference `context`.
+    // +optional
+    ContextType string `json:"contextType,omitempty"`
+
+    // Rules is the list of CEL-based admission rules evaluated in order.
+    Rules []SafetyPolicyRule `json:"rules"`
+}
+```
+
+`TargetSelector` (the current `matchActions` / `matchResourceTypes` / `matchAttributes` struct) is **replaced** by `GovernedResourceSelector` + `ContextType`. `TargetSelector` relied on agent-declared metadata to select which policy applied — it could be spoofed and was not reliably tied to a physical resource type.
+
+### Example: Karpenter NodePool policy
+
+```yaml
+apiVersion: governance.aip.io/v1alpha1
+kind: SafetyPolicy
+metadata:
+  name: karpenter-scale-policy
+  namespace: platform
+spec:
+  governedResourceSelector:
+    matchLabels:
+      fetcher: karpenter
+  contextType: karpenter
+  rules:
+    - name: cpu-limit-cap
+      cel: "context.currentLimitCPU.toInt() + request.spec.cpuDelta <= 200"
+      message: "CPU limit cannot exceed 200 cores"
+```
+
+### Selection semantics
+
+When an `AgentRequest` is admitted against a `GovernedResource`:
+1. The gateway evaluates all `SafetyPolicy` objects in the request's namespace.
+2. A policy applies if its `governedResourceSelector` matches the `GovernedResource`'s labels.
+3. Within an applicable policy, rules that reference `context.*` are only evaluated when the policy's `contextType` matches `GovernedResource.spec.contextFetcher`.
+
+This binding is declarative and admin-controlled — no agent-supplied field influences which policy fires.
+
+## Context Schema Validation
+
+`GovernedResource.spec.contextSchema` encodes the OpenAPI schema for the JSON object a context fetcher returns. The schema is **data**, not code: it travels with the `GovernedResource` object and requires no recompilation or deployment change to add a new fetcher type.
+
+### Restricted OpenAPI subset
+
+To keep the admission surface small and auditable, `contextSchema` is restricted to:
+
+| Keyword | Allowed |
+|---|---|
+| `type` | `object`, `string`, `integer`, `number`, `boolean`, `array` |
+| `properties` | object field definitions |
+| `items` | array element schema |
+| `required` | required field names |
+| `nullable` | `true` / `false` |
+| `description` | human-readable field doc |
+| All others | **rejected** at admission |
+
+`additionalProperties`, `oneOf`, `anyOf`, `allOf`, `$ref`, and recursive schemas are explicitly excluded. The goal is a flat, readable schema — not a full JSON Schema metaschema.
+
+### CEL type-checking
+
+CEL expressions in `SafetyPolicy` rules that reference `context.*` fields are type-checked against the `contextSchema` of all `GovernedResources` where `contextFetcher == SafetyPolicy.spec.contextType`.
+
+The gateway uses `k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel` directly — the same CEL library that backs `x-kubernetes-validations` in CRD schemas and `ValidatingAdmissionPolicy`. This is not a reimplementation; it is the standard K8s CEL machinery applied to a GovernedResource-owned schema.
+
+At `SafetyPolicy` create/update time, the gateway:
+1. Locates all `GovernedResource` objects with `contextFetcher == SafetyPolicy.spec.contextType`.
+2. Builds a CEL type environment from the `contextSchema` of any one of them (all must be identical — see below).
+3. Type-checks every CEL expression in the policy rules.
+4. Rejects the `SafetyPolicy` if any expression fails type-checking.
+
+Optional fields declared in `contextSchema` without being listed in `required` are typed as nullable in the CEL environment. The K8s CEL library enforces that callers use `has(context.fieldName)` before accessing optional fields, making nullability errors a compile-time rejection rather than a runtime panic.
+
+### Schema consistency across GovernedResources
+
+When a `GovernedResource` is created or updated with a `contextSchema`:
+- If no other `GovernedResource` with the same `contextFetcher` value exists, the schema is accepted unconditionally.
+- If at least one `GovernedResource` with the same `contextFetcher` exists, the new schema must be **canonically identical** (sorted-key JSON marshalling comparison) to the existing schema.
+
+This invariant ensures that `SafetyPolicy.spec.contextType` binds to exactly one schema regardless of which `GovernedResource` is matched at runtime. It eliminates schema drift as the number of governed resources grows.
+
+When the number of distinct `contextFetcher` types grows beyond ~10, the natural evolution is a standalone `ContextType` CRD (one object per fetcher type, holding the canonical schema). That migration is additive and deferred.
+
+### Runtime schema validation
+
+After the context fetcher runs, the gateway validates the fetched JSON against the `contextSchema` before writing it to `AgentRequestStatus.ProviderContext`:
+- If the fetched JSON conforms → write to `ProviderContext` and proceed.
+- If the fetched JSON violates the schema (missing required field, wrong type) → write a `FetcherSchemaViolation` condition on the `AgentRequest` status (recording the specific field and type mismatch), set `ProviderContext` to `null`, and **do not block the request**. Reviewers see the condition; the request proceeds without context.
+
+Fail-open on fetcher errors is deliberate: a broken fetcher should not halt an agent that is operating correctly. The violation is surfaced, not hidden.
+
+### Schema evolution
+
+For `v1alpha1`, `contextSchema` is **append-only**: new optional fields may be added; existing fields may not be removed or have their types changed. A field removal is a breaking change for all `SafetyPolicy` CEL rules that reference that field.
+
+Append-only evolution is enforced at admission: a `PUT /governed-resources/{name}` that removes a field or changes a field's type is rejected with a 409 that lists the affected fields.
+
+### Bidirectional consistency validation
+
+Schema validation is bidirectional:
+- **GovernedResource schema change → re-validate SafetyPolicy**: When a `GovernedResource` schema changes (append-only, so only additions), all `SafetyPolicy` objects with `contextType == contextFetcher` are re-validated. Because additions are strictly non-breaking, this is informational — existing rules remain valid.
+- **SafetyPolicy rule change → re-validate against current schema**: When a `SafetyPolicy` is created or updated, its CEL rules are re-type-checked against the current schema of any matching `GovernedResource`. This is the primary enforcement path.
 
 ## GovernedResource Finalizer
 
@@ -401,31 +538,37 @@ type GovernedResourceStatus struct {
 | 3 | Admission check in gateway | URI glob match (`path.Match`) → agent identity → action; most-specific-match with alphabetical tiebreak |
 | 4 | Add `ProviderContext` to `AgentRequestStatus` | `*apiextensionsv1.JSON`, additive; `ControlPlaneVerification` retained |
 
-### Milestone 2 — Policy binding integrity
+### Milestone 2 — Policy binding integrity ✅ Done
 
 | Step | What | Notes |
 |---|---|---|
 | 5 | Add `spec.governedResourceRef` to `AgentRequestSpec` | Gateway sets name + generation at admission; immutable after creation |
 | 6 | Add `policyGeneration` to `PolicyResult` | Controller records SafetyPolicy generation at evaluation time |
-| 7 | Generation mismatch detection in controller | Deny with `GOVERNED_RESOURCE_CHANGED` or `GOVERNED_RESOURCE_DELETED` on mismatch |
+| 7 | `GOVERNED_RESOURCE_DELETED` detection in controller | If `spec.governedResourceRef.name` points to a missing object → deny with `GOVERNED_RESOURCE_DELETED` |
 | 8 | Finalizer on `GovernedResource` | Controller adds/removes `governance.aip.io/active-requests`; blocks deletion during live requests |
 
-### Milestone 3 — Admin gateway API
+### Milestone 3 — Admin gateway API ✅ Done
 
 | Step | What | Notes |
 |---|---|---|
 | 9 | `GovernedResource` CRUD + PUT endpoints | POST, GET, PUT, DELETE behind admin role; cluster-scoped |
 | 10 | `SafetyPolicy` CRUD + PUT endpoints | POST, GET, PUT, DELETE behind admin role; namespace-scoped |
-| 11 | Denial codes for `GOVERNED_RESOURCE_CHANGED` / `GOVERNED_RESOURCE_DELETED` | Additive constants in `agentrequest_types.go` |
+| 11 | Denial code for `GOVERNED_RESOURCE_DELETED` | Additive constant in `agentrequest_types.go` |
+| 12 | Replace `TargetSelector` with `governedResourceSelector` + `contextType` in SafetyPolicy | API change; update CRD schema and gateway handler |
 
-### Milestone 4 — Context fetchers
+### Milestone 4 — Context fetchers + schema validation ✅ Done
 
 | Step | What | Notes |
 |---|---|---|
-| 12 | Wire `GovernedResource.spec.contextFetcher` into controller dispatch | Controller reads matched GR, dispatches to fetcher by name via registry |
-| 13 | `k8s-deployment` fetcher | Wraps existing `ControlPlaneVerification` logic under new model |
-| 14 | Karpenter context fetcher | Pure K8s client, no external credentials |
-| 15 | GitHub context fetcher | Requires GitHub token Secret in cluster |
-| 16 | Helm chart + docs update | |
+| 13 | Add `contextSchema` field to `GovernedResourceSpec` | `*apiextensionsv1.JSON`; restricted OpenAPI subset enforced at admission |
+| 14 | Schema consistency check at admission | Canonical JSON comparison across all GRs with same `contextFetcher`; identical or reject |
+| 15 | CEL type-checking in SafetyPolicy admission | Use `k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel`; type-check rules against contextSchema |
+| 16 | Append-only schema evolution enforcement | PUT that removes or changes a field type → 409 with affected field list |
+| 17 | Wire `GovernedResource.spec.contextFetcher` into controller dispatch | Controller reads matched GR, dispatches to fetcher by name via registry |
+| 18 | `k8s-deployment` fetcher | Wraps existing `ControlPlaneVerification` logic under new model |
+| 19 | Karpenter context fetcher | Pure K8s client, no external credentials |
+| 20 | GitHub context fetcher | Requires GitHub token Secret in cluster |
+| 21 | Runtime schema validation + `FetcherSchemaViolation` condition | Validate fetched JSON against contextSchema; fail-open; record specific field/type mismatch |
+| 22 | Helm chart + docs update | |
 
-Milestones 2 and 3 are the next focus. Milestone 4 is deferred until there is a live demo environment.
+All milestones are complete.

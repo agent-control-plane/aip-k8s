@@ -18,13 +18,13 @@ package controller
 
 import (
 	"context"
-	"slices"
-	"strings"
 	"time"
 
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+
+	"k8s.io/apimachinery/pkg/labels"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -37,8 +37,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"encoding/json"
+
 	governancev1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
 	"github.com/ravisantoshgudimetla/aip-k8s/internal/evaluation"
+	"github.com/ravisantoshgudimetla/aip-k8s/internal/evaluation/fetchers"
+	apiextensions "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apiextensions-apiserver/pkg/apiserver/validation"
 )
 
 // AgentRequestReconciler reconciles a AgentRequest object
@@ -68,8 +74,13 @@ func (r *AgentRequestReconciler) now() time.Time {
 // +kubebuilder:rbac:groups=governance.aip.io,resources=safetypolicies,verbs=get;list;watch
 // +kubebuilder:rbac:groups=governance.aip.io,resources=auditrecords,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=governance.aip.io,resources=auditrecords/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=governance.aip.io,resources=governedresources,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
 // +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch
+// +kubebuilder:rbac:groups=karpenter.sh,resources=nodepools,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
 func (r *AgentRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 
@@ -91,10 +102,37 @@ func (r *AgentRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// the resourceVersion since our Get.
 	statusPatch := client.MergeFrom(agentReq.DeepCopy())
 
-	// 1. Terminal state check
 	if agentReq.Status.Phase == governancev1alpha1.PhaseCompleted ||
-		agentReq.Status.Phase == governancev1alpha1.PhaseFailed {
+		agentReq.Status.Phase == governancev1alpha1.PhaseFailed ||
+		agentReq.Status.Phase == governancev1alpha1.PhaseDenied {
 		return ctrl.Result{}, nil
+	}
+
+	// 1.1 GovernedResource Integrity Check
+	if agentReq.Spec.GovernedResourceRef != nil {
+		var gr governancev1alpha1.GovernedResource
+		if err := r.Get(ctx, types.NamespacedName{Name: agentReq.Spec.GovernedResourceRef.Name}, &gr); err != nil {
+			if errors.IsNotFound(err) {
+				log.FromContext(ctx).Info("Denying AgentRequest because its GovernedResource was deleted", "name", agentReq.Name, "governedResource", agentReq.Spec.GovernedResourceRef.Name)
+				fromPhase := agentReq.Status.Phase
+				agentReq.Status.Phase = governancev1alpha1.PhaseDenied
+				agentReq.Status.Denial = &governancev1alpha1.DenialResponse{
+					Code:    governancev1alpha1.DenialCodeGovernedResourceDeleted,
+					Message: fmt.Sprintf("The GovernedResource %q that admitted this request was deleted.", agentReq.Spec.GovernedResourceRef.Name),
+				}
+				if err := r.Status().Patch(ctx, &agentReq, statusPatch); err != nil {
+					return ctrl.Result{}, err
+				}
+				if err := r.releaseLock(ctx, &agentReq); err != nil {
+					return ctrl.Result{}, err
+				}
+				if err := r.emitAuditRecord(ctx, &agentReq, governancev1alpha1.AuditEventRequestDenied, fromPhase, governancev1alpha1.PhaseDenied); err != nil {
+					return ctrl.Result{}, err
+				}
+				return ctrl.Result{}, nil
+			}
+			return ctrl.Result{}, err
+		}
 	}
 
 	// 2. Check for Agent-triggered transitions
@@ -201,57 +239,12 @@ func generateLeaseName(targetURI string) string {
 	return name
 }
 
-func matchesSelector(req *governancev1alpha1.AgentRequest, policy *governancev1alpha1.SafetyPolicy) bool {
-	sel := policy.Spec.TargetSelector
-
-	if len(sel.MatchActions) > 0 {
-		matchedAction := false
-		for _, a := range sel.MatchActions {
-			if a == req.Spec.Action {
-				matchedAction = true
-				break
-			}
-			// Special handling for namespaced actions: <domain>/<action>
-			// Allow "deploy" to match "kiro/deploy"
-			if strings.Contains(req.Spec.Action, "/") {
-				parts := strings.Split(req.Spec.Action, "/")
-				if len(parts) == 2 && parts[1] == a {
-					matchedAction = true
-					break
-				}
-			}
-		}
-		if !matchedAction {
-			return false
-		}
+func matchesSelector(grLabels map[string]string, policy *governancev1alpha1.SafetyPolicy) bool {
+	selector, err := metav1.LabelSelectorAsSelector(&policy.Spec.GovernedResourceSelector)
+	if err != nil {
+		return false
 	}
-
-	if len(sel.MatchResourceTypes) > 0 {
-		matchedRT := false
-		reqRT := ""
-		if req.Spec.Target.ResourceType != nil {
-			reqRT = *req.Spec.Target.ResourceType
-		}
-		if slices.Contains(sel.MatchResourceTypes, reqRT) {
-			matchedRT = true
-		}
-		if !matchedRT {
-			return false
-		}
-	}
-
-	if len(sel.MatchAttributes) > 0 {
-		if req.Spec.Target.Attributes == nil {
-			return false
-		}
-		for k, v := range sel.MatchAttributes {
-			if reqVal, ok := req.Spec.Target.Attributes[k]; !ok || reqVal != v {
-				return false
-			}
-		}
-	}
-
-	return true
+	return selector.Matches(labels.Set(grLabels))
 }
 
 func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq *governancev1alpha1.AgentRequest, statusPatch client.Patch) (ctrl.Result, error) {
@@ -319,9 +312,21 @@ func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq 
 		return ctrl.Result{}, err
 	}
 
+	var grLabels map[string]string
+	if agentReq.Spec.GovernedResourceRef != nil {
+		var gr governancev1alpha1.GovernedResource
+		if err := reader.Get(ctx, types.NamespacedName{Name: agentReq.Spec.GovernedResourceRef.Name}, &gr); err == nil {
+			grLabels = gr.Labels
+		} else {
+			logger.Error(err, "Failed to get GovernedResource for policy matching", "name", agentReq.Spec.GovernedResourceRef.Name)
+		}
+	}
+
 	evalOpts := []governancev1alpha1.SafetyPolicy{}
 	for _, p := range policyList.Items {
-		if matchesSelector(agentReq, &p) {
+		// If we have no GR, or the policy doesn't match the GR labels, skip it.
+		// NOTE: In the new model, policies only apply to requests governed by a matched GR.
+		if grLabels != nil && matchesSelector(grLabels, &p) {
 			evalOpts = append(evalOpts, p)
 		}
 	}
@@ -329,6 +334,19 @@ func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq 
 	targetCtx, cascadeCtxs, err := r.fetchTargetContext(ctx, agentReq)
 	if err != nil {
 		logger.Error(err, "Failed to fetch target context, proceeding with empty context")
+	}
+
+	// Step 1 - Fetch Provider Context based on GovernedResource
+	if agentReq.Spec.GovernedResourceRef != nil {
+		var gr governancev1alpha1.GovernedResource
+		if err := reader.Get(ctx, types.NamespacedName{Name: agentReq.Spec.GovernedResourceRef.Name}, &gr); err == nil {
+			providerCtx, err := r.fetchContextFromProvider(ctx, agentReq, &gr)
+			if err != nil {
+				logger.Error(err, "Provider context fetch failed")
+			} else if providerCtx != nil {
+				agentReq.Status.ProviderContext = providerCtx
+			}
+		}
 	}
 
 	// Persist what the control plane verified so the dashboard can show
@@ -722,6 +740,70 @@ func (r *AgentRequestReconciler) fetchTargetContext(ctx context.Context, agentRe
 	}
 
 	return targetCtx, cascadeCtxs, nil
+}
+
+// fetchContextFromProvider dispatches to the named fetcher and performs runtime schema validation.
+func (r *AgentRequestReconciler) fetchContextFromProvider(ctx context.Context, agentReq *governancev1alpha1.AgentRequest, gr *governancev1alpha1.GovernedResource) (*apiextensionsv1.JSON, error) {
+	fetcherName := gr.Spec.ContextFetcher
+	if fetcherName == "" || fetcherName == "none" {
+		return nil, nil
+	}
+
+	var fetcher func(context.Context, client.Client, string) (*apiextensionsv1.JSON, error)
+	switch fetcherName {
+	case "k8s-deployment":
+		fetcher = fetchers.FetchK8sDeployment
+	case "karpenter":
+		fetcher = fetchers.FetchKarpenter
+	case "github":
+		fetcher = fetchers.FetchGitHub
+	default:
+		return nil, fmt.Errorf("unknown fetcher: %s", fetcherName)
+	}
+
+	fetchedJSON, err := fetcher(ctx, r.Client, agentReq.Spec.Target.URI)
+	if err != nil {
+		return nil, err
+	}
+
+	if gr.Spec.ContextSchema != nil {
+		// 1. Decode contextSchema JSON into structural schema
+		var propsv1 apiextensionsv1.JSONSchemaProps
+		if err := json.Unmarshal(gr.Spec.ContextSchema.Raw, &propsv1); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal contextSchema: %w", err)
+		}
+
+		var props apiextensions.JSONSchemaProps
+		if err := apiextensionsv1.Convert_v1_JSONSchemaProps_To_apiextensions_JSONSchemaProps(&propsv1, &props, nil); err != nil {
+			return nil, fmt.Errorf("failed to convert schema: %w", err)
+		}
+
+		// 2. Wrap in validator
+		validator, _, err := validation.NewSchemaValidator(&props)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create schema validator: %w", err)
+		}
+
+		// 3. Validate the fetched JSON against it
+		var obj any
+		if err := json.Unmarshal(fetchedJSON.Raw, &obj); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal fetched JSON: %w", err)
+		}
+
+		res := validator.Validate(obj)
+		if !res.IsValid() {
+			// Validation fails
+			meta.SetStatusCondition(&agentReq.Status.Conditions, metav1.Condition{
+				Type:    "FetcherSchemaViolation",
+				Status:  metav1.ConditionTrue,
+				Reason:  "SchemaMismatch",
+				Message: fmt.Sprintf("fetcher '%s' returned invalid JSON: %v", fetcherName, res.Errors[0]),
+			})
+			return nil, nil
+		}
+	}
+
+	return fetchedJSON, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -201,6 +201,13 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "SafetyPolicy")
 		os.Exit(1)
 	}
+	if err := (&controller.GovernedResourceReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "GovernedResource")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

@@ -23,18 +23,22 @@ import (
 
 // SafetyPolicySpec defines the desired state of SafetyPolicy
 type SafetyPolicySpec struct {
-	TargetSelector TargetSelector `json:"targetSelector"`
+	// GovernedResourceSelector selects which GovernedResources this policy applies to.
+	// An empty selector matches all GovernedResources in scope.
+	// +optional
+	GovernedResourceSelector metav1.LabelSelector `json:"governedResourceSelector,omitempty"`
+
+	// ContextType binds CEL rules that reference context.* fields to a specific
+	// context fetcher type. Must match a GovernedResource.spec.contextFetcher value.
+	// Empty means no context-aware rules are permitted in this policy.
+	// +optional
+	ContextType string `json:"contextType,omitempty"`
+
 	// +kubebuilder:validation:MinItems=1
 	Rules []Rule `json:"rules"`
 	// +kubebuilder:validation:Enum=FailClosed;FailOpen
 	// +kubebuilder:default=FailClosed
 	FailureMode *string `json:"failureMode,omitempty"`
-}
-
-type TargetSelector struct {
-	MatchAttributes    map[string]string `json:"matchAttributes,omitempty"`
-	MatchResourceTypes []string          `json:"matchResourceTypes,omitempty"`
-	MatchActions       []string          `json:"matchActions,omitempty"`
 }
 
 type Rule struct {

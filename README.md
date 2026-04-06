@@ -9,7 +9,8 @@ This repository contains the `governance.aip.io` controller, which serves as the
 
 ### Core APIs
 - **AgentRequest**: The primary CRD agents create to request mutating actions on infrastructure.
-- **SafetyPolicy**: CEL-based rules defined by administrators to govern which agents can perform what actions.
+- **GovernedResource**: Platform engineering declares which resource types agents may mutate, which agent identities may target them, and which context fetcher to invoke. Requests targeting unregistered resource types are rejected at admission. See [`docs/governed-resources.md`](docs/governed-resources.md).
+- **SafetyPolicy**: CEL-based rules defined by administrators to govern which agents can perform what actions. Binds to `GovernedResource` objects via `governedResourceSelector`.
 - **AuditRecord**: Immutable event logs generated on every state transition of an AgentRequest.
 - **AgentDiagnostic**: Agent-written, immutable records of observations and diagnoses made before acting. No controller involved — agents write directly. Designed for stateless k8s controller-based agents that need to persist diagnostic state without misusing `AgentRequest`. See [`ep/agent_diagnostic_design.md`](ep/agent_diagnostic_design.md).
 
@@ -197,8 +198,12 @@ The gateway supports OIDC/JWT authentication. When enabled, every non-healthz re
 |------|---------|-------------|
 | `--oidc-issuer-url` | `""` | OIDC provider URL (e.g. `https://accounts.google.com`). When set, Bearer token validation is required. When unset, auth is disabled (dev/test only). |
 | `--oidc-audience` | `aip-gateway` | Expected JWT `aud` claim. |
+| `--oidc-identity-claim` | `sub` | JWT claim used as the agent identity (e.g. `sub`, `azp`, `email`). |
 | `--agent-subjects` | `""` | Comma-separated JWT `sub` values permitted to create requests, record diagnostics, and transition state. Setting either `--agent-subjects` or `--reviewer-subjects` enables enforcement for **both** roles — open mode (any caller permitted) only applies when OIDC is unset and **both** allowlists are empty. When subjects are set without `--oidc-issuer-url`, `--trusted-proxy-cidrs` must also be set or the gateway will refuse to start. |
 | `--reviewer-subjects` | `""` | Comma-separated JWT `sub` values permitted to approve/deny requests and write verdicts. See `--agent-subjects` for open-mode and enforcement semantics. |
+| `--admin-subjects` | `""` | Comma-separated JWT `sub` values permitted to create, update, and delete `GovernedResource` and `SafetyPolicy` objects. |
+| `--admin-groups` | `""` | Comma-separated JWT group claim values that grant admin role. Alternative to `--admin-subjects` for group-based identity providers. |
+| `--require-governed-resource` | `false` | When `true`, every `AgentRequest` must match a `GovernedResource` or it is rejected. When `false` (default), the check is skipped if no `GovernedResource` objects exist, preserving backward compatibility. |
 | `--trusted-proxy-cidrs` | `""` | CIDRs from which `X-Remote-User`/`X-Forwarded-User` headers are accepted. **Required** when using `--agent-subjects`/`--reviewer-subjects` without `--oidc-issuer-url` (otherwise the gateway refuses to start). When empty and no subjects are configured, any source is trusted (dev/test only). Ignored when `--oidc-issuer-url` is set. |
 
 #### Authorization rules
@@ -217,6 +222,14 @@ The gateway supports OIDC/JWT authentication. When enabled, every non-healthz re
 | `PATCH /agent-diagnostics/{name}/status` | `reviewer` |
 | `POST /agent-diagnostics/recompute-accuracy` | `reviewer` |
 | `GET /diagnostic-accuracy-summaries`, `GET /audit-records` | Any authenticated |
+| `POST /governed-resources` | `admin` |
+| `GET /governed-resources`, `GET /governed-resources/{name}` | `admin` |
+| `PUT /governed-resources/{name}` | `admin` |
+| `DELETE /governed-resources/{name}` | `admin` |
+| `POST /safety-policies` | `admin` |
+| `GET /safety-policies`, `GET /safety-policies/{name}` | `admin` |
+| `PUT /safety-policies/{name}` | `admin` |
+| `DELETE /safety-policies/{name}` | `admin` |
 
 #### Production setup (Helm)
 
@@ -256,6 +269,13 @@ When `--oidc-issuer-url` is unset, the gateway reads `X-Remote-User` / `X-Forwar
 ```
 
 Requests from outside the trusted CIDRs that supply proxy headers will have those headers ignored. For transport-layer security (mTLS, per-agent `AuthorizationPolicy`, rate limiting), place a service mesh such as Istio in front of the gateway.
+
+## Documentation
+
+| Doc | Description |
+|---|---|
+| [`docs/governed-resources.md`](docs/governed-resources.md) | Operator guide: creating GovernedResources, context fetchers, SafetyPolicy binding, admin API, schema evolution, deletion protection. |
+| [`docs/oidc-keycloak.md`](docs/oidc-keycloak.md) | Step-by-step setup for OIDC authentication using Keycloak (agent, reviewer, and admin identities). |
 
 ## Testing
 This project uses `envtest` for rapid integration testing without a full cluster.
