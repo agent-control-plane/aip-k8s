@@ -23,7 +23,8 @@ This gap means:
 
 - A full RBAC system with custom roles and bindings. The three-role model (admin / reviewer / agent) covers the majority of enterprise use cases.
 - Namespace-scoped `GovernedResource`. Most governed resources (Karpenter NodePools, GitHub repos) are inherently cluster-scoped or external. Start cluster-scoped.
-- A UI for `GovernedResource` management. kubectl and GitOps are sufficient for the initial version.
+- A UI for `GovernedResource` management. The HTTP gateway is the management interface; kubectl is a fallback for break-glass scenarios.
+- Partial PATCH updates to `GovernedResource` or `SafetyPolicy`. PUT (full replace) is the correct verb — it is auditable, atomic, and forces the admin to declare complete desired state.
 
 ## Roles
 
@@ -31,9 +32,11 @@ AIP defines three roles enforced at the gateway:
 
 | Role | Gateway flag | Responsibilities |
 |---|---|---|
-| **Admin** | `--admin-subjects` | Create/modify `GovernedResource` and `SafetyPolicy` via gateway API. Owned by platform engineering. |
+| **Admin** | `--admin-subjects` | Create, replace (`PUT`), and delete `GovernedResource` and `SafetyPolicy` via the gateway API. Owned by platform engineering. |
 | **Reviewer** | `--reviewer-subjects` | Approve or deny `AgentRequest`. Owned by platform engineering — not the team running the agent. |
 | **Agent** | `--agent-subjects` | Submit `AgentRequest` only. Cannot modify policy or approve requests. |
+
+All three roles interact exclusively through the HTTP gateway. Direct `kubectl` access to `GovernedResource` and `SafetyPolicy` is a break-glass path, not the operational one. This ensures a single auth layer (OIDC) and a complete audit trail for all governance operations.
 
 ### Why platform engineering owns review
 
@@ -241,6 +244,49 @@ Reads the PR draft via GitHub API (token from a cluster Secret):
 
 The existing `ControlPlaneVerification` logic — ready replicas, active endpoints, downstream services. Already implemented; this fetcher wraps it under the new model.
 
+## AgentRequestSpec extension
+
+### GovernedResourceRef
+
+The gateway's admission decision must be recorded in the `AgentRequest` spec — not derived at evaluation time. Admission is a **binding decision**: it tells the controller which GovernedResource governs this request and at what version. This is the same pattern as `spec.storageClassName` on a PVC or `spec.ingressClassName` on an Ingress.
+
+```go
+// GovernedResourceRef records which GovernedResource admitted this AgentRequest.
+// Set by the gateway at admission time. Immutable after creation.
+// Empty only when --require-governed-resource=false and no GovernedResources exist.
+// +optional
+GovernedResourceRef *GovernedResourceRef `json:"governedResourceRef,omitempty"`
+```
+
+```go
+// GovernedResourceRef identifies the GovernedResource and the generation at
+// which it was evaluated at admission time.
+type GovernedResourceRef struct {
+    // Name is the GovernedResource that matched spec.target.uri at admission.
+    Name string `json:"name"`
+    // Generation is GovernedResource.metadata.generation at the time of admission.
+    // The controller uses this to detect policy changes after admission.
+    Generation int64 `json:"generation"`
+}
+```
+
+The controller reads `spec.governedResourceRef` on each reconcile and compares `generation` against the current `GovernedResource.metadata.generation`. On mismatch:
+
+| Change direction | Action |
+|---|---|
+| GovernedResource **tightened** (generation incremented, agent/action no longer permitted) | Deny with `GOVERNED_RESOURCE_CHANGED` |
+| GovernedResource **loosened** (generation incremented, permissions expanded) | Allow re-evaluation — the original admission was valid |
+| GovernedResource **deleted** | Deny with `GOVERNED_RESOURCE_DELETED` |
+
+This mirrors how a `Deployment` uses `observedGeneration` to detect template changes.
+
+### New denial codes
+
+```go
+DenialCodeGovernedResourceChanged = "GOVERNED_RESOURCE_CHANGED"
+DenialCodeGovernedResourceDeleted = "GOVERNED_RESOURCE_DELETED"
+```
+
 ## AgentRequestStatus extension
 
 `ControlPlaneVerification` is currently hardcoded for K8s Deployments. To support arbitrary resource types, add:
@@ -253,6 +299,65 @@ ProviderContext *apiextensionsv1.JSON `json:"providerContext,omitempty"`
 ```
 
 `ControlPlaneVerification` is retained for backward compatibility; new fetchers write to `ProviderContext`.
+
+### PolicyResult generation tracking
+
+`PolicyResult` must record the `SafetyPolicy` generation at evaluation time so that a re-evaluation after a policy change is distinguishable from the original:
+
+```go
+type PolicyResult struct {
+    PolicyName       string `json:"policyName"`
+    RuleName         string `json:"ruleName"`
+    Result           string `json:"result"`
+    PolicyGeneration int64  `json:"policyGeneration"` // SafetyPolicy.metadata.generation
+}
+```
+
+## GovernedResource Finalizer
+
+Deleting a `GovernedResource` while `AgentRequest` objects are Pending under it leaves those requests in a grey state — admitted under rules that no longer exist. A finalizer prevents this.
+
+```
+governance.aip.io/active-requests
+```
+
+**Controller behavior:**
+
+1. On each reconcile of an `AgentRequest` in a non-terminal phase that has a `spec.governedResourceRef`, ensure the finalizer is present on the referenced `GovernedResource`.
+2. On each reconcile, if the `AgentRequest` reaches a terminal phase (Approved, Denied, Completed, Failed), remove the finalizer if no other non-terminal `AgentRequest` references the same `GovernedResource`.
+3. If an admin force-removes the finalizer and the `GovernedResource` is deleted, the controller detects `spec.governedResourceRef` points to a missing object and denies the request with `GOVERNED_RESOURCE_DELETED`.
+
+This is the same pattern cert-manager uses on `Certificate` objects referencing an `Issuer`. It forces the admin to resolve in-flight requests before a policy object can disappear.
+
+## Gateway Admin API
+
+`GovernedResource` and `SafetyPolicy` are managed through the gateway by callers with the admin role (`--admin-subjects` / `--admin-groups`). This provides a single OIDC-authenticated interface for all roles and a complete audit trail for governance configuration changes.
+
+`GovernedResource` is cluster-scoped (no namespace parameter). `SafetyPolicy` is namespace-scoped (`?namespace=`, defaulting to `default`).
+
+### GovernedResource endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/governed-resources` | Create a new GovernedResource |
+| `GET` | `/governed-resources` | List all GovernedResources |
+| `GET` | `/governed-resources/{name}` | Get a GovernedResource by name |
+| `PUT` | `/governed-resources/{name}` | Replace a GovernedResource (full spec replace, increments generation) |
+| `DELETE` | `/governed-resources/{name}` | Delete (blocked by finalizer if live requests reference it) |
+
+### SafetyPolicy endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/safety-policies` | Create a new SafetyPolicy |
+| `GET` | `/safety-policies` | List SafetyPolicies in namespace |
+| `GET` | `/safety-policies/{name}` | Get a SafetyPolicy by name |
+| `PUT` | `/safety-policies/{name}` | Replace a SafetyPolicy (full spec replace, increments generation) |
+| `DELETE` | `/safety-policies/{name}` | Delete a SafetyPolicy |
+
+### Why PUT not PATCH
+
+PUT replaces the entire spec atomically. The `GovernedResource.metadata.generation` increments on every PUT, giving the controller a reliable signal that the policy changed. PATCH with partial updates risks leaving objects in inconsistent states (e.g., an action permitted by no agent) and produces ambiguous merge semantics for array fields like `permittedActions`.
 
 ## Trust Boundaries
 
@@ -287,14 +392,40 @@ type GovernedResourceStatus struct {
 
 ## Implementation Sequence
 
+### Milestone 1 — Admission gates ✅ Done
+
 | Step | What | Notes |
 |---|---|---|
 | 1 | Add `GovernedResource` CRD | `api/v1alpha1/governedresource_types.go`; cluster-scoped, spec only |
-| 2 | Add `--admin-subjects` / `--admin-groups` flags to gateway | Mirrors `--agent-subjects` / `--agent-groups` pattern; admins may create GovernedResource and SafetyPolicy |
-| 3 | Admission check in gateway | URI glob match (`path.Match`) → agent identity → action; `--require-governed-resource` bypass; most-specific-match with alphabetical tiebreak |
+| 2 | Add `--admin-subjects` / `--admin-groups` flags to gateway | Admin role in `roleConfig`; `--require-governed-resource` backward compat flag |
+| 3 | Admission check in gateway | URI glob match (`path.Match`) → agent identity → action; most-specific-match with alphabetical tiebreak |
 | 4 | Add `ProviderContext` to `AgentRequestStatus` | `*apiextensionsv1.JSON`, additive; `ControlPlaneVerification` retained |
-| 5 | Karpenter context fetcher in controller | Pure K8s client, no external credentials |
-| 6 | GitHub context fetcher in controller | Requires GitHub token Secret in cluster |
-| 7 | Update Helm chart and docs | |
 
-Steps 1–4 are the first milestone: hard admission gates with no context fetching yet. Steps 5–6 are the demo-worthy payoff for the blog post.
+### Milestone 2 — Policy binding integrity
+
+| Step | What | Notes |
+|---|---|---|
+| 5 | Add `spec.governedResourceRef` to `AgentRequestSpec` | Gateway sets name + generation at admission; immutable after creation |
+| 6 | Add `policyGeneration` to `PolicyResult` | Controller records SafetyPolicy generation at evaluation time |
+| 7 | Generation mismatch detection in controller | Deny with `GOVERNED_RESOURCE_CHANGED` or `GOVERNED_RESOURCE_DELETED` on mismatch |
+| 8 | Finalizer on `GovernedResource` | Controller adds/removes `governance.aip.io/active-requests`; blocks deletion during live requests |
+
+### Milestone 3 — Admin gateway API
+
+| Step | What | Notes |
+|---|---|---|
+| 9 | `GovernedResource` CRUD + PUT endpoints | POST, GET, PUT, DELETE behind admin role; cluster-scoped |
+| 10 | `SafetyPolicy` CRUD + PUT endpoints | POST, GET, PUT, DELETE behind admin role; namespace-scoped |
+| 11 | Denial codes for `GOVERNED_RESOURCE_CHANGED` / `GOVERNED_RESOURCE_DELETED` | Additive constants in `agentrequest_types.go` |
+
+### Milestone 4 — Context fetchers
+
+| Step | What | Notes |
+|---|---|---|
+| 12 | Wire `GovernedResource.spec.contextFetcher` into controller dispatch | Controller reads matched GR, dispatches to fetcher by name via registry |
+| 13 | `k8s-deployment` fetcher | Wraps existing `ControlPlaneVerification` logic under new model |
+| 14 | Karpenter context fetcher | Pure K8s client, no external credentials |
+| 15 | GitHub context fetcher | Requires GitHub token Secret in cluster |
+| 16 | Helm chart + docs update | |
+
+Milestones 2 and 3 are the next focus. Milestone 4 is deferred until there is a live demo environment.
