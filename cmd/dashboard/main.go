@@ -99,8 +99,10 @@ func (s *DashboardServer) proxyToGateway(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if ct := r.Header.Get("Content-Type"); ct != "" {
-		req.Header.Set("Content-Type", ct)
+	for _, h := range []string{"Authorization", "Content-Type", "X-Remote-User", "X-Forwarded-User"} {
+		if v := r.Header.Get(h); v != "" {
+			req.Header.Set(h, v)
+		}
 	}
 
 	resp, err := s.httpClient.Do(req)

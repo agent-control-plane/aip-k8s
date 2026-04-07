@@ -23,6 +23,8 @@ rules:
   - agentdiagnostics/status
   - diagnosticaccuracysummaries
   - diagnosticaccuracysummaries/status
+  - governedresources
+  - governedresources/status
   - safetypolicies
   verbs:
   - get

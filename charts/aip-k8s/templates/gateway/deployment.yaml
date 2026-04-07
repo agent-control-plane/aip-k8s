@@ -48,6 +48,15 @@ spec:
             {{- if .Values.gateway.auth.trustedProxyCIDRs }}
             - --trusted-proxy-cidrs={{ .Values.gateway.auth.trustedProxyCIDRs }}
             {{- end }}
+            {{- if .Values.gateway.auth.adminSubjects }}
+            - --admin-subjects={{ .Values.gateway.auth.adminSubjects }}
+            {{- end }}
+            {{- if .Values.gateway.auth.adminGroups }}
+            - --admin-groups={{ .Values.gateway.auth.adminGroups }}
+            {{- end }}
+            {{- if .Values.gateway.auth.requireGovernedResource }}
+            - --require-governed-resource={{ .Values.gateway.auth.requireGovernedResource }}
+            {{- end }}
           ports:
             - name: http
               containerPort: 8080

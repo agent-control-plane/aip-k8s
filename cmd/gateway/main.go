@@ -242,6 +242,7 @@ func main() {
 	}
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("GET /whoami", server.handleWhoAmI)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, "ok")
@@ -442,6 +443,28 @@ func (s *Server) checkDiagnosticDuplicate(
 		}
 	}
 	return nil
+}
+
+// handleWhoAmI returns the caller's identity and their highest role.
+// Used by the dashboard to enable role-aware rendering without a page reload.
+func (s *Server) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
+	sub := callerSubFromCtx(r.Context())
+	groups := callerGroupsFromCtx(r.Context())
+
+	role := "unknown"
+	if s.roles != nil {
+		switch {
+		case s.roles.isAdmin(sub, groups):
+			role = "admin"
+		case s.roles.isReviewer(sub, groups):
+			role = "reviewer"
+		case s.roles.isAgent(sub, groups):
+			role = "agent"
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = fmt.Fprintf(w, `{"identity":%q,"role":%q}`, sub, role)
 }
 
 func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request) {
@@ -1068,9 +1091,8 @@ func (s *Server) handlePatchAgentDiagnosticStatus(w http.ResponseWriter, r *http
 	})
 
 	if err != nil {
-		log.Printf("failed to update DiagnosticAccuracySummary for agent %q: %v", agentId, err)
-		writeError(w, http.StatusInternalServerError,
-			"verdict saved but accuracy summary update failed — run POST /agent-diagnostics/recompute-accuracy to repair")
+		log.Printf("failed to update DiagnosticAccuracySummary for agent %q: %v — verdict was saved", agentId, err)
+		writeJSON(w, http.StatusOK, map[string]any{"message": "verdict saved", "warning": "accuracy summary update failed and will be recomputed on next review"})
 		return
 	}
 

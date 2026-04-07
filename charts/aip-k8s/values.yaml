@@ -31,7 +31,10 @@ gateway:
     # "anyone in sre-team can review" instead of listing every individual.
     agentGroups: ""
     reviewerGroups: ""
+    adminSubjects: ""
+    adminGroups: ""
     trustedProxyCIDRs: ""
+    requireGovernedResource: false
   service:
     type: ClusterIP
     port: 8080

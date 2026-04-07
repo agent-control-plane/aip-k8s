@@ -47,6 +47,7 @@ rules:
   resources:
   - agentrequests
   - auditrecords
+  - governedresources
   - safetypolicies
   verbs:
   - create
@@ -60,6 +61,7 @@ rules:
   - governance.aip.io
   resources:
   - agentrequests/finalizers
+  - governedresources/finalizers
   - safetypolicies/finalizers
   verbs:
   - update
@@ -68,9 +70,18 @@ rules:
   resources:
   - agentrequests/status
   - auditrecords/status
+  - governedresources/status
   - safetypolicies/status
   verbs:
   - get
+  - patch
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
   - patch
   - update
 ---

@@ -13,12 +13,30 @@
     <div class="container">
         <header>
             <h1>AIP Visual Audit</h1>
-            <div id="connection-status" class="badge badge-completed">Live</div>
+            <div style="display:flex;align-items:center;gap:0.75rem;flex:1;justify-content:flex-end;">
+                <div id="auth-banner" style="display:none;font-size:0.8rem;padding:0.3rem 0.75rem;border-radius:4px;border:1px solid;"></div>
+                <div id="identity-chip" style="display:none;font-size:0.78rem;color:var(--text-secondary);font-family:'JetBrains Mono',monospace;"></div>
+                <button id="token-btn" onclick="toggleTokenPanel()" style="font-size:0.8rem;padding:0.3rem 0.75rem;background:transparent;border:1px solid var(--border-color);border-radius:4px;color:var(--text-secondary);cursor:pointer;">Set Token</button>
+            </div>
         </header>
+
+        <!-- Token input panel (hidden by default) -->
+        <div id="token-panel" style="display:none;padding:0.75rem 1rem;border-bottom:1px solid var(--border-color);background:rgba(255,255,255,0.02);">
+            <div style="display:flex;align-items:center;gap:0.5rem;max-width:900px;">
+                <label for="token-input" style="font-size:0.82rem;color:var(--text-secondary);white-space:nowrap;">Bearer token</label>
+                <input id="token-input" type="password" placeholder="Paste your JWT access token"
+                    style="flex:1;font-size:0.82rem;padding:0.35rem 0.6rem;background:var(--surface-color);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);font-family:'JetBrains Mono',monospace;"
+                    onkeydown="if(event.key==='Enter')applyToken()" />
+                <button onclick="applyToken()" style="font-size:0.82rem;padding:0.35rem 0.75rem;background:var(--accent-color);border:none;border-radius:4px;color:white;cursor:pointer;">Apply</button>
+                <button onclick="clearToken()" style="font-size:0.82rem;padding:0.35rem 0.75rem;background:transparent;border:1px solid var(--border-color);border-radius:4px;color:var(--text-secondary);cursor:pointer;">Clear</button>
+            </div>
+        </div>
 
         <nav class="tab-bar">
             <button id="tab-requests" class="tab-button active" onclick="showTab('requests')">Agent Requests</button>
             <button id="tab-diagnostics" class="tab-button" onclick="showTab('diagnostics')">Diagnostics</button>
+            <button id="tab-governed-resources" class="tab-button admin-only" style="display:none" onclick="showTab('governed-resources')">Governed Resources</button>
+            <button id="tab-safety-policies" class="tab-button admin-only" style="display:none" onclick="showTab('safety-policies')">Safety Policies</button>
         </nav>
 
         <div id="requests-view">
@@ -77,6 +95,51 @@
                                 Loading diagnostics...
                             </td>
                         </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Governed Resources tab (admin only) -->
+        <div id="governed-resources-view" style="display:none">
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:0.75rem 1rem;border-bottom:1px solid var(--border-color);">
+                <span style="font-size:0.9rem;font-weight:600;">Governed Resources</span>
+                <button onclick="openGRForm(null)" style="font-size:0.82rem;padding:0.35rem 0.75rem;background:var(--accent-color);border:none;border-radius:4px;color:white;cursor:pointer;">+ Create</button>
+            </div>
+            <div id="gr-form-container" style="display:none;padding:1rem;border-bottom:1px solid var(--border-color);background:rgba(255,255,255,0.02);"></div>
+            <div class="diagnostics-table-container">
+                <table class="diagnostics-table">
+                    <thead>
+                        <tr><th>Name</th><th>URI Pattern</th><th>Fetcher</th><th>Permitted Actions</th><th>Permitted Agents</th><th>Actions</th></tr>
+                    </thead>
+                    <tbody id="gr-list">
+                        <tr><td colspan="6" style="text-align:center;padding:2rem;color:var(--text-secondary);">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Safety Policies tab (admin only) -->
+        <div id="safety-policies-view" style="display:none">
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:0.75rem 1rem;border-bottom:1px solid var(--border-color);">
+                <div style="display:flex;align-items:center;gap:0.5rem;">
+                    <span style="font-size:0.9rem;font-weight:600;">Safety Policies</span>
+                    <label for="sp-ns-input" style="font-size:0.82rem;color:var(--text-secondary);">Namespace</label>
+                    <input id="sp-ns-input" type="text" value="default"
+                        style="font-size:0.82rem;padding:0.3rem 0.6rem;background:var(--surface-color);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);width:130px;"
+                        onchange="loadSafetyPolicies()"
+                        onkeydown="if(event.key==='Enter')loadSafetyPolicies()" />
+                </div>
+                <button onclick="openSPForm(null)" style="font-size:0.82rem;padding:0.35rem 0.75rem;background:var(--accent-color);border:none;border-radius:4px;color:white;cursor:pointer;">+ Create</button>
+            </div>
+            <div id="sp-form-container" style="display:none;padding:1rem;border-bottom:1px solid var(--border-color);background:rgba(255,255,255,0.02);"></div>
+            <div class="diagnostics-table-container">
+                <table class="diagnostics-table">
+                    <thead>
+                        <tr><th>Name</th><th>Namespace</th><th>Context Type</th><th>Rules</th><th>Actions</th></tr>
+                    </thead>
+                    <tbody id="sp-list">
+                        <tr><td colspan="5" style="text-align:center;padding:2rem;color:var(--text-secondary);">Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
