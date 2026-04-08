@@ -11,6 +11,12 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 )
 
+const (
+	roleAgent    = "agent"
+	roleReviewer = "reviewer"
+	roleAdmin    = "admin"
+)
+
 type roleConfig struct {
 	agentSubs      map[string]bool
 	reviewerSubs   map[string]bool
@@ -101,17 +107,17 @@ func (rc *roleConfig) isAdmin(sub string, groups []string) bool {
 
 func requireRole(rc *roleConfig, role, sub string, groups []string, w http.ResponseWriter) bool {
 	switch role {
-	case "agent":
+	case roleAgent:
 		if !rc.isAgent(sub, groups) {
 			writeError(w, http.StatusForbidden, "agent role required")
 			return false
 		}
-	case "reviewer":
+	case roleReviewer:
 		if !rc.isReviewer(sub, groups) {
 			writeError(w, http.StatusForbidden, "reviewer role required")
 			return false
 		}
-	case "admin":
+	case roleAdmin:
 		if !rc.isAdmin(sub, groups) {
 			writeError(w, http.StatusForbidden, "admin role required")
 			return false

@@ -455,11 +455,11 @@ func (s *Server) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
 	if s.roles != nil {
 		switch {
 		case s.roles.isAdmin(sub, groups):
-			role = "admin"
+			role = roleAdmin
 		case s.roles.isReviewer(sub, groups):
-			role = "reviewer"
+			role = roleReviewer
 		case s.roles.isAgent(sub, groups):
-			role = "agent"
+			role = roleAgent
 		}
 	}
 
@@ -475,7 +475,7 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusUnauthorized, "caller identity required")
 		return
 	}
-	if !requireRole(s.roles, "agent", sub, callerGroupsFromCtx(r.Context()), w) {
+	if !requireRole(s.roles, roleAgent, sub, callerGroupsFromCtx(r.Context()), w) {
 		return
 	}
 
@@ -701,7 +701,7 @@ func (s *Server) handleExecutingAgentRequest(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusUnauthorized, "caller identity required")
 		return
 	}
-	if !requireRole(s.roles, "agent", sub, callerGroupsFromCtx(r.Context()), w) {
+	if !requireRole(s.roles, roleAgent, sub, callerGroupsFromCtx(r.Context()), w) {
 		return
 	}
 
@@ -744,7 +744,7 @@ func (s *Server) handleCompletedAgentRequest(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusUnauthorized, "caller identity required")
 		return
 	}
-	if !requireRole(s.roles, "agent", sub, callerGroupsFromCtx(r.Context()), w) {
+	if !requireRole(s.roles, roleAgent, sub, callerGroupsFromCtx(r.Context()), w) {
 		return
 	}
 
@@ -831,7 +831,7 @@ func (s *Server) handleCreateAgentDiagnostic(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusUnauthorized, "caller identity required")
 		return
 	}
-	if !requireRole(s.roles, "agent", sub, callerGroupsFromCtx(r.Context()), w) {
+	if !requireRole(s.roles, roleAgent, sub, callerGroupsFromCtx(r.Context()), w) {
 		return
 	}
 
@@ -1091,38 +1091,32 @@ func (s *Server) handlePatchAgentDiagnosticStatus(w http.ResponseWriter, r *http
 	})
 
 	if err != nil {
-		log.Printf("failed to update DiagnosticAccuracySummary for agent %q: %v — verdict was saved", agentId, err)
-		writeJSON(w, http.StatusOK, map[string]any{"message": "verdict saved", "warning": "accuracy summary update failed and will be recomputed on next review"})
+		log.Printf("DiagnosticAccuracySummary update failed for agent %q: %v — verdict saved, recomputing", agentId, err)
+		go func() {
+			if rerr := s.recomputeAccuracyForAgent(context.Background(), ns, agentId); rerr != nil {
+				log.Printf("background recompute for agent %q in %q failed: %v", agentId, ns, rerr)
+			}
+		}()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"message": "verdict saved",
+			"warning": "accuracy summary update failed; recompute triggered in background",
+		})
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"message": "verdict saved"})
 }
 
+// recomputeAccuracyForAgent rebuilds DiagnosticAccuracySummary for the given
+// agent (pass agentId="" to rebuild all agents) by scanning every reviewed
+// AgentDiagnostic in ns. It is safe to call from a goroutine with
+// context.Background() when the originating HTTP request has already returned.
+//
 //nolint:gocyclo // function scans and rebuilds accuracy summaries; complexity is inherent
-func (s *Server) handleRecomputeAccuracy(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
-
-	sub := callerSubFromCtx(r.Context())
-	if s.authRequired && sub == "" {
-		writeError(w, http.StatusUnauthorized, "caller identity required")
-		return
-	}
-	if !requireRole(s.roles, "reviewer", sub, callerGroupsFromCtx(r.Context()), w) {
-		return
-	}
-
-	ns := r.URL.Query().Get("namespace")
-	if ns == "" {
-		ns = defaultNamespace
-	}
-
-	agentId := r.URL.Query().Get("agentIdentity")
-
+func (s *Server) recomputeAccuracyForAgent(ctx context.Context, ns, agentId string) error {
 	var list v1alpha1.AgentDiagnosticList
-	if err := s.client.List(r.Context(), &list, client.InNamespace(ns)); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+	if err := s.client.List(ctx, &list, client.InNamespace(ns)); err != nil {
+		return fmt.Errorf("list diagnostics: %w", err)
 	}
 
 	stats := make(map[string]*v1alpha1.DiagnosticAccuracySummary)
@@ -1170,13 +1164,13 @@ func (s *Server) handleRecomputeAccuracy(w http.ResponseWriter, r *http.Request)
 
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			var existing v1alpha1.DiagnosticAccuracySummary
-			err := s.client.Get(r.Context(), types.NamespacedName{Name: id, Namespace: ns}, &existing)
+			err := s.client.Get(ctx, types.NamespacedName{Name: id, Namespace: ns}, &existing)
 			if err != nil {
 				if apierrors.IsNotFound(err) {
-					if err := s.client.Create(r.Context(), summary); err != nil {
+					if err := s.client.Create(ctx, summary); err != nil {
 						return err
 					}
-					return s.client.Status().Update(r.Context(), summary)
+					return s.client.Status().Update(ctx, summary)
 				}
 				return err
 			}
@@ -1186,7 +1180,7 @@ func (s *Server) handleRecomputeAccuracy(w http.ResponseWriter, r *http.Request)
 					id, existing.Spec.AgentIdentity, summary.Spec.AgentIdentity)
 			}
 			existing.Status = summary.Status
-			return s.client.Status().Update(r.Context(), &existing)
+			return s.client.Status().Update(ctx, &existing)
 		})
 		if err != nil {
 			log.Printf("failed to upsert summary for %s: %v", id, err)
@@ -1197,7 +1191,7 @@ func (s *Server) handleRecomputeAccuracy(w http.ResponseWriter, r *http.Request)
 	// (e.g., after their diagnostics were deleted). Without this, a recompute
 	// would leave stale counts behind, defeating the recovery guarantee.
 	var existingSummaries v1alpha1.DiagnosticAccuracySummaryList
-	if err := s.client.List(r.Context(), &existingSummaries, client.InNamespace(ns)); err != nil {
+	if err := s.client.List(ctx, &existingSummaries, client.InNamespace(ns)); err != nil {
 		log.Printf("failed to list existing summaries during recompute: %v", err)
 	} else {
 		for i := range existingSummaries.Items {
@@ -1210,16 +1204,42 @@ func (s *Server) handleRecomputeAccuracy(w http.ResponseWriter, r *http.Request)
 			}
 			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				var fresh v1alpha1.DiagnosticAccuracySummary
-				if err := s.client.Get(r.Context(), types.NamespacedName{Name: existing.Name, Namespace: ns}, &fresh); err != nil {
+				if err := s.client.Get(ctx, types.NamespacedName{Name: existing.Name, Namespace: ns}, &fresh); err != nil {
 					return err
 				}
 				fresh.Status = v1alpha1.DiagnosticAccuracySummaryStatus{}
-				return s.client.Status().Update(r.Context(), &fresh)
+				return s.client.Status().Update(ctx, &fresh)
 			})
 			if err != nil {
 				log.Printf("failed to zero stale summary %s: %v", existing.Name, err)
 			}
 		}
+	}
+
+	return nil
+}
+
+func (s *Server) handleRecomputeAccuracy(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
+
+	sub := callerSubFromCtx(r.Context())
+	if s.authRequired && sub == "" {
+		writeError(w, http.StatusUnauthorized, "caller identity required")
+		return
+	}
+	if !requireRole(s.roles, roleReviewer, sub, callerGroupsFromCtx(r.Context()), w) {
+		return
+	}
+
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		ns = defaultNamespace
+	}
+	agentId := r.URL.Query().Get("agentIdentity")
+
+	if err := s.recomputeAccuracyForAgent(r.Context(), ns, agentId); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"message": "recomputed accuracy summaries"})

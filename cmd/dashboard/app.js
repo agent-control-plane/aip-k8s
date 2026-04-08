@@ -936,7 +936,7 @@ window.openGRForm = async function(name) {
                     style="display:block;width:100%;box-sizing:border-box;margin-top:0.2rem;padding:0.35rem 0.5rem;background:var(--surface-color);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);font-size:0.82rem;"/>
             </label>
             <div style="display:flex;gap:0.5rem;">
-                <button onclick="submitGRForm(${name ? `'${escapeHtml(name)}'` : 'null'})" style="padding:0.4rem 0.9rem;background:var(--accent-color);border:none;border-radius:4px;color:white;font-size:0.82rem;cursor:pointer;">${name ? 'Save' : 'Create'}</button>
+                <button data-name="${escapeHtml(name || '')}" onclick="submitGRForm(this.dataset.name || null)" style="padding:0.4rem 0.9rem;background:var(--accent-color);border:none;border-radius:4px;color:white;font-size:0.82rem;cursor:pointer;">${name ? 'Save' : 'Create'}</button>
                 <button onclick="document.getElementById('gr-form-container').style.display='none'" style="padding:0.4rem 0.9rem;background:transparent;border:1px solid var(--border-color);border-radius:4px;color:var(--text-secondary);font-size:0.82rem;cursor:pointer;">Cancel</button>
             </div>
         </div>`;
@@ -1055,7 +1055,7 @@ window.openSPForm = async function(name, ns) {
                 <textarea id="sp-rules" rows="6" style="display:block;width:100%;box-sizing:border-box;margin-top:0.2rem;padding:0.5rem;background:var(--surface-color);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);font-size:0.8rem;font-family:'JetBrains Mono',monospace;resize:vertical;"></textarea>
             </label>
             <div style="display:flex;gap:0.5rem;">
-                <button onclick="submitSPForm(${name ? `'${escapeHtml(name)}'` : 'null'})" style="padding:0.4rem 0.9rem;background:var(--accent-color);border:none;border-radius:4px;color:white;font-size:0.82rem;cursor:pointer;">${name ? 'Save' : 'Create'}</button>
+                <button data-name="${escapeHtml(name || '')}" onclick="submitSPForm(this.dataset.name || null)" style="padding:0.4rem 0.9rem;background:var(--accent-color);border:none;border-radius:4px;color:white;font-size:0.82rem;cursor:pointer;">${name ? 'Save' : 'Create'}</button>
                 <button onclick="document.getElementById('sp-form-container').style.display='none'" style="padding:0.4rem 0.9rem;background:transparent;border:1px solid var(--border-color);border-radius:4px;color:var(--text-secondary);font-size:0.82rem;cursor:pointer;">Cancel</button>
             </div>
         </div>`;

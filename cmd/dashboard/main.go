@@ -99,7 +99,11 @@ func (s *DashboardServer) proxyToGateway(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	for _, h := range []string{"Authorization", "Content-Type", "X-Remote-User", "X-Forwarded-User"} {
+	// Only forward safe, non-identity headers. X-Remote-User / X-Forwarded-User
+	// are intentionally excluded: forwarding client-supplied identity headers
+	// would allow browser users to impersonate arbitrary identities if the
+	// gateway trusts the dashboard pod IP via --trusted-proxy-cidrs.
+	for _, h := range []string{"Authorization", "Content-Type"} {
 		if v := r.Header.Get(h); v != "" {
 			req.Header.Set(h, v)
 		}
