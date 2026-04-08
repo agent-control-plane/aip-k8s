@@ -570,7 +570,12 @@ admissionPassed:
 	s.pollAgentRequestPhase(w, r, agentReq.Name, ns, reqLabels)
 }
 
-func (s *Server) pollAgentRequestPhase(w http.ResponseWriter, r *http.Request, name, ns string, reqLabels map[string]string) {
+func (s *Server) pollAgentRequestPhase(
+	w http.ResponseWriter,
+	r *http.Request,
+	name, ns string,
+	reqLabels map[string]string,
+) {
 	timeout := time.After(90 * time.Second)
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()

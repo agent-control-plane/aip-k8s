@@ -37,8 +37,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/go-logr/logr"
-
 	"encoding/json"
 
 	governancev1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
@@ -112,70 +110,22 @@ func (r *AgentRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// 1.1 GovernedResource Integrity Check
 	if agentReq.Spec.GovernedResourceRef != nil {
-		result, err := r.checkGovernedResourceIntegrity(ctx, &agentReq, statusPatch)
-		if err != nil {
-			return result, err
+		if err := r.checkGovernedResourceIntegrity(ctx, &agentReq, statusPatch); err != nil {
+			return ctrl.Result{}, err
 		}
-		// If it denied the request, it will have returned ctrl.Result{}, nil.
-		// In that case, the function already updated status and emitted audit records.
-		// We should return early to exit this reconcile.
+		// If it denied the request, status was updated and audit records emitted.
+		// Return early to exit this reconcile.
 		if agentReq.Status.Phase == governancev1alpha1.PhaseDenied {
-			return result, nil
+			return ctrl.Result{}, nil
 		}
 	}
 
 	// 2. Check for Agent-triggered transitions
-	// Agent completed successfully
-	if meta.IsStatusConditionTrue(agentReq.Status.Conditions, governancev1alpha1.ConditionCompleted) && agentReq.Status.Phase != governancev1alpha1.PhaseCompleted {
-		fromPhase := agentReq.Status.Phase
-		agentReq.Status.Phase = governancev1alpha1.PhaseCompleted
-		if err := r.Status().Patch(ctx, &agentReq, statusPatch); err != nil {
-			return ctrl.Result{}, err
-		}
-		if err := r.releaseLock(ctx, &agentReq); err != nil {
-			return ctrl.Result{}, err
-		}
-		if err := r.emitAuditRecord(ctx, &agentReq, governancev1alpha1.AuditEventRequestCompleted, fromPhase, governancev1alpha1.PhaseCompleted); err != nil {
-			return ctrl.Result{}, err
-		}
-		if err := r.emitAuditRecord(ctx, &agentReq, governancev1alpha1.AuditEventLockReleased, "", ""); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
+	handled, err := r.checkAgentTransitions(ctx, &agentReq, statusPatch)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
-
-	// Agent failed
-	if meta.IsStatusConditionTrue(agentReq.Status.Conditions, governancev1alpha1.ConditionFailed) && agentReq.Status.Phase != governancev1alpha1.PhaseFailed {
-		fromPhase := agentReq.Status.Phase
-		agentReq.Status.Phase = governancev1alpha1.PhaseFailed
-		if err := r.Status().Patch(ctx, &agentReq, statusPatch); err != nil {
-			return ctrl.Result{}, err
-		}
-		if err := r.releaseLock(ctx, &agentReq); err != nil {
-			return ctrl.Result{}, err
-		}
-		if err := r.emitAuditRecord(ctx, &agentReq, governancev1alpha1.AuditEventRequestFailed, fromPhase, governancev1alpha1.PhaseFailed); err != nil {
-			return ctrl.Result{}, err
-		}
-		if err := r.emitAuditRecord(ctx, &agentReq, governancev1alpha1.AuditEventLockReleased, "", ""); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
-	}
-
-	// Agent signals it started executing
-	if meta.IsStatusConditionTrue(agentReq.Status.Conditions, governancev1alpha1.ConditionExecuting) && agentReq.Status.Phase == governancev1alpha1.PhaseApproved {
-		fromPhase := agentReq.Status.Phase
-		agentReq.Status.Phase = governancev1alpha1.PhaseExecuting
-		if err := r.Status().Patch(ctx, &agentReq, statusPatch); err != nil {
-			return ctrl.Result{}, err
-		}
-		if err := r.emitAuditRecord(ctx, &agentReq, governancev1alpha1.AuditEventLockAcquired, "", ""); err != nil {
-			return ctrl.Result{}, err
-		}
-		if err := r.emitAuditRecord(ctx, &agentReq, governancev1alpha1.AuditEventRequestExecuting, fromPhase, governancev1alpha1.PhaseExecuting); err != nil {
-			return ctrl.Result{}, err
-		}
+	if handled {
 		return ctrl.Result{}, nil
 	}
 
@@ -217,7 +167,7 @@ func (r *AgentRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	return ctrl.Result{}, nil
 }
 
-func (r *AgentRequestReconciler) checkGovernedResourceIntegrity(ctx context.Context, agentReq *governancev1alpha1.AgentRequest, statusPatch client.Patch) (ctrl.Result, error) {
+func (r *AgentRequestReconciler) checkGovernedResourceIntegrity(ctx context.Context, agentReq *governancev1alpha1.AgentRequest, statusPatch client.Patch) error {
 	var gr governancev1alpha1.GovernedResource
 	if err := r.Get(ctx, types.NamespacedName{Name: agentReq.Spec.GovernedResourceRef.Name}, &gr); err != nil {
 		if errors.IsNotFound(err) {
@@ -229,17 +179,17 @@ func (r *AgentRequestReconciler) checkGovernedResourceIntegrity(ctx context.Cont
 				Message: fmt.Sprintf("The GovernedResource %q that admitted this request was deleted.", agentReq.Spec.GovernedResourceRef.Name),
 			}
 			if err := r.Status().Patch(ctx, agentReq, statusPatch); err != nil {
-				return ctrl.Result{}, err
+				return err
 			}
 			if err := r.releaseLock(ctx, agentReq); err != nil {
-				return ctrl.Result{}, err
+				return err
 			}
 			if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventRequestDenied, fromPhase, governancev1alpha1.PhaseDenied); err != nil {
-				return ctrl.Result{}, err
+				return err
 			}
-			return ctrl.Result{}, nil
+			return nil
 		}
-		return ctrl.Result{}, err
+		return err
 	}
 
 	// Deny if the GovernedResource has been recreated or mutated (generation mismatch).
@@ -260,18 +210,76 @@ func (r *AgentRequestReconciler) checkGovernedResourceIntegrity(ctx context.Cont
 			),
 		}
 		if err := r.Status().Patch(ctx, agentReq, statusPatch); err != nil {
-			return ctrl.Result{}, err
+			return err
 		}
 		if err := r.releaseLock(ctx, agentReq); err != nil {
-			return ctrl.Result{}, err
+			return err
 		}
 		if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventRequestDenied, fromPhase, governancev1alpha1.PhaseDenied); err != nil {
-			return ctrl.Result{}, err
+			return err
 		}
-		return ctrl.Result{}, nil
+		return nil
 	}
 
-	return ctrl.Result{}, nil
+	return nil
+}
+
+func (r *AgentRequestReconciler) checkAgentTransitions(ctx context.Context, agentReq *governancev1alpha1.AgentRequest, statusPatch client.Patch) (bool, error) {
+	// Agent completed successfully
+	if meta.IsStatusConditionTrue(agentReq.Status.Conditions, governancev1alpha1.ConditionCompleted) && agentReq.Status.Phase != governancev1alpha1.PhaseCompleted {
+		fromPhase := agentReq.Status.Phase
+		agentReq.Status.Phase = governancev1alpha1.PhaseCompleted
+		if err := r.Status().Patch(ctx, agentReq, statusPatch); err != nil {
+			return false, err
+		}
+		if err := r.releaseLock(ctx, agentReq); err != nil {
+			return false, err
+		}
+		if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventRequestCompleted, fromPhase, governancev1alpha1.PhaseCompleted); err != nil {
+			return false, err
+		}
+		if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventLockReleased, "", ""); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	// Agent failed
+	if meta.IsStatusConditionTrue(agentReq.Status.Conditions, governancev1alpha1.ConditionFailed) && agentReq.Status.Phase != governancev1alpha1.PhaseFailed {
+		fromPhase := agentReq.Status.Phase
+		agentReq.Status.Phase = governancev1alpha1.PhaseFailed
+		if err := r.Status().Patch(ctx, agentReq, statusPatch); err != nil {
+			return false, err
+		}
+		if err := r.releaseLock(ctx, agentReq); err != nil {
+			return false, err
+		}
+		if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventRequestFailed, fromPhase, governancev1alpha1.PhaseFailed); err != nil {
+			return false, err
+		}
+		if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventLockReleased, "", ""); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	// Agent signals it started executing
+	if meta.IsStatusConditionTrue(agentReq.Status.Conditions, governancev1alpha1.ConditionExecuting) && agentReq.Status.Phase == governancev1alpha1.PhaseApproved {
+		fromPhase := agentReq.Status.Phase
+		agentReq.Status.Phase = governancev1alpha1.PhaseExecuting
+		if err := r.Status().Patch(ctx, agentReq, statusPatch); err != nil {
+			return false, err
+		}
+		if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventLockAcquired, "", ""); err != nil {
+			return false, err
+		}
+		if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventRequestExecuting, fromPhase, governancev1alpha1.PhaseExecuting); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	return false, nil
 }
 
 func generateLeaseName(targetURI string) string {
@@ -305,7 +313,7 @@ func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq 
 	if policyEvaluated {
 		// If it's blocked on approval, check spec for a human decision
 		if requiresApproval {
-			return r.handleApprovalWait(ctx, agentReq, statusPatch, logger)
+			return r.handleApprovalWait(ctx, agentReq, statusPatch)
 		}
 		// Otherwise, it must have been an "Allow" result and we're now in lock acquisition mode
 		fromPhase := agentReq.Status.Phase // Should be Pending
@@ -430,10 +438,11 @@ func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq 
 		logger.Error(err, "Failed to set owner reference for policy.evaluated AuditRecord")
 	}
 
-	return r.handleEvaluationResult(ctx, agentReq, statusPatch, result, policyEvalAudit, logger)
+	return r.handleEvaluationResult(ctx, agentReq, statusPatch, result, policyEvalAudit)
 }
 
-func (r *AgentRequestReconciler) handleApprovalWait(ctx context.Context, agentReq *governancev1alpha1.AgentRequest, statusPatch client.Patch, logger logr.Logger) (ctrl.Result, error) {
+func (r *AgentRequestReconciler) handleApprovalWait(ctx context.Context, agentReq *governancev1alpha1.AgentRequest, statusPatch client.Patch) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
 	if agentReq.Spec.HumanApproval != nil {
 		fromPhase := agentReq.Status.Phase
 
@@ -469,7 +478,8 @@ func (r *AgentRequestReconciler) handleApprovalWait(ctx context.Context, agentRe
 	return ctrl.Result{}, nil
 }
 
-func (r *AgentRequestReconciler) handleEvaluationResult(ctx context.Context, agentReq *governancev1alpha1.AgentRequest, statusPatch client.Patch, result *evaluation.Result, policyEvalAudit *governancev1alpha1.AuditRecord, logger logr.Logger) (ctrl.Result, error) {
+func (r *AgentRequestReconciler) handleEvaluationResult(ctx context.Context, agentReq *governancev1alpha1.AgentRequest, statusPatch client.Patch, result *evaluation.Result, policyEvalAudit *governancev1alpha1.AuditRecord) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
 	fromPhase := agentReq.Status.Phase
 
 	switch result.Action {
