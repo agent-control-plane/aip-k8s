@@ -293,8 +293,10 @@ func main() {
 		authMiddleware = newProxyHeaderMiddleware(*trustedProxyCIDRs)
 	}
 
+	mux.Handle("GET /metrics", metricsHandler())
+
 	log.Printf("Starting AIP Demo Gateway on %s", *addr)
-	if err := http.ListenAndServe(*addr, loggingMiddleware(authMiddleware(mux))); err != nil {
+	if err := http.ListenAndServe(*addr, metricsMiddleware(loggingMiddleware(authMiddleware(mux)))); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 }
