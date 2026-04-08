@@ -431,6 +431,7 @@ func (s *Server) checkDiagnosticDuplicate(
 		if diag.Spec.AgentIdentity == agentIdentity &&
 			diag.Spec.DiagnosticType == diagnosticType &&
 			diag.Spec.CorrelationID == correlationID {
+			diagnosticDedupTotal.Inc()
 			err := fmt.Errorf("duplicate")
 			writeError(w, http.StatusConflict, fmt.Sprintf(
 				"duplicate diagnostic: an active diagnostic for the same "+
@@ -878,6 +879,7 @@ func (s *Server) handleCreateAgentDiagnostic(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to create AgentDiagnostic: %v", err))
 		return
 	}
+	diagnosticCreatedTotal.WithLabelValues(body.AgentIdentity).Inc()
 
 	// Return normalized label values so callers can use them in label-selector
 	// queries without having to guess what normalization was applied.
@@ -991,6 +993,7 @@ func (s *Server) handlePatchAgentDiagnosticStatus(w http.ResponseWriter, r *http
 		return
 	}
 
+	diagnosticVerdictTotal.WithLabelValues(body.Verdict).Inc()
 	agentId := diag.Spec.AgentIdentity
 	summaryName := summaryNameForAgent(agentId)
 	summaryUpdatedAt := metav1.Now()

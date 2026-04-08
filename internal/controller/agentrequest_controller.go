@@ -26,6 +26,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/labels"
 
+	"github.com/prometheus/client_golang/prometheus"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -133,6 +134,8 @@ func (r *AgentRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if agentReq.Status.Phase == "" && !meta.IsStatusConditionTrue(agentReq.Status.Conditions, "RequestSubmitted") {
 		log.FromContext(ctx).Info("Initializing AgentRequest phase to Pending", "name", agentReq.Name)
 		agentReq.Status.Phase = governancev1alpha1.PhasePending
+		agentRequestActive.Inc()
+		agentRequestTotal.WithLabelValues(governancev1alpha1.PhasePending).Inc()
 
 		// Mark as submitted to avoid double auditing if the reconcile is re-triggered
 		// before the phase update is fully visible.
@@ -178,6 +181,9 @@ func (r *AgentRequestReconciler) checkGovernedResourceIntegrity(ctx context.Cont
 				Code:    governancev1alpha1.DenialCodeGovernedResourceDeleted,
 				Message: fmt.Sprintf("The GovernedResource %q that admitted this request was deleted.", agentReq.Spec.GovernedResourceRef.Name),
 			}
+			agentRequestDeniedTotal.WithLabelValues(governancev1alpha1.DenialCodeGovernedResourceDeleted).Inc()
+			agentRequestActive.Dec()
+			agentRequestTotal.WithLabelValues(governancev1alpha1.PhaseDenied).Inc()
 			if err := r.Status().Patch(ctx, agentReq, statusPatch); err != nil {
 				return err
 			}
@@ -209,6 +215,9 @@ func (r *AgentRequestReconciler) checkGovernedResourceIntegrity(ctx context.Cont
 				gr.Generation,
 			),
 		}
+		agentRequestDeniedTotal.WithLabelValues(governancev1alpha1.DenialCodeGenerationMismatch).Inc()
+		agentRequestActive.Dec()
+		agentRequestTotal.WithLabelValues(governancev1alpha1.PhaseDenied).Inc()
 		if err := r.Status().Patch(ctx, agentReq, statusPatch); err != nil {
 			return err
 		}
@@ -229,6 +238,8 @@ func (r *AgentRequestReconciler) checkAgentTransitions(ctx context.Context, agen
 	if meta.IsStatusConditionTrue(agentReq.Status.Conditions, governancev1alpha1.ConditionCompleted) && agentReq.Status.Phase != governancev1alpha1.PhaseCompleted {
 		fromPhase := agentReq.Status.Phase
 		agentReq.Status.Phase = governancev1alpha1.PhaseCompleted
+		agentRequestActive.Dec()
+		agentRequestTotal.WithLabelValues(governancev1alpha1.PhaseCompleted).Inc()
 		if err := r.Status().Patch(ctx, agentReq, statusPatch); err != nil {
 			return false, err
 		}
@@ -248,6 +259,8 @@ func (r *AgentRequestReconciler) checkAgentTransitions(ctx context.Context, agen
 	if meta.IsStatusConditionTrue(agentReq.Status.Conditions, governancev1alpha1.ConditionFailed) && agentReq.Status.Phase != governancev1alpha1.PhaseFailed {
 		fromPhase := agentReq.Status.Phase
 		agentReq.Status.Phase = governancev1alpha1.PhaseFailed
+		agentRequestActive.Dec()
+		agentRequestTotal.WithLabelValues(governancev1alpha1.PhaseFailed).Inc()
 		if err := r.Status().Patch(ctx, agentReq, statusPatch); err != nil {
 			return false, err
 		}
@@ -267,6 +280,7 @@ func (r *AgentRequestReconciler) checkAgentTransitions(ctx context.Context, agen
 	if meta.IsStatusConditionTrue(agentReq.Status.Conditions, governancev1alpha1.ConditionExecuting) && agentReq.Status.Phase == governancev1alpha1.PhaseApproved {
 		fromPhase := agentReq.Status.Phase
 		agentReq.Status.Phase = governancev1alpha1.PhaseExecuting
+		agentRequestTotal.WithLabelValues(governancev1alpha1.PhaseExecuting).Inc()
 		if err := r.Status().Patch(ctx, agentReq, statusPatch); err != nil {
 			return false, err
 		}
@@ -395,7 +409,9 @@ func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq 
 		}
 	}
 
+	evalTimer := prometheus.NewTimer(agentRequestEvalDuration)
 	result, err := r.Evaluator.Evaluate(ctx, agentReq, evalOpts, targetCtx, cascadeCtxs)
+	evalTimer.ObserveDuration()
 	if err != nil {
 		logger.Error(err, "Evaluation failed")
 		return ctrl.Result{}, err
@@ -460,6 +476,9 @@ func (r *AgentRequestReconciler) handleApprovalWait(ctx context.Context, agentRe
 				Code:    governancev1alpha1.DenialCodePolicyViolation,
 				Message: "Denied by human reviewer",
 			}
+			agentRequestDeniedTotal.WithLabelValues(governancev1alpha1.DenialCodePolicyViolation).Inc()
+			agentRequestActive.Dec()
+			agentRequestTotal.WithLabelValues(governancev1alpha1.PhaseDenied).Inc()
 			meta.SetStatusCondition(&agentReq.Status.Conditions, metav1.Condition{
 				Type:    governancev1alpha1.ConditionApproved,
 				Status:  metav1.ConditionFalse,
@@ -491,6 +510,9 @@ func (r *AgentRequestReconciler) handleEvaluationResult(ctx context.Context, age
 			Message:       result.Message,
 			PolicyResults: result.PolicyResults,
 		}
+		agentRequestDeniedTotal.WithLabelValues(result.Code).Inc()
+		agentRequestActive.Dec()
+		agentRequestTotal.WithLabelValues(governancev1alpha1.PhaseDenied).Inc()
 
 		meta.SetStatusCondition(&agentReq.Status.Conditions, metav1.Condition{
 			Type:    governancev1alpha1.ConditionApproved,
@@ -588,11 +610,15 @@ func (r *AgentRequestReconciler) handleLockAcquisition(ctx context.Context, agen
 				if agentReq.CreationTimestamp.Time.Before(waitLimit) {
 					// Timeout exceeded
 					logger.Info("Lock wait timeout exceeded", "lease", leaseName)
+					opsLockContentionTotal.Inc()
 					agentReq.Status.Phase = governancev1alpha1.PhaseDenied
 					agentReq.Status.Denial = &governancev1alpha1.DenialResponse{
 						Code:    governancev1alpha1.DenialCodeLockTimeout,
 						Message: fmt.Sprintf("Failed to acquire lock for %s within 60s timeout. Lock held by: %s", agentReq.Spec.Target.URI, ptr.Deref(existingLease.Spec.HolderIdentity, "unknown")),
 					}
+					agentRequestDeniedTotal.WithLabelValues(governancev1alpha1.DenialCodeLockTimeout).Inc()
+					agentRequestActive.Dec()
+					agentRequestTotal.WithLabelValues(governancev1alpha1.PhaseDenied).Inc()
 
 					meta.SetStatusCondition(&agentReq.Status.Conditions, metav1.Condition{
 						Type:    governancev1alpha1.ConditionApproved,
@@ -613,6 +639,7 @@ func (r *AgentRequestReconciler) handleLockAcquisition(ctx context.Context, agen
 				}
 
 				// Requeue to wait for the lock
+				opsLockContentionTotal.Inc()
 				logger.Info("Lock contention, requeueing", "lease", leaseName)
 				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 			}
@@ -623,6 +650,8 @@ func (r *AgentRequestReconciler) handleLockAcquisition(ctx context.Context, agen
 	}
 
 	// Lock acquired successfully!
+	opsLockActive.Inc()
+	agentRequestTotal.WithLabelValues(governancev1alpha1.PhaseApproved).Inc()
 	meta.SetStatusCondition(&agentReq.Status.Conditions, metav1.Condition{
 		Type:    governancev1alpha1.ConditionApproved,
 		Status:  metav1.ConditionTrue,
@@ -671,6 +700,9 @@ func (r *AgentRequestReconciler) reconcileExecuting(ctx context.Context, agentRe
 		expirationTime := lease.Spec.RenewTime.Add(time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second)
 		if r.now().After(expirationTime) {
 			log.FromContext(ctx).Info("AgentRequest execution timed out (Lease expired)", "name", agentReq.Name)
+			opsLockExpiredTotal.Inc()
+			agentRequestActive.Dec()
+			agentRequestTotal.WithLabelValues(governancev1alpha1.PhaseFailed).Inc()
 			meta.SetStatusCondition(&agentReq.Status.Conditions, metav1.Condition{
 				Type:    governancev1alpha1.ConditionFailed,
 				Status:  metav1.ConditionTrue,
@@ -723,6 +755,7 @@ func (r *AgentRequestReconciler) releaseLock(ctx context.Context, req *governanc
 	if err := r.Delete(ctx, lease); err != nil && !errors.IsNotFound(err) {
 		return err
 	}
+	opsLockActive.Dec()
 	return nil
 }
 
