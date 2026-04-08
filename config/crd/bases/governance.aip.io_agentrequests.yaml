@@ -120,6 +120,9 @@ spec:
                 - generation
                 - name
                 type: object
+                x-kubernetes-validations:
+                - message: governedResourceRef is immutable after creation
+                  rule: self == oldSelf
               humanApproval:
                 description: |-
                   HumanApproval holds the human reviewer's decision when a policy requires manual approval.

@@ -89,8 +89,11 @@ var _ = Describe("AgentRequest Controller", func() {
 						Target: governancev1alpha1.Target{
 							URI: "k8s://prod/default/pod/test-pod",
 						},
-						Reason:              "test execution",
-						GovernedResourceRef: &governancev1alpha1.GovernedResourceRef{Name: "test-gr"},
+						Reason: "test execution",
+						GovernedResourceRef: &governancev1alpha1.GovernedResourceRef{
+							Name:       "test-gr",
+							Generation: gr.Generation,
+						},
 					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
@@ -274,6 +277,9 @@ var _ = Describe("AgentRequest Controller", func() {
 				_ = k8sClient.Delete(ctx, policy)
 			}()
 
+			var testGR governancev1alpha1.GovernedResource
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "test-gr"}, &testGR)).To(Succeed())
+
 			reqName := "test-deny-request"
 			reqNN := types.NamespacedName{Name: reqName, Namespace: "default"}
 			agentReq := &governancev1alpha1.AgentRequest{
@@ -287,8 +293,11 @@ var _ = Describe("AgentRequest Controller", func() {
 					Target: governancev1alpha1.Target{
 						URI: "k8s://prod/default/pod/critical-pod",
 					},
-					Reason:              "maintenance",
-					GovernedResourceRef: &governancev1alpha1.GovernedResourceRef{Name: "test-gr"},
+					Reason: "maintenance",
+					GovernedResourceRef: &governancev1alpha1.GovernedResourceRef{
+						Name:       "test-gr",
+						Generation: testGR.Generation,
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, agentReq)).To(Succeed())
@@ -325,17 +334,23 @@ var _ = Describe("AgentRequest Controller", func() {
 		})
 
 		It("should deny a second AgentRequest for the same target due to LockTimeout", func() {
+			var lockTestGR governancev1alpha1.GovernedResource
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "test-gr"}, &lockTestGR)).To(Succeed())
+
 			// Request 1
 			req1Name := "test-lock-1"
 			req1NN := types.NamespacedName{Name: req1Name, Namespace: "default"}
 			agentReq1 := &governancev1alpha1.AgentRequest{
 				ObjectMeta: metav1.ObjectMeta{Name: req1Name, Namespace: "default"},
 				Spec: governancev1alpha1.AgentRequestSpec{
-					AgentIdentity:       "agent-1",
-					Action:              "update",
-					Target:              governancev1alpha1.Target{URI: "k8s://prod/default/deployment/backend"},
-					Reason:              "scale up",
-					GovernedResourceRef: &governancev1alpha1.GovernedResourceRef{Name: "test-gr"},
+					AgentIdentity: "agent-1",
+					Action:        "update",
+					Target:        governancev1alpha1.Target{URI: "k8s://prod/default/deployment/backend"},
+					Reason:        "scale up",
+					GovernedResourceRef: &governancev1alpha1.GovernedResourceRef{
+						Name:       "test-gr",
+						Generation: lockTestGR.Generation,
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, agentReq1)).To(Succeed())
@@ -346,11 +361,14 @@ var _ = Describe("AgentRequest Controller", func() {
 			agentReq2 := &governancev1alpha1.AgentRequest{
 				ObjectMeta: metav1.ObjectMeta{Name: req2Name, Namespace: "default"},
 				Spec: governancev1alpha1.AgentRequestSpec{
-					AgentIdentity:       "agent-2",
-					Action:              "update",
-					Target:              governancev1alpha1.Target{URI: "k8s://prod/default/deployment/backend"},
-					Reason:              "config change",
-					GovernedResourceRef: &governancev1alpha1.GovernedResourceRef{Name: "test-gr"},
+					AgentIdentity: "agent-2",
+					Action:        "update",
+					Target:        governancev1alpha1.Target{URI: "k8s://prod/default/deployment/backend"},
+					Reason:        "config change",
+					GovernedResourceRef: &governancev1alpha1.GovernedResourceRef{
+						Name:       "test-gr",
+						Generation: lockTestGR.Generation,
+					},
 				},
 			}
 			// Set creation timestamp to 61 seconds ago to simulate timeout
@@ -437,11 +455,14 @@ var _ = Describe("AgentRequest Controller", func() {
 			agentReq := &governancev1alpha1.AgentRequest{
 				ObjectMeta: metav1.ObjectMeta{Name: reqName, Namespace: "default"},
 				Spec: governancev1alpha1.AgentRequestSpec{
-					AgentIdentity:       "test-agent",
-					Action:              "update",
-					Target:              governancev1alpha1.Target{URI: "github://org/repo"},
-					Reason:              "testing schema violation",
-					GovernedResourceRef: &governancev1alpha1.GovernedResourceRef{Name: grName},
+					AgentIdentity: "test-agent",
+					Action:        "update",
+					Target:        governancev1alpha1.Target{URI: "github://org/repo"},
+					Reason:        "testing schema violation",
+					GovernedResourceRef: &governancev1alpha1.GovernedResourceRef{
+						Name:       grName,
+						Generation: gr.Generation,
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, agentReq)).To(Succeed())

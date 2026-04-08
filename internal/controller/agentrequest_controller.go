@@ -133,6 +133,34 @@ func (r *AgentRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			}
 			return ctrl.Result{}, err
 		}
+		// Deny if the GovernedResource has been recreated or mutated (generation mismatch).
+		if gr.Generation != agentReq.Spec.GovernedResourceRef.Generation {
+			log.FromContext(ctx).Info("Denying AgentRequest due to GovernedResource generation mismatch",
+				"name", agentReq.Name,
+				"expectedGeneration", agentReq.Spec.GovernedResourceRef.Generation,
+				"currentGeneration", gr.Generation)
+			fromPhase := agentReq.Status.Phase
+			agentReq.Status.Phase = governancev1alpha1.PhaseDenied
+			agentReq.Status.Denial = &governancev1alpha1.DenialResponse{
+				Code: governancev1alpha1.DenialCodeGenerationMismatch,
+				Message: fmt.Sprintf(
+					"GovernedResource %q generation has changed (expected %d, current %d); the policy binding is no longer valid.",
+					agentReq.Spec.GovernedResourceRef.Name,
+					agentReq.Spec.GovernedResourceRef.Generation,
+					gr.Generation,
+				),
+			}
+			if err := r.Status().Patch(ctx, &agentReq, statusPatch); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := r.releaseLock(ctx, &agentReq); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := r.emitAuditRecord(ctx, &agentReq, governancev1alpha1.AuditEventRequestDenied, fromPhase, governancev1alpha1.PhaseDenied); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
 	}
 
 	// 2. Check for Agent-triggered transitions
@@ -312,13 +340,20 @@ func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq 
 		return ctrl.Result{}, err
 	}
 
-	var grLabels map[string]string
+	var (
+		hasGovernedResource bool
+		grLabels            map[string]string
+	)
 	if agentReq.Spec.GovernedResourceRef != nil {
 		var gr governancev1alpha1.GovernedResource
-		if err := reader.Get(ctx, types.NamespacedName{Name: agentReq.Spec.GovernedResourceRef.Name}, &gr); err == nil {
-			grLabels = gr.Labels
-		} else {
+		if err := reader.Get(ctx, types.NamespacedName{Name: agentReq.Spec.GovernedResourceRef.Name}, &gr); err != nil {
 			logger.Error(err, "Failed to get GovernedResource for policy matching", "name", agentReq.Spec.GovernedResourceRef.Name)
+			return ctrl.Result{}, err
+		}
+		hasGovernedResource = true
+		grLabels = gr.Labels
+		if grLabels == nil {
+			grLabels = map[string]string{}
 		}
 	}
 
@@ -326,7 +361,7 @@ func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq 
 	for _, p := range policyList.Items {
 		// If we have no GR, or the policy doesn't match the GR labels, skip it.
 		// NOTE: In the new model, policies only apply to requests governed by a matched GR.
-		if grLabels != nil && matchesSelector(grLabels, &p) {
+		if hasGovernedResource && matchesSelector(grLabels, &p) {
 			evalOpts = append(evalOpts, p)
 		}
 	}
@@ -339,13 +374,15 @@ func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq 
 	// Step 1 - Fetch Provider Context based on GovernedResource
 	if agentReq.Spec.GovernedResourceRef != nil {
 		var gr governancev1alpha1.GovernedResource
-		if err := reader.Get(ctx, types.NamespacedName{Name: agentReq.Spec.GovernedResourceRef.Name}, &gr); err == nil {
-			providerCtx, err := r.fetchContextFromProvider(ctx, agentReq, &gr)
-			if err != nil {
-				logger.Error(err, "Provider context fetch failed")
-			} else if providerCtx != nil {
-				agentReq.Status.ProviderContext = providerCtx
-			}
+		if err := reader.Get(ctx, types.NamespacedName{Name: agentReq.Spec.GovernedResourceRef.Name}, &gr); err != nil {
+			logger.Error(err, "Failed to get GovernedResource for provider context", "name", agentReq.Spec.GovernedResourceRef.Name)
+			return ctrl.Result{}, err
+		}
+		providerCtx, err := r.fetchContextFromProvider(ctx, agentReq, &gr)
+		if err != nil {
+			logger.Error(err, "Provider context fetch failed")
+		} else if providerCtx != nil {
+			agentReq.Status.ProviderContext = providerCtx
 		}
 	}
 

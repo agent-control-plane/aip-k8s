@@ -190,7 +190,9 @@ func TestFinalizer_DeletionBlockedByActiveRequest(t *testing.T) {
 		NamespacedName: types.NamespacedName{Name: "gr1"},
 	})
 	g.Expect(err).To(gomega.Succeed())
-	g.Expect(result.Requeue).To(gomega.BeTrue())
+	// Deletion is blocked — rely on watch events from AgentRequest changes,
+	// not an immediate requeue. Result should be zero-value (no requeue).
+	g.Expect(result).To(gomega.Equal(ctrl.Result{}))
 
 	var updated governancev1alpha1.GovernedResource
 	g.Expect(fc.Get(context.Background(), types.NamespacedName{Name: "gr1"}, &updated)).To(gomega.Succeed())

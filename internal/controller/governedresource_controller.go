@@ -69,20 +69,22 @@ func (r *GovernedResourceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			}
 			return ctrl.Result{}, nil
 		}
-		// Active requests exist, block deletion and requeue
+		// Active requests exist; block deletion. Watch events from AgentRequest
+		// changes (via .Watches() in SetupWithManager) will drive re-reconciliation
+		// when requests complete, so no explicit requeue is needed.
 		logger.Info("GovernedResource deletion blocked by active AgentRequests", "name", gr.Name)
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{}, nil
 	}
 
-	// 3. Handle Normal reconciliation (Add finalizer if active requests exist)
-	if activeRequests {
-		if !controllerutil.ContainsFinalizer(&gr, governancev1alpha1.GovernedResourceFinalizer) {
-			controllerutil.AddFinalizer(&gr, governancev1alpha1.GovernedResourceFinalizer)
-			if err := r.Update(ctx, &gr); err != nil {
-				return ctrl.Result{}, err
-			}
-			logger.Info("Added finalizer to GovernedResource with active requests", "name", gr.Name)
+	// 3. Proactively ensure the finalizer is present on every GovernedResource.
+	// Adding it eagerly avoids a TOCTOU race where a delete arrives after an
+	// AgentRequest is admitted but before the first active-requests reconcile.
+	if !controllerutil.ContainsFinalizer(&gr, governancev1alpha1.GovernedResourceFinalizer) {
+		controllerutil.AddFinalizer(&gr, governancev1alpha1.GovernedResourceFinalizer)
+		if err := r.Update(ctx, &gr); err != nil {
+			return ctrl.Result{}, err
 		}
+		logger.Info("Added finalizer to GovernedResource", "name", gr.Name)
 	}
 
 	return ctrl.Result{}, nil

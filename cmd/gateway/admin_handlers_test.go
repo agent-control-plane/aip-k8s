@@ -288,7 +288,7 @@ func TestAdmin_SchemaConsistency_DifferentSchemaRejected(t *testing.T) {
 	s.handleCreateGovernedResource(w, req)
 
 	g.Expect(w.Code).To(gomega.Equal(http.StatusConflict))
-	g.Expect(w.Body.String()).To(gomega.ContainSubstring("contextSchema must be identical"))
+	g.Expect(w.Body.String()).To(gomega.ContainSubstring("contextSchema evolution incompatible"))
 }
 
 func TestAdmin_AppendOnly_AddFieldAllowed(t *testing.T) {

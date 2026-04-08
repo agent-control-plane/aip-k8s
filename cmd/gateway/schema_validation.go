@@ -14,6 +14,9 @@ func validateContextSchema(raw []byte) error {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return fmt.Errorf("invalid JSON: %w", err)
 	}
+	if m == nil {
+		return fmt.Errorf("schema must not be null")
+	}
 	return validateSubSchema(m)
 }
 
@@ -50,6 +53,27 @@ func validateSubSchema(m map[string]any) error {
 			}
 			if err := validateSubSchema(itemsSchema); err != nil {
 				return fmt.Errorf("items: %w", err)
+			}
+		}
+		if k == "required" {
+			items, ok := v.([]any)
+			if !ok {
+				return fmt.Errorf("required must be an array of strings")
+			}
+			for i, item := range items {
+				if _, ok := item.(string); !ok {
+					return fmt.Errorf("required[%d] must be a string", i)
+				}
+			}
+		}
+		if k == "nullable" {
+			if _, ok := v.(bool); !ok {
+				return fmt.Errorf("nullable must be a boolean")
+			}
+		}
+		if k == "description" {
+			if _, ok := v.(string); !ok {
+				return fmt.Errorf("description must be a string")
 			}
 		}
 	}

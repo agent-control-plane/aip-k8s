@@ -1588,7 +1588,20 @@ func (s *Server) handleDeleteGovernedResource(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	// Kubernetes sets deletionTimestamp and returns 202 when finalizers are present;
+	// the actual removal happens after the controller clears them. Check whether
+	// the object is still terminating so callers get the correct status code.
+	var check v1alpha1.GovernedResource
+	if getErr := s.client.Get(r.Context(), types.NamespacedName{Name: name}, &check); getErr != nil {
+		if apierrors.IsNotFound(getErr) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, getErr.Error())
+		return
+	}
+	// Object still exists — finalizers are blocking final removal.
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func (s *Server) handleCreateSafetyPolicy(w http.ResponseWriter, r *http.Request) {
@@ -1765,27 +1778,17 @@ func (s *Server) checkContextSchemaConsistency(ctx context.Context, newGR *v1alp
 		return err
 	}
 
-	newRaw := newGR.Spec.ContextSchema.Raw
-	var newMap map[string]any
-	if err := json.Unmarshal(newRaw, &newMap); err != nil {
-		return err
-	}
-	newCanonical, _ := json.Marshal(newMap)
-
 	for _, gr := range list.Items {
 		if gr.Name == newGR.Name {
 			continue // Skip self on update
 		}
 		if gr.Spec.ContextFetcher == newGR.Spec.ContextFetcher && gr.Spec.ContextSchema != nil {
-			var m map[string]any
-			if err := json.Unmarshal(gr.Spec.ContextSchema.Raw, &m); err != nil {
-				continue
+			// New schema must be append-only compatible with each peer's schema so
+			// that existing CEL expressions continue to compile after rollout.
+			if err := checkContextSchemaAppendOnly(gr.Spec.ContextSchema, newGR.Spec.ContextSchema); err != nil {
+				return fmt.Errorf("contextSchema evolution incompatible with GovernedResource %q: %w", gr.Name, err)
 			}
-			canonical, _ := json.Marshal(m)
-			if string(canonical) != string(newCanonical) {
-				return fmt.Errorf("contextSchema must be identical across all GovernedResources with contextFetcher %q; existing schema differs", newGR.Spec.ContextFetcher)
-			}
-			return nil
+			// Don't return early — validate all peers.
 		}
 	}
 	return nil

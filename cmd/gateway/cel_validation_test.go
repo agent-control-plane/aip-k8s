@@ -85,6 +85,8 @@ func TestCEL_EmptyContextType_SkipsCheck(t *testing.T) {
 	g := gomega.NewWithT(t)
 	s := newAdminTestServer()
 
+	// With no ContextType, CEL is still validated against the base env (request + target).
+	// Expressions that only reference request/target should be accepted.
 	sp := &v1alpha1.SafetyPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "sp-1"},
 		Spec: v1alpha1.SafetyPolicySpec{
@@ -93,7 +95,7 @@ func TestCEL_EmptyContextType_SkipsCheck(t *testing.T) {
 				Name:       "rule1",
 				Type:       "StateEvaluation",
 				Action:     "Allow",
-				Expression: "ctxData.foo == 'bar'", // should be invalid but check skipped
+				Expression: `request.spec.target.uri.startsWith("k8s://")`,
 			}},
 		},
 	}
@@ -103,7 +105,6 @@ func TestCEL_EmptyContextType_SkipsCheck(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.handleCreateSafetyPolicy(w, req)
 
-	// it still may fail later during execution if used, but admission skip succeeds
 	g.Expect(w.Code).To(gomega.Equal(http.StatusCreated))
 }
 
@@ -111,6 +112,9 @@ func TestCEL_NoMatchingGR_SkipsCheck(t *testing.T) {
 	g := gomega.NewWithT(t)
 	s := newAdminTestServer()
 
+	// When ContextType is set but no matching GR exists, CEL is still validated
+	// against the base env (request + target). An expression that only uses
+	// request/target must be accepted; ctxData would be unknown and rejected.
 	sp := &v1alpha1.SafetyPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "sp-1"},
 		Spec: v1alpha1.SafetyPolicySpec{
@@ -119,7 +123,7 @@ func TestCEL_NoMatchingGR_SkipsCheck(t *testing.T) {
 				Name:       "rule1",
 				Type:       "StateEvaluation",
 				Action:     "Allow",
-				Expression: "ctxData.cpuCount > 0",
+				Expression: `request.spec.target.uri.startsWith("k8s://")`,
 			}},
 		},
 	}

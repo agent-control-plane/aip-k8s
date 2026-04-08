@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -41,11 +42,14 @@ func FetchGitHub(ctx context.Context, c client.Client, targetURI string) (*apiex
 	token := string(tokenBytes)
 
 	// 2. Call GitHub API
-	httpClient := &http.Client{}
+	httpClient := &http.Client{Timeout: 10 * time.Second}
 
 	// Fetch Repo Info
 	repoURL := fmt.Sprintf("%s/repos/%s/%s", GitHubBaseURL, org, repo)
-	req, _ := http.NewRequestWithContext(ctx, "GET", repoURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, repoURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build GitHub repo request: %w", err)
+	}
 	req.Header.Set("Authorization", "token "+token)
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
@@ -68,7 +72,10 @@ func FetchGitHub(ctx context.Context, c client.Client, targetURI string) (*apiex
 
 	// Fetch PR Count
 	prURL := fmt.Sprintf("%s/repos/%s/%s/pulls?state=open", GitHubBaseURL, org, repo)
-	req, _ = http.NewRequestWithContext(ctx, "GET", prURL, nil)
+	req, err = http.NewRequestWithContext(ctx, http.MethodGet, prURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build GitHub PR request: %w", err)
+	}
 	req.Header.Set("Authorization", "token "+token)
 
 	respPR, err := httpClient.Do(req)
@@ -93,7 +100,7 @@ func FetchGitHub(ctx context.Context, c client.Client, targetURI string) (*apiex
 		Title:         ghRepo.Name,
 		DefaultBranch: ghRepo.DefaultBranch,
 		OpenPRCount:   openPRCount,
-		CIStatus:      "passing", // Placeholder as requested
+		CIStatus:      "unknown", // No real CI integration yet; avoid false-positive signals
 	}
 
 	raw, _ := json.Marshal(result)
