@@ -269,7 +269,6 @@ func main() {
 	mux.HandleFunc("PATCH /agent-diagnostics/{name}/status", server.handlePatchAgentDiagnosticStatus)
 	mux.HandleFunc("POST /agent-diagnostics/recompute-accuracy", server.handleRecomputeAccuracy)
 	mux.HandleFunc("GET /diagnostic-accuracy-summaries", server.handleListAccuracySummaries)
-	mux.Handle("GET /metrics", metricsHandler())
 	mux.HandleFunc("POST /governed-resources", server.handleCreateGovernedResource)
 	mux.HandleFunc("GET /governed-resources", server.handleListGovernedResources)
 	mux.HandleFunc("GET /governed-resources/{name}", server.handleGetGovernedResource)
@@ -293,6 +292,8 @@ func main() {
 	} else {
 		authMiddleware = newProxyHeaderMiddleware(*trustedProxyCIDRs)
 	}
+
+	mux.Handle("GET /metrics", metricsHandler())
 
 	log.Printf("Starting AIP Demo Gateway on %s", *addr)
 	if err := http.ListenAndServe(*addr, metricsMiddleware(loggingMiddleware(authMiddleware(mux)))); err != nil {

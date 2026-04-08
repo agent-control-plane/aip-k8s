@@ -52,7 +52,7 @@ func normalizePath(r *http.Request) string {
 	if pattern := r.Pattern; pattern != "" {
 		return pattern
 	}
-	return r.URL.Path
+	return "/__unmatched__"
 }
 
 // metricsHandler returns the default Prometheus metrics handler.
