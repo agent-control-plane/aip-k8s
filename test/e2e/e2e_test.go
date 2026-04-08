@@ -425,7 +425,7 @@ var _ = Describe("Manager", Ordered, func() {
 				"kind": "SafetyPolicy",
 				"metadata": {"name": "deny-prod-scale", "namespace": "default"},
 				"spec": {
-					"targetSelector": {"matchActions": ["scale"]},
+					"governedResourceSelector": {},
 					"rules": [
 						{
 							"name": "block-scale",

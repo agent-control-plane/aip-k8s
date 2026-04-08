@@ -92,8 +92,8 @@ func newGR(name, pattern string, agents, actions []string) *v1alpha1.GovernedRes
 // shortTimeout to avoid blocking in the 90s poll loop when admission passes.
 // Pass 0 to use the default short timeout (200ms). For tests that expect a 4xx
 // before the poll loop, the timeout is irrelevant.
-func postCreate(s *Server, callerSub, targetURI, action string) *httptest.ResponseRecorder {
-	return postCreateCtx(s, callerSub, targetURI, action, 200*time.Millisecond)
+func postCreate(s *Server, targetURI, action string) *httptest.ResponseRecorder {
+	return postCreateCtx(s, "agent-sub", targetURI, action, 200*time.Millisecond)
 }
 
 func postCreateCtx(s *Server, callerSub, targetURI, action string, timeout time.Duration) *httptest.ResponseRecorder {
@@ -117,7 +117,7 @@ func TestGR_ZeroGRs_RequireFalse_SkipsAdmission(t *testing.T) {
 	s := newTestServer()
 	s.requireGovernedResource = false
 
-	w := postCreate(s, "agent-sub", "k8s://prod/nodepool/team-a", "scale-up")
+	w := postCreate(s, "k8s://prod/nodepool/team-a", "scale-up")
 	g.Expect(w.Code).NotTo(gomega.Equal(http.StatusForbidden))
 }
 
@@ -126,7 +126,7 @@ func TestGR_ZeroGRs_RequireTrue_Rejected(t *testing.T) {
 	s := newTestServer()
 	s.requireGovernedResource = true
 
-	w := postCreate(s, "agent-sub", "k8s://prod/nodepool/team-a", "scale-up")
+	w := postCreate(s, "k8s://prod/nodepool/team-a", "scale-up")
 	g.Expect(w.Code).To(gomega.Equal(http.StatusForbidden))
 	g.Expect(w.Body.String()).To(gomega.ContainSubstring(v1alpha1.DenialCodeActionNotPermitted))
 }
@@ -136,7 +136,7 @@ func TestGR_URINotMatched_Rejected(t *testing.T) {
 	s := newTestServer(newGR("gr1", "k8s://prod/nodepool/*", []string{"agent-sub"}, []string{"scale-up"}))
 	s.requireGovernedResource = true
 
-	w := postCreate(s, "agent-sub", "k8s://staging/nodepool/team-a", "scale-up")
+	w := postCreate(s, "k8s://staging/nodepool/team-a", "scale-up")
 	g.Expect(w.Code).To(gomega.Equal(http.StatusForbidden))
 	g.Expect(w.Body.String()).To(gomega.ContainSubstring(v1alpha1.DenialCodeActionNotPermitted))
 }
@@ -146,7 +146,7 @@ func TestGR_AgentNotPermitted_Rejected(t *testing.T) {
 	s := newTestServer(newGR("gr1", "k8s://prod/nodepool/*", []string{"other-agent"}, []string{"scale-up"}))
 	s.requireGovernedResource = true
 
-	w := postCreate(s, "agent-sub", "k8s://prod/nodepool/team-a", "scale-up")
+	w := postCreate(s, "k8s://prod/nodepool/team-a", "scale-up")
 	g.Expect(w.Code).To(gomega.Equal(http.StatusForbidden))
 	g.Expect(w.Body.String()).To(gomega.ContainSubstring(v1alpha1.DenialCodeIdentityInvalid))
 }
@@ -156,7 +156,7 @@ func TestGR_ActionNotPermitted_Rejected(t *testing.T) {
 	s := newTestServer(newGR("gr1", "k8s://prod/nodepool/*", []string{"agent-sub"}, []string{"scale-up"}))
 	s.requireGovernedResource = true
 
-	w := postCreate(s, "agent-sub", "k8s://prod/nodepool/team-a", "delete")
+	w := postCreate(s, "k8s://prod/nodepool/team-a", "delete")
 	g.Expect(w.Code).To(gomega.Equal(http.StatusForbidden))
 	g.Expect(w.Body.String()).To(gomega.ContainSubstring(v1alpha1.DenialCodeActionNotPermitted))
 }
@@ -168,7 +168,7 @@ func TestGR_EmptyPermittedAgents_AnyAgentAllowed(t *testing.T) {
 	s := newTestServer(newGR("gr1", "k8s://prod/nodepool/*", nil, []string{"scale-up"}))
 	s.requireGovernedResource = true
 
-	w := postCreate(s, "agent-sub", "k8s://prod/nodepool/team-a", "scale-up")
+	w := postCreate(s, "k8s://prod/nodepool/team-a", "scale-up")
 	g.Expect(w.Code).NotTo(gomega.Equal(http.StatusForbidden))
 }
 
@@ -182,7 +182,7 @@ func TestGR_MostSpecificMatchUsed(t *testing.T) {
 	)
 	s.requireGovernedResource = true
 
-	w := postCreate(s, "agent-sub", "k8s://prod/nodepool/team-a", "scale-up")
+	w := postCreate(s, "k8s://prod/nodepool/team-a", "scale-up")
 	g.Expect(w.Code).To(gomega.Equal(http.StatusForbidden))
 	g.Expect(w.Body.String()).To(gomega.ContainSubstring(v1alpha1.DenialCodeIdentityInvalid))
 }
@@ -214,7 +214,7 @@ func TestGR_NoGRs_RequireFalse_RefIsNil(t *testing.T) {
 	s := newTestServer()
 	s.requireGovernedResource = false
 
-	w := postCreate(s, "agent-sub", "k8s://prod/nodepool/team-a", "scale-up")
+	w := postCreate(s, "k8s://prod/nodepool/team-a", "scale-up")
 	g.Expect(w.Code).To(gomega.Or(gomega.Equal(http.StatusCreated), gomega.Equal(http.StatusOK)))
 
 	var list v1alpha1.AgentRequestList

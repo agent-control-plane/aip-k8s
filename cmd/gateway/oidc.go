@@ -20,7 +20,10 @@ type roleConfig struct {
 	adminGroups    map[string]bool
 }
 
-func newRoleConfig(agentList, reviewerList, adminList, agentGroupList, reviewerGroupList, adminGroupList string) *roleConfig {
+func newRoleConfig(
+	agentList, reviewerList, adminList,
+	agentGroupList, reviewerGroupList, adminGroupList string,
+) *roleConfig {
 	parse := func(s string) map[string]bool {
 		m := map[string]bool{}
 		for v := range strings.SplitSeq(s, ",") {

@@ -508,8 +508,15 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 	var govResources v1alpha1.GovernedResourceList
 	var agentPermitted, actionPermitted bool
 	if err := s.client.List(r.Context(), &govResources); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to list GovernedResources: %v", err))
-		return
+		// If the CRD is not yet installed, treat as an empty list.
+		// This allows the system to boot gracefully even if the GovernedResource CRD
+		// is not yet available (e.g., during cluster initialization in e2e tests).
+		if strings.Contains(err.Error(), "no matches for kind") {
+			// Treat as empty list
+		} else {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to list GovernedResources: %v", err))
+			return
+		}
 	}
 
 	// Backward compat: skip check when no GovernedResources exist and flag is false.
@@ -560,9 +567,10 @@ admissionPassed:
 		return
 	}
 
-	name := agentReq.Name
+	s.pollAgentRequestPhase(w, r, agentReq.Name, ns, reqLabels)
+}
 
-	// Poll phase logic
+func (s *Server) pollAgentRequestPhase(w http.ResponseWriter, r *http.Request, name, ns string, reqLabels map[string]string) {
 	timeout := time.After(90 * time.Second)
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -1613,7 +1621,7 @@ func (s *Server) handleCreateSafetyPolicy(w http.ResponseWriter, r *http.Request
 
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
-		ns = "default"
+		ns = defaultNamespace
 	}
 
 	var sp v1alpha1.SafetyPolicy
@@ -1650,7 +1658,7 @@ func (s *Server) handleListSafetyPolicies(w http.ResponseWriter, r *http.Request
 
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
-		ns = "default"
+		ns = defaultNamespace
 	}
 
 	var list v1alpha1.SafetyPolicyList
@@ -1670,7 +1678,7 @@ func (s *Server) handleGetSafetyPolicy(w http.ResponseWriter, r *http.Request) {
 
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
-		ns = "default"
+		ns = defaultNamespace
 	}
 	name := r.PathValue("name")
 
@@ -1695,7 +1703,7 @@ func (s *Server) handleReplaceSafetyPolicy(w http.ResponseWriter, r *http.Reques
 
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
-		ns = "default"
+		ns = defaultNamespace
 	}
 	name := r.PathValue("name")
 
@@ -1750,7 +1758,7 @@ func (s *Server) handleDeleteSafetyPolicy(w http.ResponseWriter, r *http.Request
 
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
-		ns = "default"
+		ns = defaultNamespace
 	}
 	name := r.PathValue("name")
 

@@ -127,7 +127,7 @@ var _ = Describe("Phase 7: Gateway OIDC Authentication", Ordered, func() {
 			"kind": "SafetyPolicy",
 			"metadata": {"name": "gw-require-human", "namespace": "default"},
 			"spec": {
-				"targetSelector": {"matchActions": ["gw-human-action"]},
+				"governedResourceSelector": {},
 				"rules": [{"name": "require-human", "type": "StateEvaluation",
 				           "action": "RequireApproval", "expression": "true"}],
 				"failureMode": "FailClosed"

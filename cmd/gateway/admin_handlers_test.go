@@ -151,7 +151,12 @@ func TestAdmin_CreateSafetyPolicy_OK(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "new-sp"},
 		Spec: v1alpha1.SafetyPolicySpec{
 			GovernedResourceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"foo": "bar"}},
-			Rules:                    []v1alpha1.Rule{{Name: "rule1", Type: "StateEvaluation", Action: "Allow", Expression: "true"}},
+			Rules: []v1alpha1.Rule{{
+				Name:       "rule1",
+				Type:       "StateEvaluation",
+				Action:     "Allow",
+				Expression: "true",
+			}},
 		},
 	}
 	body, _ := json.Marshal(sp)
@@ -278,7 +283,9 @@ func TestAdmin_SchemaConsistency_DifferentSchemaRejected(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "gr-2"},
 		Spec: v1alpha1.GovernedResourceSpec{
 			ContextFetcher: "karpenter",
-			ContextSchema:  &apiextensionsv1.JSON{Raw: []byte(`{"type":"object","properties":{"cpuCount":{"type":"string"}}}`)}, // was integer
+			ContextSchema: &apiextensionsv1.JSON{Raw: []byte(
+				`{"type":"object","properties":{"cpuCount":{"type":"string"}}}`,
+			)}, // was integer
 		},
 	}
 	body, _ := json.Marshal(gr2)
@@ -303,7 +310,9 @@ func TestAdmin_AppendOnly_AddFieldAllowed(t *testing.T) {
 
 	updatedGR := &v1alpha1.GovernedResource{
 		Spec: v1alpha1.GovernedResourceSpec{
-			ContextSchema: &apiextensionsv1.JSON{Raw: []byte(`{"type":"object","properties":{"f1":{"type":"integer"},"f2":{"type":"string"}}}`)},
+			ContextSchema: &apiextensionsv1.JSON{Raw: []byte(
+				`{"type":"object","properties":{"f1":{"type":"integer"},"f2":{"type":"string"}}}`,
+			)},
 		},
 	}
 	body, _ := json.Marshal(updatedGR)
@@ -328,7 +337,9 @@ func TestAdmin_AppendOnly_RemoveFieldRejected(t *testing.T) {
 
 	updatedGR := &v1alpha1.GovernedResource{
 		Spec: v1alpha1.GovernedResourceSpec{
-			ContextSchema: &apiextensionsv1.JSON{Raw: []byte(`{"type":"object","properties":{"f2":{"type":"string"}}}`)}, // f1 removed
+			ContextSchema: &apiextensionsv1.JSON{Raw: []byte(
+				`{"type":"object","properties":{"f2":{"type":"string"}}}`,
+			)}, // f1 removed
 		},
 	}
 	body, _ := json.Marshal(updatedGR)

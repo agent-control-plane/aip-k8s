@@ -218,7 +218,7 @@ var _ = Describe("Phase 6: Gateway API", Ordered, func() {
 				"kind": "SafetyPolicy",
 				"metadata": {"name": %q, "namespace": %q},
 				"spec": {
-					"targetSelector": {"matchActions": ["gw-human-action"]},
+					"governedResourceSelector": {},
 					"rules": [{"name": "require-human", "type": "StateEvaluation", "action": "RequireApproval", "expression": "true"}],
 					"failureMode": "FailClosed"
 				}

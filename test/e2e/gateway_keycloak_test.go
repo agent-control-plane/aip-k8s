@@ -138,7 +138,7 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC Integration", Ordered, func() {
 			"kind": "SafetyPolicy",
 			"metadata": {"name": "kc-require-human", "namespace": "default"},
 			"spec": {
-				"targetSelector": {"matchActions": ["kc-test-action"]},
+				"governedResourceSelector": {},
 				"rules": [{"name": "require-human", "type": "StateEvaluation",
 				           "action": "RequireApproval", "expression": "true"}],
 				"failureMode": "FailClosed"

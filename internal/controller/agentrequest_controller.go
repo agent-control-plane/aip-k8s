@@ -37,6 +37,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/go-logr/logr"
+
 	"encoding/json"
 
 	governancev1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
@@ -110,56 +112,15 @@ func (r *AgentRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// 1.1 GovernedResource Integrity Check
 	if agentReq.Spec.GovernedResourceRef != nil {
-		var gr governancev1alpha1.GovernedResource
-		if err := r.Get(ctx, types.NamespacedName{Name: agentReq.Spec.GovernedResourceRef.Name}, &gr); err != nil {
-			if errors.IsNotFound(err) {
-				log.FromContext(ctx).Info("Denying AgentRequest because its GovernedResource was deleted", "name", agentReq.Name, "governedResource", agentReq.Spec.GovernedResourceRef.Name)
-				fromPhase := agentReq.Status.Phase
-				agentReq.Status.Phase = governancev1alpha1.PhaseDenied
-				agentReq.Status.Denial = &governancev1alpha1.DenialResponse{
-					Code:    governancev1alpha1.DenialCodeGovernedResourceDeleted,
-					Message: fmt.Sprintf("The GovernedResource %q that admitted this request was deleted.", agentReq.Spec.GovernedResourceRef.Name),
-				}
-				if err := r.Status().Patch(ctx, &agentReq, statusPatch); err != nil {
-					return ctrl.Result{}, err
-				}
-				if err := r.releaseLock(ctx, &agentReq); err != nil {
-					return ctrl.Result{}, err
-				}
-				if err := r.emitAuditRecord(ctx, &agentReq, governancev1alpha1.AuditEventRequestDenied, fromPhase, governancev1alpha1.PhaseDenied); err != nil {
-					return ctrl.Result{}, err
-				}
-				return ctrl.Result{}, nil
-			}
-			return ctrl.Result{}, err
+		result, err := r.checkGovernedResourceIntegrity(ctx, &agentReq, statusPatch)
+		if err != nil {
+			return result, err
 		}
-		// Deny if the GovernedResource has been recreated or mutated (generation mismatch).
-		if gr.Generation != agentReq.Spec.GovernedResourceRef.Generation {
-			log.FromContext(ctx).Info("Denying AgentRequest due to GovernedResource generation mismatch",
-				"name", agentReq.Name,
-				"expectedGeneration", agentReq.Spec.GovernedResourceRef.Generation,
-				"currentGeneration", gr.Generation)
-			fromPhase := agentReq.Status.Phase
-			agentReq.Status.Phase = governancev1alpha1.PhaseDenied
-			agentReq.Status.Denial = &governancev1alpha1.DenialResponse{
-				Code: governancev1alpha1.DenialCodeGenerationMismatch,
-				Message: fmt.Sprintf(
-					"GovernedResource %q generation has changed (expected %d, current %d); the policy binding is no longer valid.",
-					agentReq.Spec.GovernedResourceRef.Name,
-					agentReq.Spec.GovernedResourceRef.Generation,
-					gr.Generation,
-				),
-			}
-			if err := r.Status().Patch(ctx, &agentReq, statusPatch); err != nil {
-				return ctrl.Result{}, err
-			}
-			if err := r.releaseLock(ctx, &agentReq); err != nil {
-				return ctrl.Result{}, err
-			}
-			if err := r.emitAuditRecord(ctx, &agentReq, governancev1alpha1.AuditEventRequestDenied, fromPhase, governancev1alpha1.PhaseDenied); err != nil {
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{}, nil
+		// If it denied the request, it will have returned ctrl.Result{}, nil.
+		// In that case, the function already updated status and emitted audit records.
+		// We should return early to exit this reconcile.
+		if agentReq.Status.Phase == governancev1alpha1.PhaseDenied {
+			return result, nil
 		}
 	}
 
@@ -256,6 +217,63 @@ func (r *AgentRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	return ctrl.Result{}, nil
 }
 
+func (r *AgentRequestReconciler) checkGovernedResourceIntegrity(ctx context.Context, agentReq *governancev1alpha1.AgentRequest, statusPatch client.Patch) (ctrl.Result, error) {
+	var gr governancev1alpha1.GovernedResource
+	if err := r.Get(ctx, types.NamespacedName{Name: agentReq.Spec.GovernedResourceRef.Name}, &gr); err != nil {
+		if errors.IsNotFound(err) {
+			log.FromContext(ctx).Info("Denying AgentRequest because its GovernedResource was deleted", "name", agentReq.Name, "governedResource", agentReq.Spec.GovernedResourceRef.Name)
+			fromPhase := agentReq.Status.Phase
+			agentReq.Status.Phase = governancev1alpha1.PhaseDenied
+			agentReq.Status.Denial = &governancev1alpha1.DenialResponse{
+				Code:    governancev1alpha1.DenialCodeGovernedResourceDeleted,
+				Message: fmt.Sprintf("The GovernedResource %q that admitted this request was deleted.", agentReq.Spec.GovernedResourceRef.Name),
+			}
+			if err := r.Status().Patch(ctx, agentReq, statusPatch); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := r.releaseLock(ctx, agentReq); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventRequestDenied, fromPhase, governancev1alpha1.PhaseDenied); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Deny if the GovernedResource has been recreated or mutated (generation mismatch).
+	if gr.Generation != agentReq.Spec.GovernedResourceRef.Generation {
+		log.FromContext(ctx).Info("Denying AgentRequest due to GovernedResource generation mismatch",
+			"name", agentReq.Name,
+			"expectedGeneration", agentReq.Spec.GovernedResourceRef.Generation,
+			"currentGeneration", gr.Generation)
+		fromPhase := agentReq.Status.Phase
+		agentReq.Status.Phase = governancev1alpha1.PhaseDenied
+		agentReq.Status.Denial = &governancev1alpha1.DenialResponse{
+			Code: governancev1alpha1.DenialCodeGenerationMismatch,
+			Message: fmt.Sprintf(
+				"GovernedResource %q generation has changed (expected %d, current %d); the policy binding is no longer valid.",
+				agentReq.Spec.GovernedResourceRef.Name,
+				agentReq.Spec.GovernedResourceRef.Generation,
+				gr.Generation,
+			),
+		}
+		if err := r.Status().Patch(ctx, agentReq, statusPatch); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.releaseLock(ctx, agentReq); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventRequestDenied, fromPhase, governancev1alpha1.PhaseDenied); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
+	return ctrl.Result{}, nil
+}
+
 func generateLeaseName(targetURI string) string {
 	hash := sha256.Sum256([]byte(targetURI))
 	hexHash := hex.EncodeToString(hash[:])
@@ -287,39 +305,7 @@ func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq 
 	if policyEvaluated {
 		// If it's blocked on approval, check spec for a human decision
 		if requiresApproval {
-			if agentReq.Spec.HumanApproval != nil {
-				fromPhase := agentReq.Status.Phase
-
-				// 5. If same (or Re-eval returned Allow), proceed
-				switch agentReq.Spec.HumanApproval.Decision {
-				case "approved":
-					logger.Info("Human approved AgentRequest via spec", "name", agentReq.Name)
-					meta.RemoveStatusCondition(&agentReq.Status.Conditions, governancev1alpha1.ConditionRequiresApproval)
-					return r.handleLockAcquisition(ctx, agentReq, fromPhase, statusPatch)
-				case "denied":
-					logger.Info("Human denied AgentRequest via spec", "name", agentReq.Name)
-					agentReq.Status.Phase = governancev1alpha1.PhaseDenied
-					agentReq.Status.Denial = &governancev1alpha1.DenialResponse{
-						Code:    governancev1alpha1.DenialCodePolicyViolation,
-						Message: "Denied by human reviewer",
-					}
-					meta.SetStatusCondition(&agentReq.Status.Conditions, metav1.Condition{
-						Type:    governancev1alpha1.ConditionApproved,
-						Status:  metav1.ConditionFalse,
-						Reason:  "ManualDenial",
-						Message: "Denied by human reviewer",
-					})
-					if err := r.Status().Patch(ctx, agentReq, statusPatch); err != nil {
-						return ctrl.Result{}, err
-					}
-					if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventRequestDenied, fromPhase, governancev1alpha1.PhaseDenied); err != nil {
-						return ctrl.Result{}, err
-					}
-					return ctrl.Result{}, nil
-				}
-			}
-			logger.Info("AgentRequest awaiting manual approval", "name", agentReq.Name)
-			return ctrl.Result{}, nil
+			return r.handleApprovalWait(ctx, agentReq, statusPatch, logger)
 		}
 		// Otherwise, it must have been an "Allow" result and we're now in lock acquisition mode
 		fromPhase := agentReq.Status.Phase // Should be Pending
@@ -444,6 +430,46 @@ func (r *AgentRequestReconciler) reconcilePending(ctx context.Context, agentReq 
 		logger.Error(err, "Failed to set owner reference for policy.evaluated AuditRecord")
 	}
 
+	return r.handleEvaluationResult(ctx, agentReq, statusPatch, result, policyEvalAudit, logger)
+}
+
+func (r *AgentRequestReconciler) handleApprovalWait(ctx context.Context, agentReq *governancev1alpha1.AgentRequest, statusPatch client.Patch, logger logr.Logger) (ctrl.Result, error) {
+	if agentReq.Spec.HumanApproval != nil {
+		fromPhase := agentReq.Status.Phase
+
+		// 5. If same (or Re-eval returned Allow), proceed
+		switch agentReq.Spec.HumanApproval.Decision {
+		case "approved":
+			logger.Info("Human approved AgentRequest via spec", "name", agentReq.Name)
+			meta.RemoveStatusCondition(&agentReq.Status.Conditions, governancev1alpha1.ConditionRequiresApproval)
+			return r.handleLockAcquisition(ctx, agentReq, fromPhase, statusPatch)
+		case "denied":
+			logger.Info("Human denied AgentRequest via spec", "name", agentReq.Name)
+			agentReq.Status.Phase = governancev1alpha1.PhaseDenied
+			agentReq.Status.Denial = &governancev1alpha1.DenialResponse{
+				Code:    governancev1alpha1.DenialCodePolicyViolation,
+				Message: "Denied by human reviewer",
+			}
+			meta.SetStatusCondition(&agentReq.Status.Conditions, metav1.Condition{
+				Type:    governancev1alpha1.ConditionApproved,
+				Status:  metav1.ConditionFalse,
+				Reason:  "ManualDenial",
+				Message: "Denied by human reviewer",
+			})
+			if err := r.Status().Patch(ctx, agentReq, statusPatch); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventRequestDenied, fromPhase, governancev1alpha1.PhaseDenied); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+	}
+	logger.Info("AgentRequest awaiting manual approval", "name", agentReq.Name)
+	return ctrl.Result{}, nil
+}
+
+func (r *AgentRequestReconciler) handleEvaluationResult(ctx context.Context, agentReq *governancev1alpha1.AgentRequest, statusPatch client.Patch, result *evaluation.Result, policyEvalAudit *governancev1alpha1.AuditRecord, logger logr.Logger) (ctrl.Result, error) {
 	fromPhase := agentReq.Status.Phase
 
 	switch result.Action {
