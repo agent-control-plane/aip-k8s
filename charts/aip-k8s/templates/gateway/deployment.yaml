@@ -87,3 +87,11 @@ spec:
             requests:
               cpu: 10m
               memory: 64Mi
+{{- if .Values.gateway.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml .Values.gateway.extraVolumeMounts | nindent 12 }}
+{{- end }}
+{{- if .Values.gateway.extraVolumes }}
+      volumes:
+        {{- toYaml .Values.gateway.extraVolumes | nindent 8 }}
+{{- end }}
