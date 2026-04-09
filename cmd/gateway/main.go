@@ -463,8 +463,7 @@ func (s *Server) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = fmt.Fprintf(w, `{"identity":%q,"role":%q}`, sub, role)
+	writeJSON(w, http.StatusOK, map[string]string{"identity": sub, "role": role})
 }
 
 func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request) {
@@ -968,7 +967,7 @@ func (s *Server) handlePatchAgentDiagnosticStatus(w http.ResponseWriter, r *http
 		writeError(w, http.StatusUnauthorized, "caller identity required")
 		return
 	}
-	if !requireRole(s.roles, "reviewer", sub, callerGroupsFromCtx(r.Context()), w) {
+	if !requireRole(s.roles, roleReviewer, sub, callerGroupsFromCtx(r.Context()), w) {
 		return
 	}
 
@@ -1432,7 +1431,7 @@ func (s *Server) handleHumanDecision(w http.ResponseWriter, r *http.Request, dec
 		writeError(w, http.StatusUnauthorized, "caller identity required")
 		return
 	}
-	if !requireRole(s.roles, "reviewer", sub, callerGroupsFromCtx(r.Context()), w) {
+	if !requireRole(s.roles, roleReviewer, sub, callerGroupsFromCtx(r.Context()), w) {
 		return
 	}
 
@@ -1500,7 +1499,7 @@ func (s *Server) handleHumanDecision(w http.ResponseWriter, r *http.Request, dec
 func (s *Server) handleCreateGovernedResource(w http.ResponseWriter, r *http.Request) {
 	sub := callerSubFromCtx(r.Context())
 	groups := callerGroupsFromCtx(r.Context())
-	if !requireRole(s.roles, "admin", sub, groups, w) {
+	if !requireRole(s.roles, roleAdmin, sub, groups, w) {
 		return
 	}
 
@@ -1532,7 +1531,7 @@ func (s *Server) handleCreateGovernedResource(w http.ResponseWriter, r *http.Req
 func (s *Server) handleListGovernedResources(w http.ResponseWriter, r *http.Request) {
 	sub := callerSubFromCtx(r.Context())
 	groups := callerGroupsFromCtx(r.Context())
-	if !requireRole(s.roles, "admin", sub, groups, w) {
+	if !requireRole(s.roles, roleAdmin, sub, groups, w) {
 		return
 	}
 
@@ -1547,7 +1546,7 @@ func (s *Server) handleListGovernedResources(w http.ResponseWriter, r *http.Requ
 func (s *Server) handleGetGovernedResource(w http.ResponseWriter, r *http.Request) {
 	sub := callerSubFromCtx(r.Context())
 	groups := callerGroupsFromCtx(r.Context())
-	if !requireRole(s.roles, "admin", sub, groups, w) {
+	if !requireRole(s.roles, roleAdmin, sub, groups, w) {
 		return
 	}
 
@@ -1567,7 +1566,7 @@ func (s *Server) handleGetGovernedResource(w http.ResponseWriter, r *http.Reques
 func (s *Server) handleReplaceGovernedResource(w http.ResponseWriter, r *http.Request) {
 	sub := callerSubFromCtx(r.Context())
 	groups := callerGroupsFromCtx(r.Context())
-	if !requireRole(s.roles, "admin", sub, groups, w) {
+	if !requireRole(s.roles, roleAdmin, sub, groups, w) {
 		return
 	}
 
@@ -1628,7 +1627,7 @@ func (s *Server) handleReplaceGovernedResource(w http.ResponseWriter, r *http.Re
 func (s *Server) handleDeleteGovernedResource(w http.ResponseWriter, r *http.Request) {
 	sub := callerSubFromCtx(r.Context())
 	groups := callerGroupsFromCtx(r.Context())
-	if !requireRole(s.roles, "admin", sub, groups, w) {
+	if !requireRole(s.roles, roleAdmin, sub, groups, w) {
 		return
 	}
 
@@ -1667,7 +1666,7 @@ func (s *Server) handleDeleteGovernedResource(w http.ResponseWriter, r *http.Req
 func (s *Server) handleCreateSafetyPolicy(w http.ResponseWriter, r *http.Request) {
 	sub := callerSubFromCtx(r.Context())
 	groups := callerGroupsFromCtx(r.Context())
-	if !requireRole(s.roles, "admin", sub, groups, w) {
+	if !requireRole(s.roles, roleAdmin, sub, groups, w) {
 		return
 	}
 
@@ -1704,7 +1703,7 @@ func (s *Server) handleCreateSafetyPolicy(w http.ResponseWriter, r *http.Request
 func (s *Server) handleListSafetyPolicies(w http.ResponseWriter, r *http.Request) {
 	sub := callerSubFromCtx(r.Context())
 	groups := callerGroupsFromCtx(r.Context())
-	if !requireRole(s.roles, "admin", sub, groups, w) {
+	if !requireRole(s.roles, roleAdmin, sub, groups, w) {
 		return
 	}
 
@@ -1724,7 +1723,7 @@ func (s *Server) handleListSafetyPolicies(w http.ResponseWriter, r *http.Request
 func (s *Server) handleGetSafetyPolicy(w http.ResponseWriter, r *http.Request) {
 	sub := callerSubFromCtx(r.Context())
 	groups := callerGroupsFromCtx(r.Context())
-	if !requireRole(s.roles, "admin", sub, groups, w) {
+	if !requireRole(s.roles, roleAdmin, sub, groups, w) {
 		return
 	}
 
@@ -1749,7 +1748,7 @@ func (s *Server) handleGetSafetyPolicy(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleReplaceSafetyPolicy(w http.ResponseWriter, r *http.Request) {
 	sub := callerSubFromCtx(r.Context())
 	groups := callerGroupsFromCtx(r.Context())
-	if !requireRole(s.roles, "admin", sub, groups, w) {
+	if !requireRole(s.roles, roleAdmin, sub, groups, w) {
 		return
 	}
 
@@ -1804,7 +1803,7 @@ func (s *Server) handleReplaceSafetyPolicy(w http.ResponseWriter, r *http.Reques
 func (s *Server) handleDeleteSafetyPolicy(w http.ResponseWriter, r *http.Request) {
 	sub := callerSubFromCtx(r.Context())
 	groups := callerGroupsFromCtx(r.Context())
-	if !requireRole(s.roles, "admin", sub, groups, w) {
+	if !requireRole(s.roles, roleAdmin, sub, groups, w) {
 		return
 	}
 

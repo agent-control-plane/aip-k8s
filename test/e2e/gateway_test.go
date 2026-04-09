@@ -403,7 +403,7 @@ func gwCleanup(ns string) {
 	cmd := exec.Command("bash", "-c",
 		"kubectl get lease -n "+ns+" -o name 2>/dev/null | grep aip-lock- | xargs -r kubectl delete -n "+ns)
 	_, _ = utils.Run(cmd)
-	cmd = exec.Command("kubectl", "delete", "safetypolicy", "gw-require-human", "-n", ns, "--ignore-not-found")
+	cmd = exec.Command("kubectl", "delete", "safetypolicy", "--all", "-n", ns, "--ignore-not-found")
 	_, _ = utils.Run(cmd)
 }
 
