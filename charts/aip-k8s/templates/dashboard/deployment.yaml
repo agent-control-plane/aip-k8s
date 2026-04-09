@@ -60,6 +60,10 @@ spec:
             requests:
               cpu: 10m
               memory: 64Mi
+{{- if .Values.dashboard.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml .Values.dashboard.extraVolumeMounts | nindent 12 }}
+{{- end }}
 {{- if .Values.dashboard.authProxy.enabled }}
         - name: auth-proxy
           image: "{{ .Values.dashboard.authProxy.image.repository }}:{{ .Values.dashboard.authProxy.image.tag }}"

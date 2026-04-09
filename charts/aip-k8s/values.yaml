@@ -62,4 +62,5 @@ dashboard:
     passAuthorizationHeader: true
     port: 4180
     extraVolumeMounts: []
+  extraVolumeMounts: []
   extraVolumes: []
