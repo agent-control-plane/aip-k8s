@@ -38,6 +38,8 @@ gateway:
   service:
     type: ClusterIP
     port: 8080
+  extraVolumeMounts: []
+  extraVolumes: []
 
 dashboard:
   image:
