@@ -1,0 +1,102 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    helm.sh/resource-policy: keep
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: diagnosticaccuracysummaries.governance.aip.io
+spec:
+  group: governance.aip.io
+  names:
+    kind: DiagnosticAccuracySummary
+    listKind: DiagnosticAccuracySummaryList
+    plural: diagnosticaccuracysummaries
+    singular: diagnosticaccuracysummary
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: DiagnosticAccuracySummary is the Schema for the diagnosticaccuracysummaries
+          API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of DiagnosticAccuracySummary
+            properties:
+              agentIdentity:
+                description: AgentIdentity specifies the agent this summary tracks.
+                minLength: 1
+                type: string
+            required:
+            - agentIdentity
+            type: object
+          status:
+            description: status defines the observed state of DiagnosticAccuracySummary
+            properties:
+              correctCount:
+                description: CorrectCount is the number of verdicts set to "correct".
+                format: int64
+                minimum: 0
+                type: integer
+              diagnosticAccuracy:
+                description: |-
+                  DiagnosticAccuracy is the computed accuracy ratio:
+                    (correctCount + 0.5 * partialCount) / totalReviewed
+                  Null if totalReviewed == 0.
+                type: number
+              incorrectCount:
+                description: IncorrectCount is the number of verdicts set to "incorrect".
+                format: int64
+                minimum: 0
+                type: integer
+              lastUpdatedAt:
+                description: |-
+                  LastUpdatedAt is the timestamp of the most recent verdict that
+                  contributed to this summary.
+                format: date-time
+                type: string
+              partialCount:
+                description: PartialCount is the number of verdicts set to "partial".
+                format: int64
+                minimum: 0
+                type: integer
+              totalReviewed:
+                description: |-
+                  TotalReviewed is the total number of AgentDiagnostic records
+                  with a non-empty verdict for this agentIdentity.
+                format: int64
+                minimum: 0
+                type: integer
+            required:
+            - correctCount
+            - incorrectCount
+            - partialCount
+            - totalReviewed
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
