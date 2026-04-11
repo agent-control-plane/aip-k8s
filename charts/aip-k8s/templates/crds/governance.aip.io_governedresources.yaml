@@ -1,0 +1,119 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    helm.sh/resource-policy: keep
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: governedresources.governance.aip.io
+spec:
+  group: governance.aip.io
+  names:
+    kind: GovernedResource
+    listKind: GovernedResourceList
+    plural: governedresources
+    singular: governedresource
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.uriPattern
+      name: URIPattern
+      type: string
+    - jsonPath: .spec.contextFetcher
+      name: Fetcher
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: GovernedResource is the Schema for the governedresources API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: GovernedResourceSpec defines the desired state of GovernedResource
+            properties:
+              contextFetcher:
+                default: none
+                description: |-
+                  ContextFetcher names the built-in fetcher to invoke when an AgentRequest
+                  targets this resource type. The fetcher populates status.providerContext
+                  so reviewers see live resource state alongside the agent's declared intent.
+                  Supported values: "karpenter", "github", "k8s-deployment", "none"
+                enum:
+                - karpenter
+                - github
+                - k8s-deployment
+                - none
+                type: string
+              contextSchema:
+                description: |-
+                  ContextSchema is an OpenAPI schema (restricted subset) describing the JSON
+                  object the ContextFetcher returns. SafetyPolicy CEL rules that reference
+                  context.* fields are type-checked against this schema at policy creation time.
+
+                  Restricted subset: type (object/string/integer/number/boolean/array),
+                  properties, items, required, nullable, description only. All other keywords
+                  are rejected at admission.
+
+                  May be omitted when ContextFetcher is "none".
+                x-kubernetes-preserve-unknown-fields: true
+              description:
+                description: |-
+                  Description is a human-readable explanation of this governed resource type,
+                  shown to reviewers during the approval decision.
+                type: string
+              permittedActions:
+                description: |-
+                  PermittedActions lists the action strings agents may request on this resource.
+                  Requests with actions not in this list are rejected.
+                items:
+                  type: string
+                minItems: 1
+                type: array
+              permittedAgents:
+                description: |-
+                  PermittedAgents lists agent identity values (matched against --oidc-identity-claim)
+                  that may submit AgentRequests targeting this resource.
+                  Empty means any authenticated agent may target this resource.
+                items:
+                  type: string
+                type: array
+              uriPattern:
+                description: |-
+                  URIPattern is a glob pattern matched against AgentRequest.spec.target.uri.
+                  Requests targeting URIs that do not match any GovernedResource are rejected.
+                  Examples:
+                    "k8s://prod/karpenter/nodepool/team-a-*"
+                    "github://org/repo-*"
+                    "k8s://*/default/deployment/*"
+                minLength: 1
+                type: string
+            required:
+            - contextFetcher
+            - permittedActions
+            - uriPattern
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}
