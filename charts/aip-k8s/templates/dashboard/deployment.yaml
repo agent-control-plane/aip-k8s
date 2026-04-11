@@ -79,6 +79,11 @@ spec:
             - --cookie-secure=true
             - --cookie-httponly=true
             - --cookie-samesite=lax
+{{- with .Values.dashboard.authProxy.extraArgs }}
+{{- range . }}
+            - {{ . | quote }}
+{{- end }}
+{{- end }}
           env:
             - name: OAUTH2_PROXY_CLIENT_ID
               valueFrom:
