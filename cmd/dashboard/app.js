@@ -27,7 +27,11 @@ async function apiFetch(url, opts = {}) {
     const headers = { ...(opts.headers || {}) };
     if (token) headers['Authorization'] = 'Bearer ' + token;
     const resp = await fetch(url, { ...opts, headers });
-    if (resp.status === 401) {
+    if (resp.status === 401 || resp.redirected) {
+        if (state.proxyAuth) {
+            window.location.reload();
+            return resp;
+        }
         showBanner('Session expired — please re-enter your token.', 'error');
     }
     return resp;
@@ -799,7 +803,7 @@ function renderDiagnostics() {
                 <td><span class="chip">${escapeHtml(diag.spec.agentIdentity)}</span></td>
                 <td><span class="badge ${getDiagnosticTypeClass(diag.spec.diagnosticType)}">${escapeHtml(diag.spec.diagnosticType)}</span></td>
                 <td><span class="chip">${escapeHtml(diag.spec.correlationID)}</span></td>
-                <td style="max-width:300px;">${escapeHtml(diag.spec.summary)}</td>
+                <td>${escapeHtml(diag.spec.summary)}</td>
                 <td>${hasDetails
                     ? `<button class="details-btn" data-target="${escapeHtml(detailsId)}" onclick="toggleDetails(this.dataset.target)">View</button>
                        <div id="${escapeHtml(detailsId)}" class="details-json" style="display:none"></div>`

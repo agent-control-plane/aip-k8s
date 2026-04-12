@@ -16,6 +16,7 @@ spec:
       labels:
         {{- include "aip-k8s.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: controller
+        control-plane: controller-manager
     spec:
       serviceAccountName: {{ include "aip-k8s.fullname" . }}-controller
       containers:

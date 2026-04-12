@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -57,11 +58,18 @@ var _ = Describe("Phase 6: Gateway API", Ordered, func() {
 		binPath := projDir + "/bin/gateway"
 		cmdPath := projDir + "/cmd/gateway"
 
+		var cmd *exec.Cmd
+		var out []byte
+
 		By("ensuring governance CRDs are installed")
-		cmd := exec.Command("make", "install")
-		cmd.Dir = projDir
-		out, err := cmd.CombinedOutput()
-		Expect(err).NotTo(HaveOccurred(), "failed to install CRDs: %s", string(out))
+		if os.Getenv("HELM_DEPLOYED") != "true" {
+			cmd = exec.Command("make", "install")
+			cmd.Dir = projDir
+			out, err = cmd.CombinedOutput()
+			Expect(err).NotTo(HaveOccurred(), "failed to install CRDs: %s", string(out))
+		} else {
+			By("skipping make install; HELM_DEPLOYED=true")
+		}
 
 		// Deploy the controller only when it is not already running.
 		// In the full suite (make test-e2e) the Manager BeforeAll deploys it first;

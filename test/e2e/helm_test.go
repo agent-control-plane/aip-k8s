@@ -185,6 +185,26 @@ var _ = Describe("Chart", Ordered, func() {
 		})
 	})
 
+	Context("Governed Resources", func() {
+		It("returns non-null list for GET /diagnostic-accuracy-summaries", func() {
+			resp := httpGet(gatewayURL + "/diagnostic-accuracy-summaries")
+			defer resp.Body.Close() //nolint:errcheck
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+			var items []interface{}
+			Expect(json.NewDecoder(resp.Body).Decode(&items)).To(Succeed())
+			Expect(items).NotTo(BeNil())
+		})
+
+		It("returns non-null list for GET /governed-resources", func() {
+			resp := httpGet(gatewayURL + "/governed-resources")
+			defer resp.Body.Close() //nolint:errcheck
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+			var items []interface{}
+			Expect(json.NewDecoder(resp.Body).Decode(&items)).To(Succeed())
+			Expect(items).NotTo(BeNil())
+		})
+	})
+
 	Context("Dashboard", func() {
 		It("serves /healthz", func() {
 			resp := httpGet(dashboardURL + "/healthz")

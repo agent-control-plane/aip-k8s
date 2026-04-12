@@ -76,9 +76,13 @@ var _ = Describe("Manager", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
 
 		By("installing CRDs")
-		cmd = exec.Command("make", "install")
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
+		if os.Getenv("HELM_DEPLOYED") != "true" {
+			cmd = exec.Command("make", "install")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
+		} else {
+			By("skipping make install; HELM_DEPLOYED=true")
+		}
 
 		By("deploying the controller-manager (skips if already running)")
 		checkCmd := exec.Command("kubectl", "get", "deployment",
@@ -186,6 +190,9 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		It("should ensure the metrics endpoint is serving metrics", func() {
+			if os.Getenv("HELM_DEPLOYED") == "true" {
+				Skip("Metrics test requires kustomize-specific metrics service")
+			}
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
 			// Delete first to handle any leftover from a previously interrupted run.
 			cmd := exec.Command("kubectl", "delete", "clusterrolebinding", metricsRoleBindingName, "--ignore-not-found")

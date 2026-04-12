@@ -27,9 +27,9 @@ body {
 }
 
 .container {
-    max-width: 1400px;
+    max-width: 100%;
     margin: 0 auto;
-    padding: 2rem;
+    padding: 1rem 2rem;
 }
 
 header {
@@ -266,7 +266,7 @@ button.danger:hover {
     background: var(--card-bg);
     border: 1px solid var(--border-color);
     border-radius: 1rem;
-    overflow: hidden;
+    overflow-x: auto;
 }
 
 .diagnostics-table {
@@ -326,5 +326,10 @@ button.danger:hover {
     color: var(--text-secondary);
     white-space: pre;
     overflow-x: auto;
-    max-width: 400px;
+}
+
+@media (max-width: 1024px) {
+    .dashboard-grid {
+        grid-template-columns: 1fr;
+    }
 }

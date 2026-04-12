@@ -89,6 +89,16 @@ jobs:
           DASHBOARD_URL: http://localhost:${{ env.DASH_PORT }}
           IMAGE_TAG: ${{ steps.tag.outputs.sha }}
 
+      - name: Run full e2e suite against chart deployment
+        run: |
+          go test -v -tags=e2e ./test/e2e/... -ginkgo.v
+        env:
+          HELM_DEPLOYED: "true"
+          KUBECONFIG: ${{ env.KUBECONFIG }}
+          GATEWAY_URL: http://localhost:${{ env.GW_PORT }}
+          DASHBOARD_URL: http://localhost:${{ env.DASH_PORT }}
+          IMAGE_TAG: ${{ steps.tag.outputs.sha }}
+
       - name: Stop port-forwards
         if: always()
         run: |
