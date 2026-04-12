@@ -205,7 +205,7 @@ var _ = Describe("Phase 6: Gateway API", Ordered, func() {
 			}, 2*time.Minute, 2*time.Second).Should(Equal("Approved"))
 		})
 
-		It("returns 409 on a duplicate POST /agent-requests", func() {
+		It("returns 200 OK on a duplicate POST /agent-requests (idempotent)", func() {
 			// The dedup key is (agentIdentity, action, targetURI); reason is excluded by design.
 			// Using a different reason here intentionally exercises that the gateway does not
 			// treat reason as part of the dedup key (see checkDuplicate in cmd/gateway/main.go).
@@ -217,7 +217,7 @@ var _ = Describe("Phase 6: Gateway API", Ordered, func() {
 			}`)
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close() //nolint:errcheck
-			Expect(resp.StatusCode).To(Equal(http.StatusConflict))
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
 		})
 	})
 
@@ -382,7 +382,7 @@ var _ = Describe("Phase 6: Gateway API", Ordered, func() {
 			}, 15*time.Second, time.Second).Should(Succeed())
 		})
 
-		It("returns 409 on a duplicate POST /agent-diagnostics", func() {
+		It("returns 200 OK on a duplicate POST /agent-diagnostics (idempotent)", func() {
 			resp, err := gwPost("/agent-diagnostics", fmt.Sprintf(`{
 				"agentIdentity":  %q,
 				"diagnosticType": %q,
@@ -391,7 +391,7 @@ var _ = Describe("Phase 6: Gateway API", Ordered, func() {
 			}`, diagAgent, diagType, diagCorrID))
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close() //nolint:errcheck
-			Expect(resp.StatusCode).To(Equal(http.StatusConflict))
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
 		})
 	})
 })

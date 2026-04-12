@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -222,4 +223,32 @@ func TestGR_NoGRs_RequireFalse_RefIsNil(t *testing.T) {
 	g.Expect(list.Items).To(gomega.HaveLen(1))
 	req := list.Items[0]
 	g.Expect(req.Spec.GovernedResourceRef).To(gomega.BeNil())
+}
+
+func TestCreateAgentRequest_Idempotent(t *testing.T) {
+	g := gomega.NewWithT(t)
+	s := newTestServer()
+	s.dedupWindow = 5 * time.Minute
+
+	// First creation — context is cancelled after 200ms so the poll loop returns
+	// without writing; recorder default is 200. We only care that exactly one
+	// AgentRequest was created.
+	postCreate(s, "k8s://prod/nodepool/team-a", "scale-up")
+
+	var list v1alpha1.AgentRequestList
+	g.Expect(s.client.List(context.Background(), &list)).To(gomega.Succeed())
+	g.Expect(list.Items).To(gomega.HaveLen(1))
+	existingName := list.Items[0].Name
+
+	// Duplicate creation — no polling, returns 200 immediately with current state.
+	w2 := postCreate(s, "k8s://prod/nodepool/team-a", "scale-up")
+	g.Expect(w2.Code).To(gomega.Equal(http.StatusOK))
+
+	var resp map[string]any
+	g.Expect(json.NewDecoder(w2.Body).Decode(&resp)).To(gomega.Succeed())
+	g.Expect(resp["name"]).To(gomega.Equal(existingName))
+
+	// Exactly one resource in the cluster — no duplicate was created.
+	g.Expect(s.client.List(context.Background(), &list)).To(gomega.Succeed())
+	g.Expect(list.Items).To(gomega.HaveLen(1))
 }
