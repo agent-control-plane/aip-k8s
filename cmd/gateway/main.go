@@ -375,33 +375,30 @@ func matchGovernedResource(items []v1alpha1.GovernedResource, targetURI string) 
 // a hard mutual-exclusion guarantee. A strict guarantee would require a
 // ValidatingAdmissionWebhook or a unique server-side constraint.
 func (s *Server) checkDuplicate(
-	r *http.Request, agentIdentity, action, targetURI, ns string, w http.ResponseWriter,
-) error {
+	ctx context.Context, agentIdentity, action, targetURI, ns string,
+) (*v1alpha1.AgentRequest, error) {
 	if s.dedupWindow == 0 {
-		return nil
+		return nil, nil
 	}
 	var existing v1alpha1.AgentRequestList
-	if err := s.client.List(r.Context(), &existing, client.InNamespace(ns)); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to check for duplicate requests: %v", err))
-		return err
+	if err := s.client.List(ctx, &existing, client.InNamespace(ns)); err != nil {
+		return nil, fmt.Errorf("failed to check for duplicate requests: %v", err)
 	}
 	cutoff := time.Now().Add(-s.dedupWindow)
 	for _, req := range existing.Items {
-		if terminalPhases[req.Status.Phase] || req.CreationTimestamp.Time.Before(cutoff) {
+		if terminalPhases[req.Status.Phase] {
+			continue
+		}
+		if !req.CreationTimestamp.IsZero() && req.CreationTimestamp.Time.Before(cutoff) {
 			continue
 		}
 		if req.Spec.AgentIdentity == agentIdentity &&
 			req.Spec.Action == action &&
 			req.Spec.Target.URI == targetURI {
-			err := fmt.Errorf("duplicate")
-			writeError(w, http.StatusConflict, fmt.Sprintf(
-				"duplicate request: an active request for the same agent, action, and target already exists (created %s ago)",
-				time.Since(req.CreationTimestamp.Time).Round(time.Second),
-			))
-			return err
+			return &req, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // checkDiagnosticDuplicate returns a non-nil error and writes a 409 if an active
@@ -415,35 +412,27 @@ func (s *Server) checkDuplicate(
 //
 //nolint:dupl // structurally similar to checkDuplicate
 func (s *Server) checkDiagnosticDuplicate(
-	r *http.Request, agentIdentity, diagnosticType, correlationID, ns string, w http.ResponseWriter,
-) error {
+	ctx context.Context, agentIdentity, diagnosticType, correlationID, ns string,
+) (*v1alpha1.AgentDiagnostic, error) {
 	if s.dedupWindow == 0 {
-		return nil
+		return nil, nil
 	}
 	var existing v1alpha1.AgentDiagnosticList
-	if err := s.client.List(r.Context(), &existing, client.InNamespace(ns)); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to check for duplicate diagnostics: %v", err))
-		return err
+	if err := s.client.List(ctx, &existing, client.InNamespace(ns)); err != nil {
+		return nil, fmt.Errorf("failed to check for duplicate diagnostics: %v", err)
 	}
 	cutoff := time.Now().Add(-s.dedupWindow)
 	for _, diag := range existing.Items {
-		if diag.CreationTimestamp.Time.Before(cutoff) {
+		if !diag.CreationTimestamp.IsZero() && diag.CreationTimestamp.Time.Before(cutoff) {
 			continue
 		}
 		if diag.Spec.AgentIdentity == agentIdentity &&
 			diag.Spec.DiagnosticType == diagnosticType &&
 			diag.Spec.CorrelationID == correlationID {
-			diagnosticDedupTotal.Inc()
-			err := fmt.Errorf("duplicate")
-			writeError(w, http.StatusConflict, fmt.Sprintf(
-				"duplicate diagnostic: an active diagnostic for the same "+
-					"agent, type, and correlationID already exists (created %s ago)",
-				time.Since(diag.CreationTimestamp.Time).Round(time.Second),
-			))
-			return err
+			return &diag, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // handleWhoAmI returns the caller's identity and their highest role.
@@ -583,7 +572,23 @@ admissionPassed:
 		}
 	}
 
-	if err := s.checkDuplicate(r, body.AgentIdentity, body.Action, body.TargetURI, ns, w); err != nil {
+	existing, err := s.checkDuplicate(r.Context(), body.AgentIdentity, body.Action, body.TargetURI, ns)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if existing != nil {
+		// Idempotent: return the current state of the existing request immediately.
+		// Do not poll — the caller already has an in-flight request and should
+		// act on its current phase rather than wait for a terminal transition.
+		writeJSON(w, http.StatusOK, map[string]any{
+			"name":                     existing.Name,
+			"labels":                   reqLabels,
+			"phase":                    existing.Status.Phase,
+			"denial":                   existing.Status.Denial,
+			"conditions":               existing.Status.Conditions,
+			"controlPlaneVerification": existing.Status.ControlPlaneVerification,
+		})
 		return
 	}
 
@@ -859,9 +864,25 @@ func (s *Server) handleCreateAgentDiagnostic(w http.ResponseWriter, r *http.Requ
 		ns = defaultNamespace
 	}
 
-	err := s.checkDiagnosticDuplicate(
-		r, body.AgentIdentity, body.DiagnosticType, body.CorrelationID, ns, w)
+	existing, err := s.checkDiagnosticDuplicate(
+		r.Context(), body.AgentIdentity, body.DiagnosticType, body.CorrelationID, ns)
 	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if existing != nil {
+		diagnosticDedupTotal.Inc()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"name":           existing.Name,
+			"namespace":      existing.Namespace,
+			"createdAt":      existing.CreationTimestamp.Time,
+			"agentIdentity":  existing.Spec.AgentIdentity,
+			"diagnosticType": existing.Spec.DiagnosticType,
+			"correlationID":  existing.Spec.CorrelationID,
+			"summary":        existing.Spec.Summary,
+			"details":        existing.Spec.Details,
+			"status":         existing.Status,
+		})
 		return
 	}
 
@@ -1515,6 +1536,8 @@ func (s *Server) handleCreateGovernedResource(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
+
 	var gr v1alpha1.GovernedResource
 	if err := json.NewDecoder(r.Body).Decode(&gr); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -1581,6 +1604,8 @@ func (s *Server) handleReplaceGovernedResource(w http.ResponseWriter, r *http.Re
 	if !requireRole(s.roles, roleAdmin, sub, groups, w) {
 		return
 	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
 
 	name := r.PathValue("name")
 	var newGR v1alpha1.GovernedResource
@@ -1682,6 +1707,8 @@ func (s *Server) handleCreateSafetyPolicy(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
+
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
 		ns = defaultNamespace
@@ -1763,6 +1790,8 @@ func (s *Server) handleReplaceSafetyPolicy(w http.ResponseWriter, r *http.Reques
 	if !requireRole(s.roles, roleAdmin, sub, groups, w) {
 		return
 	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
 
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
