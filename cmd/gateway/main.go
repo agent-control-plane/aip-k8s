@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -1020,11 +1021,33 @@ func (s *Server) handlePatchAgentDiagnosticStatus(w http.ResponseWriter, r *http
 
 	diagnosticVerdictTotal.WithLabelValues(body.Verdict).Inc()
 	agentId := diag.Spec.AgentIdentity
+	err := s.applyVerdictToSummary(r.Context(), ns, agentId, oldVerdict, body.Verdict)
+	if err != nil {
+		log.Printf("DiagnosticAccuracySummary update failed for agent %q: %v — verdict saved, recomputing", agentId, err)
+		go func() {
+			if rerr := s.recomputeAccuracyForAgent(context.Background(), ns, agentId); rerr != nil {
+				log.Printf("background recompute for agent %q in %q failed: %v", agentId, ns, rerr)
+			}
+		}()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"message": "verdict saved",
+			"warning": "accuracy summary update failed; recompute triggered in background",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"message": "verdict saved"})
+}
+
+// applyVerdictToSummary atomically applies a verdict change to the
+// DiagnosticAccuracySummary for the given agent. It creates the summary if it
+// does not yet exist and retries on conflict so concurrent calls converge.
+func (s *Server) applyVerdictToSummary(ctx context.Context, ns, agentId, oldVerdict, newVerdict string) error {
 	summaryName := summaryNameForAgent(agentId)
-	summaryUpdatedAt := metav1.Now()
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	updatedAt := metav1.Now()
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var summary v1alpha1.DiagnosticAccuracySummary
-		err := s.client.Get(r.Context(), types.NamespacedName{Name: summaryName, Namespace: ns}, &summary)
+		err := s.client.Get(ctx, types.NamespacedName{Name: summaryName, Namespace: ns}, &summary)
 		exists := true
 		if err != nil {
 			if apierrors.IsNotFound(err) {
@@ -1038,8 +1061,7 @@ func (s *Server) handlePatchAgentDiagnosticStatus(w http.ResponseWriter, r *http
 			}
 		}
 
-		// Guard against accidental cross-agent reuse: the hash suffix makes
-		// collisions essentially impossible, but verify defensively.
+		// Guard against accidental cross-agent reuse.
 		if exists && summary.Spec.AgentIdentity != agentId {
 			exists = false
 			summary = v1alpha1.DiagnosticAccuracySummary{
@@ -1049,13 +1071,16 @@ func (s *Server) handlePatchAgentDiagnosticStatus(w http.ResponseWriter, r *http
 		}
 
 		if !exists {
-			if err := s.client.Create(r.Context(), &summary); err != nil {
+			if err := s.client.Create(ctx, &summary); err != nil {
+				if apierrors.IsAlreadyExists(err) {
+					// Concurrent Create won the race; synthesise a Conflict so
+					// retry.RetryOnConflict re-runs the Get → mutate → Patch sequence.
+					return apierrors.NewConflict(schema.GroupResource{}, summaryName, err)
+				}
 				return err
 			}
-			// When the summary CR is newly created its counters start at zero.
-			// We must not decrement oldVerdict even if the diagnostic already
-			// carries a verdict (e.g., after a manual summary deletion), or we
-			// would produce negative counts and an accuracy ratio above 1.0.
+			// Counters start at zero on a new summary; do not decrement the old
+			// verdict or we produce negative counts after a manual summary deletion.
 			oldVerdict = ""
 		}
 
@@ -1071,7 +1096,7 @@ func (s *Server) handlePatchAgentDiagnosticStatus(w http.ResponseWriter, r *http
 			summary.Status.TotalReviewed--
 		}
 
-		switch body.Verdict {
+		switch newVerdict {
 		case verdictCorrect:
 			summary.Status.CorrectCount++
 		case verdictIncorrect:
@@ -1088,25 +1113,9 @@ func (s *Server) handlePatchAgentDiagnosticStatus(w http.ResponseWriter, r *http
 		} else {
 			summary.Status.DiagnosticAccuracy = nil
 		}
-		summary.Status.LastUpdatedAt = &summaryUpdatedAt
-		return s.client.Status().Update(r.Context(), &summary)
+		summary.Status.LastUpdatedAt = &updatedAt
+		return s.client.Status().Update(ctx, &summary)
 	})
-
-	if err != nil {
-		log.Printf("DiagnosticAccuracySummary update failed for agent %q: %v — verdict saved, recomputing", agentId, err)
-		go func() {
-			if rerr := s.recomputeAccuracyForAgent(context.Background(), ns, agentId); rerr != nil {
-				log.Printf("background recompute for agent %q in %q failed: %v", agentId, ns, rerr)
-			}
-		}()
-		writeJSON(w, http.StatusOK, map[string]any{
-			"message": "verdict saved",
-			"warning": "accuracy summary update failed; recompute triggered in background",
-		})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{"message": "verdict saved"})
 }
 
 // recomputeAccuracyForAgent rebuilds DiagnosticAccuracySummary for the given

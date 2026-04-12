@@ -239,7 +239,7 @@ var _ = Describe("AgentRequest Controller", func() {
 			Expect(k8sClient.Get(ctx, typeNamespacedName, &fetchedReq)).To(Succeed())
 
 			// Reconcile while Executing with a future clock triggers timeout
-			_, err = controllerReconciler.reconcileExecuting(ctx, &fetchedReq, client.MergeFrom(fetchedReq.DeepCopy()))
+			_, err = controllerReconciler.reconcileExecuting(ctx, &fetchedReq)
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(fetchedReq.Status.Phase).To(Equal(governancev1alpha1.PhaseFailed))

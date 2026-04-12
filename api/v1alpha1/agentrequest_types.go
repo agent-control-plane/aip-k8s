@@ -166,7 +166,7 @@ const (
 	DenialCodeApprovalRevoked         = "APPROVAL_REVOKED"
 	DenialCodeStateDrifted            = "STATE_DRIFTED"
 	DenialCodeGenerationMismatch      = "GENERATION_MISMATCH"
-	DenialCodeScopeTooBoard           = "SCOPE_TOO_BROAD"
+	DenialCodeScopeTooBroad           = "SCOPE_TOO_BROAD"
 	DenialCodeGovernedResourceDeleted = "GOVERNED_RESOURCE_DELETED"
 )
 
