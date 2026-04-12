@@ -48,6 +48,14 @@ import (
 	"k8s.io/apiextensions-apiserver/pkg/apiserver/validation"
 )
 
+const (
+	// LockWaitTimeout is the maximum time a request will wait in Pending to acquire the OpsLock Lease.
+	LockWaitTimeout = 60 * time.Second
+	// ApprovedTimeout is the maximum time a request can stay in Approved phase without
+	// transitioning to Executing.
+	ApprovedTimeout = 5 * time.Minute
+)
+
 // AgentRequestReconciler reconciles a AgentRequest object
 type AgentRequestReconciler struct {
 	client.Client
@@ -616,7 +624,7 @@ func (r *AgentRequestReconciler) handleLockAcquisition(ctx context.Context, agen
 				logger.Info("AgentRequest already holds the lease", "lease", leaseName)
 			} else {
 				// Check timeout
-				waitLimit := r.now().Add(-60 * time.Second) // 60 second timeout
+				waitLimit := r.now().Add(-LockWaitTimeout)
 				if agentReq.CreationTimestamp.Time.Before(waitLimit) {
 					// Timeout exceeded
 					logger.Info("Lock wait timeout exceeded", "lease", leaseName)
@@ -625,7 +633,7 @@ func (r *AgentRequestReconciler) handleLockAcquisition(ctx context.Context, agen
 					agentReq.Status.Phase = governancev1alpha1.PhaseDenied
 					agentReq.Status.Denial = &governancev1alpha1.DenialResponse{
 						Code:    governancev1alpha1.DenialCodeLockTimeout,
-						Message: fmt.Sprintf("Failed to acquire lock for %s within 60s timeout. Lock held by: %s", agentReq.Spec.Target.URI, ptr.Deref(existingLease.Spec.HolderIdentity, "unknown")),
+						Message: fmt.Sprintf("Failed to acquire lock for %s within %v timeout. Lock held by: %s", agentReq.Spec.Target.URI, LockWaitTimeout, ptr.Deref(existingLease.Spec.HolderIdentity, "unknown")),
 					}
 					agentRequestDeniedTotal.WithLabelValues(governancev1alpha1.DenialCodeLockTimeout).Inc()
 					agentRequestActive.Dec()
@@ -684,11 +692,57 @@ func (r *AgentRequestReconciler) handleLockAcquisition(ctx context.Context, agen
 }
 
 func (r *AgentRequestReconciler) reconcileApproved(ctx context.Context, agentReq *governancev1alpha1.AgentRequest) (ctrl.Result, error) {
-	log.FromContext(ctx).Info("AgentRequest is Approved. Waiting for agent to acquire lock and signal Executing.", "name", agentReq.Name)
+	logger := log.FromContext(ctx)
 
-	// In Phase 4, the controller will participate in lease management here.
-	// For Phase 2, we just return and wait for the agent to patch the Executing condition.
-	return ctrl.Result{}, nil
+	// Find when it entered Approved phase.
+	approvedCond := meta.FindStatusCondition(agentReq.Status.Conditions, governancev1alpha1.ConditionApproved)
+	if approvedCond == nil || approvedCond.Status != metav1.ConditionTrue {
+		// This shouldn't happen if we are in PhaseApproved, but let's be safe.
+		logger.Info("AgentRequest is Approved but missing Approved condition", "name", agentReq.Name)
+		return ctrl.Result{}, nil
+	}
+
+	deadline := approvedCond.LastTransitionTime.Add(ApprovedTimeout)
+	now := r.now()
+
+	if now.After(deadline) {
+		logger.Info("AgentRequest timed out in Approved phase (failed to start execution)", "name", agentReq.Name)
+
+		fromPhase := agentReq.Status.Phase
+		base := agentReq.DeepCopy()
+		meta.SetStatusCondition(&agentReq.Status.Conditions, metav1.Condition{
+			Type:    governancev1alpha1.ConditionFailed,
+			Status:  metav1.ConditionTrue,
+			Reason:  governancev1alpha1.DenialCodeLockTimeout,
+			Message: fmt.Sprintf("Timed out after %v in Approved phase without starting execution", ApprovedTimeout),
+		})
+		agentReq.Status.Phase = governancev1alpha1.PhaseFailed
+		agentReq.Status.Denial = &governancev1alpha1.DenialResponse{
+			Code:    governancev1alpha1.DenialCodeLockTimeout,
+			Message: fmt.Sprintf("Timed out after %v in Approved phase without starting execution", ApprovedTimeout),
+		}
+
+		// Update metrics
+		agentRequestActive.Dec()
+		agentRequestTotal.WithLabelValues(governancev1alpha1.PhaseFailed).Inc()
+
+		if err := r.Status().Patch(ctx, agentReq, client.MergeFrom(base)); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		if err := r.releaseLock(ctx, agentReq); err != nil {
+			return ctrl.Result{}, fmt.Errorf("releasing lock after Approved timeout for %s: %w", agentReq.Name, err)
+		}
+
+		if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventRequestFailed, fromPhase, governancev1alpha1.PhaseFailed); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		return ctrl.Result{}, nil
+	}
+
+	// Requeue when the timeout is expected to hit.
+	return ctrl.Result{RequeueAfter: deadline.Sub(now)}, nil
 }
 
 func (r *AgentRequestReconciler) reconcileExecuting(ctx context.Context, agentReq *governancev1alpha1.AgentRequest) (ctrl.Result, error) {

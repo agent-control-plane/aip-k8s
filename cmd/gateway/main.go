@@ -62,6 +62,8 @@ var (
 	requireGovernedResource = flag.Bool("require-governed-resource", false,
 		"When true, reject AgentRequests even if no GovernedResource objects exist. "+
 			"Default false preserves backward compatibility for deployments without a populated registry.")
+	waitTimeout = flag.Duration("wait-timeout", 90*time.Second,
+		"Maximum time the gateway blocks waiting for an AgentRequest to reach a terminal phase or human approval.")
 	trustedProxyCIDRs = flag.String("trusted-proxy-cidrs", "",
 		"Comma-separated CIDRs for proxy-header trust. Empty = any source (dev only). Ignored when --oidc-issuer-url is set.")
 )
@@ -108,6 +110,7 @@ var terminalPhases = map[string]bool{
 type Server struct {
 	client                  client.Client
 	dedupWindow             time.Duration
+	waitTimeout             time.Duration
 	roles                   *roleConfig
 	authRequired            bool // true when --oidc-issuer-url is set or any subject list is non-empty
 	requireGovernedResource bool // from --require-governed-resource
@@ -237,6 +240,7 @@ func main() {
 	server := &Server{
 		client:                  k8sClient,
 		dedupWindow:             *dedupWindow,
+		waitTimeout:             *waitTimeout,
 		roles:                   rc,
 		authRequired:            authRequired,
 		requireGovernedResource: *requireGovernedResource,
@@ -610,20 +614,24 @@ func (s *Server) pollAgentRequestPhase(
 	name, ns string,
 	reqLabels map[string]string,
 ) {
-	timeout := time.After(90 * time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), s.waitTimeout)
+	defer cancel()
+
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-r.Context().Done():
-			return
-		case <-timeout:
-			writeError(w, http.StatusGatewayTimeout, "timed out waiting for AgentRequest resolution")
+		case <-ctx.Done():
+			if r.Context().Err() == nil {
+				// r.Context() is still live — our waitTimeout fired; write 504.
+				writeError(w, http.StatusGatewayTimeout, "timed out waiting for AgentRequest resolution")
+			}
+			// r.Context() is done: client disconnected — can't write a response.
 			return
 		case <-ticker.C:
 			var current v1alpha1.AgentRequest
-			if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &current); err != nil {
+			if err := s.client.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &current); err != nil {
 				continue
 			}
 
