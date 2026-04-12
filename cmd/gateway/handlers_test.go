@@ -40,6 +40,7 @@ func newTestServer(objs ...client.Object) *Server {
 	return &Server{
 		client:       fc,
 		dedupWindow:  0,
+		waitTimeout:  90 * time.Second,
 		roles:        newRoleConfig("agent-sub", "reviewer-sub", "", "", "", ""),
 		authRequired: true,
 	}
