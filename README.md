@@ -12,7 +12,7 @@ This repository contains the `governance.aip.io` controller, which serves as the
 - **GovernedResource**: Platform engineering declares which resource types agents may mutate, which agent identities may target them, and which context fetcher to invoke. Requests targeting unregistered resource types are rejected at admission. See [`docs/governed-resources.md`](docs/governed-resources.md).
 - **SafetyPolicy**: CEL-based rules defined by administrators to govern which agents can perform what actions. Binds to `GovernedResource` objects via `governedResourceSelector`.
 - **AuditRecord**: Immutable event logs generated on every state transition of an AgentRequest.
-- **AgentDiagnostic**: Agent-written, immutable records of observations and diagnoses made before acting. No controller involved — agents write directly. Designed for stateless k8s controller-based agents that need to persist diagnostic state without misusing `AgentRequest`. See [`ep/agent_diagnostic_design.md`](ep/agent_diagnostic_design.md).
+- **AgentDiagnostic**: Agent-written, immutable records of observations and diagnoses made before acting. No controller involved — agents write directly. Designed for stateless k8s controller-based agents that need to persist diagnostic state without misusing `AgentRequest`. See [`ep/agent_diagnostic_design.md`](ep/agent_diagnostic_design.md) and [`ep/garbage_collection_and_export.md`](ep/garbage_collection_and_export.md).
 
 ## Why AIP? (Real-World Validation)
 
