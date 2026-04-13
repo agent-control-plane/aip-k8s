@@ -15,6 +15,15 @@ CHART="$REPO_ROOT/charts/aip-k8s/templates/crds"
 for src in "$BASES"/*.yaml; do
     name="$(basename "$src")"
     dst="$CHART/$name"
+
+    # Fail fast if the anchor line is absent — injecting annotations would
+    # silently produce an invalid (annotation-free) copy.
+    if ! grep -q 'controller-gen\.kubebuilder\.io/version:' "$src"; then
+        echo "ERROR: anchor 'controller-gen.kubebuilder.io/version:' not found in $src" >&2
+        echo "  Cannot inject Helm annotations into $name." >&2
+        exit 1
+    fi
+
     # Inject the three Helm annotations immediately after the
     # controller-gen annotation line.  awk prints the matching line
     # first, then the three extra lines, then resumes normal output.
