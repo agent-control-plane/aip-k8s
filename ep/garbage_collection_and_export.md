@@ -48,7 +48,7 @@ The `GCManager` is a background `Runnable` in the controller manager that orches
 - **Leader-Election Binding**: The `GCManager` runs only on the leader replica via controller-manager leader election, ensuring only one instance performs GC operations at a time. No additional manual coordination is required.
 - **Paginated Scans**: Uses `Limit` and `Continue` tokens (configurable page size, default: 500) via a direct client (`APIReader`, not the informer cache) to ensure consistency and avoid stale reads.
 - **Token-Bucket Rate Limiting**: Deletions are throttled at the **object level** (default: 100 objects/sec), not at the API-call level. Each deleted object emits a watch event to every watcher of that GVK; an unthrottled GC run on a large backlog can spike the API server's event queue. For `DeleteCollection` batches, the worker acquires N tokens before issuing a batch of N objects — the bucket is never bypassed by a single large `DeleteCollection` call. For individual `Delete` calls, 1 token is consumed per call.
-- **Deletion SLA**: A record is guaranteed to be deleted within one GC interval after its retention window expires (e.g., 7-day retention + 1-hour interval → deleted between day 7 and day 7h1m).
+- **Deletion SLA**: When no export is configured, or when export succeeds, a record is guaranteed to be deleted within one GC interval after its retention window expires (e.g., 7-day retention + 1-hour interval → deleted between day 7 and day 7h1m). When export is configured and fails, deletion is delayed by export retries up to the Hard TTL, at which point deletion is unconditional (see Hard TTL Check in the lifecycle below).
 
 **Note on `DeleteCollection`:** `DeleteCollection` reduces client-to-API-server round trips compared to individual `Delete` calls. It does **not** reduce etcd tombstone pressure — each deletion still writes a tombstone; only etcd compaction removes tombstones. The benefit is purely fewer network calls. Rate limiting applies at the object level regardless of which deletion mechanism is used.
 
@@ -56,8 +56,8 @@ The `GCManager` is a background `Runnable` in the controller manager that orches
 
 For each expired record, the engine follows a strict state machine:
 
-1. **Identify**: Find records where `now() - metadata.creationTimestamp > retentionWindow`.
-2. **Hard TTL Check**: If `now() - creationTimestamp > hardTTL`, skip export and **delete immediately**. Cluster health takes precedence over data retention. Log a warning so operators know export was skipped.
+1. **Identify**: Find records where `now() - metadata.creationTimestamp >= retentionWindow`. Equality is treated as expired. Implementations must apply this operator consistently at the boundary.
+2. **Hard TTL Check**: If `now() - creationTimestamp >= hardTTL`, skip export and **delete immediately**. Cluster health takes precedence over data retention. Log a warning so operators know export was skipped. (Same boundary rule: equality is expired.)
 3. **Export (Optional)**: Hand the object to the bounded async worker pool. The GC loop is never blocked by this step.
 4. **Retry with Backoff**: If export fails, retain the record and retry with exponential backoff (base: 5s, multiplier: 2×, max: 10m, jitter: ±20% — example sequence: 5s → 10s → 20s → 40s → … → 10m). Retry state is tracked in memory only; see Leader-Transition Semantics below.
 5. **Purge**: Issue a `DeleteCollection` (per page) or `Delete` call once export is confirmed or Hard TTL is reached.
@@ -143,17 +143,38 @@ The `Exporter` interface is generic: `Export(ctx context.Context, obj runtime.Ob
 
 ## Implementation Checklist
 
+### Phase 1 — Hard TTL deletion for AgentDiagnostic (ship this week)
+_Goal: etcd protection in production with no export complexity. Pure deletion only._
+
 - [ ] Create `internal/gc/` package containing `GCManager` and `GCWorker`.
-- [ ] Define `Exporter` interface; implement OTLP and Webhook providers.
-- [ ] Implement bounded worker pool with bounded input channel and skip-on-full overflow policy.
-- [ ] Implement exponential-backoff retry (base 5s, max 10m, ±20% jitter) bounded by Hard TTL.
-- [ ] Implement paginated list + `DeleteCollection` with configurable page size and token-bucket rate limiter.
-- [ ] Implement `DependencyProvider` interface and `AuditRecord → AgentRequest` registration. **Do NOT use `SetControllerReference` when creating `AuditRecord` objects** — Kubernetes cascading deletion via owner references would auto-delete `AuditRecord`s when their parent `AgentRequest` is deleted, bypassing the GC manager's retention policy entirely. Use a non-owning label reference instead and rely on `DependencyProvider` for retention-aware deletion.
-- [ ] Add startup validation: reject config where parent `retentionDays` > child `retentionDays` in a dependency pair.
-- [ ] Register `AgentDiagnostic` as the first managed resource; add `AgentRequest` and `AuditRecord` with dependency checks.
 - [ ] Wire `GCManager` into `cmd/main.go` using `mgr.Add()`; document leader-election reliance in code comments.
-- [ ] Update RBAC: `list`, `delete`, `deletecollection` on all managed GVKs.
-- [ ] Unit tests: paging stability, rate-limiter correctness, Hard TTL forced deletion, export retry/backoff, bounded-channel skip-on-full, dependency blocking, Hard TTL override of dependency, startup validation rejection.
+- [ ] Implement paginated list via direct client (`APIReader`) with configurable page size (default: 500).
+- [ ] Implement `DeleteCollection` per page with token-bucket rate limiter (default: 100 objects/sec); acquire N tokens before issuing a batch of N objects.
+- [ ] Hard TTL only — delete records where `now() - creationTimestamp >= hardTTL` unconditionally; log a single startup warning when export is not configured (not per-deletion).
+- [ ] Register `AgentDiagnostic` as the first and only managed resource in Phase 1.
+- [ ] Update RBAC: `list`, `delete`, `deletecollection` on `agentdiagnostics`.
+- [ ] Define full `gc:` config shape now (including `retentionDays` and export fields) even though unused in Phase 1, to avoid a breaking config change in Phase 2.
+- [ ] Unit tests: paging stability, rate-limiter token consumption for batches, Hard TTL boundary (`>=`) correctness, startup warning log.
+
+### Phase 2 — Export pipeline for AgentDiagnostic
+_Goal: add OTLP export with bounded async worker pool and retry before deletion._
+
+- [ ] Define `Exporter` interface: `Export(ctx context.Context, obj runtime.Object) error`.
+- [ ] Implement OTLP provider: maps object fields to OTLP LogRecord attributes (log entries, not traces).
+- [ ] Implement bounded export worker pool: fixed size (`concurrency`), bounded input channel (capacity: `concurrency × 10`), skip-on-full overflow (never block the GC loop).
+- [ ] Implement exponential-backoff retry (base: 5s, multiplier: 2×, max: 10m, ±20% jitter) bounded by Hard TTL; retry state is in-memory only (see Leader-Transition Semantics).
+- [ ] Activate soft `retentionDays` check (`now() - creationTimestamp >= retentionWindow`) alongside Hard TTL.
+- [ ] Unit tests: bounded-channel skip-on-full, export retry/backoff sequence, Hard TTL forced deletion when export fails, leader-transition retry-reset behavior.
+
+### Phase 3 — AgentRequest, AuditRecord, and dependency handling
+_Goal: extend GC to all AIP resource types with coherent ordered deletion._
+
+- [ ] Implement `DependencyProvider` interface and register `AuditRecord → AgentRequest`. **Do NOT use `SetControllerReference` when creating `AuditRecord` objects** — Kubernetes cascading deletion via owner references would bypass the GC manager's retention policy. Use a non-owning label reference and rely on `DependencyProvider` for retention-aware deletion.
+- [ ] Implement Webhook export provider: POST raw JSON with `X-AIP-Resource-Kind` header.
+- [ ] Add startup validation: reject config where `agentRequests.retentionDays > auditRecords.retentionDays` (parent must not outlive child).
+- [ ] Register `AgentRequest` and `AuditRecord` GCWorkers with dependency checks; Hard TTL overrides dependency checks unconditionally.
+- [ ] Update RBAC: `list`, `delete`, `deletecollection` on `agentrequests` and `auditrecords`.
+- [ ] Unit tests: dependency blocking, Hard TTL override of dependency, startup validation rejection, manual-deletion orphan path.
 
 ## Relationship to other EPs
 
