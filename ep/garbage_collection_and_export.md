@@ -45,7 +45,7 @@ The `GCManager` is a background `Runnable` in the controller manager that orches
 
 ### 1. Stability Primitives
 
-- **Leader-Election Binding**: The `GCManager` runs only on the leader replica — it relies on controller-manager leader election. This is a correctness requirement; introducing a second controller manager instance without understanding this will cause concurrent GC workers and doubled deletions.
+- **Leader-Election Binding**: The `GCManager` runs only on the leader replica via controller-manager leader election, ensuring only one instance performs GC operations at a time. No additional manual coordination is required.
 - **Paginated Scans**: Uses `Limit` and `Continue` tokens (configurable page size, default: 500) via a direct client (`APIReader`, not the informer cache) to ensure consistency and avoid stale reads.
 - **Token-Bucket Rate Limiting**: Deletions are throttled (default: 100/sec) to prevent watch-event fan-out from overwhelming other controllers. Each deletion emits a watch event to every `AgentDiagnostic`/`AgentRequest`/`AuditRecord` watcher; an unthrottled GC run on a large backlog can spike the API server's event queue.
 - **Deletion SLA**: A record is guaranteed to be deleted within one GC interval after its retention window expires (e.g., 7-day retention + 1-hour interval → deleted between day 7 and day 7h1m).
@@ -59,10 +59,19 @@ For each expired record, the engine follows a strict state machine:
 1. **Identify**: Find records where `now() - metadata.creationTimestamp > retentionWindow`.
 2. **Hard TTL Check**: If `now() - creationTimestamp > hardTTL`, skip export and **delete immediately**. Cluster health takes precedence over data retention. Log a warning so operators know export was skipped.
 3. **Export (Optional)**: Hand the object to the bounded async worker pool. The GC loop is never blocked by this step.
-4. **Retry with Backoff**: If export fails, retain the record and retry with exponential backoff (base: 5s, max: 10m, jitter: ±20%). Retry state is tracked in memory; on GC worker restart, all eligible records are re-evaluated from scratch (export is assumed idempotent for both OTLP and webhook providers).
+4. **Retry with Backoff**: If export fails, retain the record and retry with exponential backoff (base: 5s, multiplier: 2×, max: 10m, jitter: ±20% — example sequence: 5s → 10s → 20s → 40s → … → 10m). Retry state is tracked in memory only; see Leader-Transition Semantics below.
 5. **Purge**: Issue a `DeleteCollection` (per page) or `Delete` call once export is confirmed or Hard TTL is reached.
 
-### 3. Export Worker Pool
+### 3. Leader-Transition Semantics
+
+Export retry state is intentionally ephemeral (in-memory only). On leadership loss:
+
+- All in-flight exports in the bounded worker pool are abandoned.
+- The new leader re-evaluates all eligible records from scratch on its next GC cycle.
+- **Safety:** Export idempotency (both OTLP and webhook providers are assumed idempotent) ensures that a record exported by the previous leader and re-exported by the new leader causes no harm — at-least-once delivery is acceptable.
+- **Operational implication:** A leadership transition resets exponential backoff for all in-flight retries. A recovering export endpoint may receive a burst of retries from the new leader before backoff re-establishes. This is a known trade-off of stateless GC workers; a follow-up issue should track persistent retry state if this becomes operationally problematic.
+
+### 4. Export Worker Pool
 
 Export is handled by a fixed-size worker pool (configurable `concurrency`, default: 5). Workers are fed from a **bounded channel** (capacity: `concurrency × 10`). When the channel is full, the record is **skipped and retried in the next GC cycle** — the GC loop must never block waiting for an export slot. An unbounded queue or unbounded goroutine-per-record is explicitly prohibited due to OOM risk under high diagnostic churn.
 
@@ -94,7 +103,10 @@ gc:
       enabled: true
       retentionDays: 7
       hardTTLDays: 14   # set to the maximum tolerable export-pipeline outage duration
-                         # hardTTLDays: 0 disables the safety valve — strongly discouraged in production
+                         # hardTTLDays: 0 disables the hard TTL check entirely (the safety valve is
+                         # skipped; only soft retention applies). It does NOT mean immediate expiry.
+                         # Disabling is strongly discouraged in production — a degraded export
+                         # pipeline will hold records in etcd indefinitely.
       export:
         type: otlp
         otlp:
@@ -111,7 +123,9 @@ gc:
 
     auditRecords:
       enabled: true
-      retentionDays: 365  # must be <= agentRequests.retentionDays (dependency constraint)
+      retentionDays: 365  # agentRequests.retentionDays must be <= this value (dependency constraint:
+                          # parent must not outlive child — if AgentRequest expires after AuditRecord,
+                          # the AuditRecord is held past its own retention until the parent expires)
       hardTTLDays: 400
       export:
         type: webhook      # configure independently; do not rely on agentRequests export
