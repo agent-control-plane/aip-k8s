@@ -1504,19 +1504,10 @@ func (s *Server) handleListAgentDiagnostics(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	var err error
-	var ca, cb time.Time
-	if caStr != "" {
-		if ca, err = time.Parse(time.RFC3339, caStr); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid createdAfter")
-			return
-		}
-	}
-	if cbStr != "" {
-		if cb, err = time.Parse(time.RFC3339, cbStr); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid createdBefore")
-			return
-		}
+	ca, cb, parseErr := parseTimeRange(caStr, cbStr)
+	if parseErr != nil {
+		writeError(w, http.StatusBadRequest, parseErr.Error())
+		return
 	}
 
 	listOpts := []client.ListOption{client.InNamespace(ns)}
@@ -1553,21 +1544,7 @@ func (s *Server) handleListAgentDiagnostics(w http.ResponseWriter, r *http.Reque
 	}
 
 	if hasTimeFilter {
-		// In-memory time filtering and sort only when not paginating.
-		results := make([]v1alpha1.AgentDiagnostic, 0, len(list.Items))
-		for _, item := range list.Items {
-			if !ca.IsZero() && !item.CreationTimestamp.After(ca) {
-				continue
-			}
-			if !cb.IsZero() && !item.CreationTimestamp.Time.Before(cb) {
-				continue
-			}
-			results = append(results, item)
-		}
-		sort.Slice(results, func(i, j int) bool {
-			return results[i].CreationTimestamp.After(results[j].CreationTimestamp.Time)
-		})
-		writeJSON(w, http.StatusOK, results)
+		writeJSON(w, http.StatusOK, filterAndSortDiagnostics(list.Items, ca, cb))
 		return
 	}
 
@@ -1583,6 +1560,41 @@ func (s *Server) handleListAgentDiagnostics(w http.ResponseWriter, r *http.Reque
 	} else {
 		writeJSON(w, http.StatusOK, items)
 	}
+}
+
+// parseTimeRange parses RFC3339 after/before strings into time.Time values.
+// Returns an error describing which field was invalid.
+func parseTimeRange(afterStr, beforeStr string) (after, before time.Time, err error) {
+	if afterStr != "" {
+		if after, err = time.Parse(time.RFC3339, afterStr); err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("invalid createdAfter")
+		}
+	}
+	if beforeStr != "" {
+		if before, err = time.Parse(time.RFC3339, beforeStr); err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("invalid createdBefore")
+		}
+	}
+	return after, before, nil
+}
+
+// filterAndSortDiagnostics applies in-memory time-range filtering and returns
+// results sorted newest-first. Only called when pagination is not in use.
+func filterAndSortDiagnostics(items []v1alpha1.AgentDiagnostic, after, before time.Time) []v1alpha1.AgentDiagnostic {
+	results := make([]v1alpha1.AgentDiagnostic, 0, len(items))
+	for _, item := range items {
+		if !after.IsZero() && !item.CreationTimestamp.After(after) {
+			continue
+		}
+		if !before.IsZero() && !item.CreationTimestamp.Time.Before(before) {
+			continue
+		}
+		results = append(results, item)
+	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].CreationTimestamp.After(results[j].CreationTimestamp.Time)
+	})
+	return results
 }
 
 func (s *Server) handleApproveAgentRequest(w http.ResponseWriter, r *http.Request) {
