@@ -78,14 +78,18 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC Integration", Ordered, func() {
 		// 5. Ensure controller is deployed (idempotent — Phase 1 may have done this already,
 		// but Ginkgo can randomize Describe block order so we cannot rely on it).
 		By("ensuring controller-manager is deployed")
-		checkCtrlCmd := exec.Command("kubectl", "get", "deployment",
-			"aip-k8s-controller-manager", "-n", "aip-k8s-system")
-		if _, checkErr := utils.Run(checkCtrlCmd); checkErr != nil {
-			deployCmd := exec.Command("make", "deploy",
-				fmt.Sprintf("IMG=%s", managerImage))
-			deployCmd.Dir = projDir
-			deployOut, deployErr := deployCmd.CombinedOutput()
-			Expect(deployErr).NotTo(HaveOccurred(), "deploy controller: %s", string(deployOut))
+		if os.Getenv("HELM_DEPLOYED") != "true" {
+			checkCtrlCmd := exec.Command("kubectl", "get", "deployment",
+				"aip-k8s-controller-manager", "-n", "aip-k8s-system")
+			if _, checkErr := utils.Run(checkCtrlCmd); checkErr != nil {
+				deployCmd := exec.Command("make", "deploy",
+					fmt.Sprintf("IMG=%s", managerImage))
+				deployCmd.Dir = projDir
+				deployOut, deployErr := deployCmd.CombinedOutput()
+				Expect(deployErr).NotTo(HaveOccurred(), "deploy controller: %s", string(deployOut))
+			}
+		} else {
+			By("skipping make deploy; HELM_DEPLOYED=true")
 		}
 
 		By("waiting for controller to be ready")

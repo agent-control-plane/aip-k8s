@@ -162,6 +162,9 @@ var _ = Describe("Manager", Ordered, func() {
 
 	Context("Manager", func() {
 		It("should run successfully", func() {
+			if os.Getenv("HELM_DEPLOYED") == "true" {
+				Skip("Manager check is specific to Kustomize naming/labels — skipping in Helm mode")
+			}
 			By("validating that the controller-manager pod is running as expected")
 			verifyControllerUp := func(g Gomega) {
 				// Get the name of the controller-manager pod
