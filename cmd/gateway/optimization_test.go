@@ -86,6 +86,17 @@ func TestListAgentRequests_FilteringAndPagination(t *testing.T) {
 	g.Expect(json.Unmarshal(w.Body.Bytes(), &items)).To(gomega.Succeed())
 	g.Expect(items).To(gomega.HaveLen(1))
 
+	// 2b. Combined filter: both agentIdentity and correlationID — both labels must
+	// be applied in a single MatchingLabels call or the second overwrites the first.
+	req = httptest.NewRequest(http.MethodGet, "/agent-requests?agentIdentity=agent-1&correlationID=corr-3", nil)
+	req = req.WithContext(withCallerSub(req.Context(), "reviewer-sub"))
+	w = httptest.NewRecorder()
+	s.handleListAgentRequests(w, req)
+	g.Expect(w.Code).To(gomega.Equal(http.StatusOK))
+	g.Expect(json.Unmarshal(w.Body.Bytes(), &items)).To(gomega.Succeed())
+	g.Expect(items).To(gomega.HaveLen(1))
+	g.Expect(items[0].Name).To(gomega.Equal("req-agent-1-3"))
+
 	// 3. Pagination: verify the response switches to the paged envelope format when
 	// ?limit= is present. The fake client does not enforce Limit, so item count is
 	// not asserted — only that the envelope is used and items is non-nil.

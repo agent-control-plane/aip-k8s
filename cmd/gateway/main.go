@@ -1373,11 +1373,15 @@ func (s *Server) handleListAgentRequests(w http.ResponseWriter, r *http.Request)
 	continueToken := r.URL.Query().Get("continue")
 
 	listOpts := []client.ListOption{client.InNamespace(ns)}
+	matchLabels := map[string]string{}
 	if agentID != "" {
-		listOpts = append(listOpts, client.MatchingLabels{"aip.io/agentIdentity": sanitizeLabelValue(agentID)})
+		matchLabels["aip.io/agentIdentity"] = sanitizeLabelValue(agentID)
 	}
 	if correlID != "" {
-		listOpts = append(listOpts, client.MatchingLabels{"aip.io/correlationID": sanitizeLabelValue(correlID)})
+		matchLabels["aip.io/correlationID"] = sanitizeLabelValue(correlID)
+	}
+	if len(matchLabels) > 0 {
+		listOpts = append(listOpts, client.MatchingLabels(matchLabels))
 	}
 	if limitStr != "" {
 		if limit, err := strconv.ParseInt(limitStr, 10, 64); err == nil {
@@ -1491,11 +1495,15 @@ func (s *Server) handleListAgentDiagnostics(w http.ResponseWriter, r *http.Reque
 	}
 
 	listOpts := []client.ListOption{client.InNamespace(ns)}
+	matchLabels := map[string]string{}
 	if agentID != "" {
-		listOpts = append(listOpts, client.MatchingLabels{"aip.io/agentIdentity": sanitizeLabelValue(agentID)})
+		matchLabels["aip.io/agentIdentity"] = sanitizeLabelValue(agentID)
 	}
 	if correlID != "" {
-		listOpts = append(listOpts, client.MatchingLabels{"aip.io/correlationID": sanitizeLabelValue(correlID)})
+		matchLabels["aip.io/correlationID"] = sanitizeLabelValue(correlID)
+	}
+	if len(matchLabels) > 0 {
+		listOpts = append(listOpts, client.MatchingLabels(matchLabels))
 	}
 	if limitStr != "" {
 		if limit, err := strconv.ParseInt(limitStr, 10, 64); err == nil {
