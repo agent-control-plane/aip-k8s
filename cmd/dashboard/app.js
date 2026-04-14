@@ -730,6 +730,7 @@ window.showTab = function(tabName) {
 
 window.loadDiagnostics = async function() {
     if (!getToken() && !state.proxyAuth) {
+        state.diagnosticsGen++; // Invalidate any in-flight requests
         state.diagnostics = [];
         state.diagnosticsJSON = '';
         renderDiagnostics();
@@ -1332,15 +1333,60 @@ window.copyToClipboard = function(evt, elementId) {
         evt.stopPropagation();
     }
     const text = document.getElementById(elementId).innerText;
-    navigator.clipboard.writeText(text).then(() => {
-        const btn = evt ? evt.target : null;
+    const btn = evt ? evt.target : null;
+
+    const onSuccess = () => {
         if (btn) {
             const oldText = btn.textContent;
             btn.textContent = 'Copied!';
             setTimeout(() => btn.textContent = oldText, 2000);
         }
-    });
+    };
+
+    const onFailure = (err) => {
+        console.error('Copy to clipboard failed:', err);
+        if (btn) {
+            const oldText = btn.textContent;
+            btn.textContent = 'Failed to copy';
+            btn.style.color = 'var(--error)';
+            setTimeout(() => {
+                btn.textContent = oldText;
+                btn.style.color = '';
+            }, 2000);
+        }
+    };
+
+    // Try modern API
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(onSuccess).catch(err => {
+            // If modern API fails (e.g. permission), try fallback
+            fallbackCopy(text) ? onSuccess() : onFailure(err);
+        });
+    } else {
+        // No modern API, use fallback
+        fallbackCopy(text) ? onSuccess() : onFailure(new Error('Clipboard API unavailable'));
+    }
 };
+
+function fallbackCopy(text) {
+    const textArea = document.createElement('textarea');
+    textArea.value = text;
+    // Ensure textarea is not visible but part of DOM
+    textArea.style.position = 'fixed';
+    textArea.style.left = '-9999px';
+    textArea.style.top = '0';
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    let successful = false;
+    try {
+        successful = document.execCommand('copy');
+    } catch (err) {
+        successful = false;
+    }
+    document.body.removeChild(textArea);
+    return successful;
+}
 
 // ── Bootstrap ────────────────────────────────────────────────────────────────
 
