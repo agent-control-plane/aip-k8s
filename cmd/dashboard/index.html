@@ -10,141 +10,160 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>AIP Visual Audit</h1>
-            <div style="display:flex;align-items:center;gap:0.75rem;flex:1;justify-content:flex-end;">
-                <div id="auth-banner" style="display:none;font-size:0.8rem;padding:0.3rem 0.75rem;border-radius:4px;border:1px solid;"></div>
-                <div id="identity-chip" style="display:none;font-size:0.78rem;color:var(--text-secondary);font-family:'JetBrains Mono',monospace;"></div>
-                <button id="token-btn" onclick="toggleTokenPanel()" style="font-size:0.8rem;padding:0.3rem 0.75rem;background:transparent;border:1px solid var(--border-color);border-radius:4px;color:var(--text-secondary);cursor:pointer;">Set Token</button>
-            </div>
-        </header>
-
-        <!-- Token input panel (hidden by default) -->
-        <div id="token-panel" style="display:none;padding:0.75rem 1rem;border-bottom:1px solid var(--border-color);background:rgba(255,255,255,0.02);">
-            <div style="display:flex;align-items:center;gap:0.5rem;max-width:900px;">
-                <label for="token-input" style="font-size:0.82rem;color:var(--text-secondary);white-space:nowrap;">Bearer token</label>
-                <input id="token-input" type="password" placeholder="Paste your JWT access token"
-                    autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
-                    style="flex:1;font-size:0.82rem;padding:0.35rem 0.6rem;background:var(--surface-color);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);font-family:'JetBrains Mono',monospace;"
-                    onkeydown="if(event.key==='Enter')applyToken()" />
-                <button onclick="applyToken()" style="font-size:0.82rem;padding:0.35rem 0.75rem;background:var(--accent-color);border:none;border-radius:4px;color:white;cursor:pointer;">Apply</button>
-                <button onclick="clearToken()" style="font-size:0.82rem;padding:0.35rem 0.75rem;background:transparent;border:1px solid var(--border-color);border-radius:4px;color:var(--text-secondary);cursor:pointer;">Clear</button>
-            </div>
-        </div>
-
-        <nav class="tab-bar">
-            <button id="tab-requests" class="tab-button active" onclick="showTab('requests')">Agent Requests</button>
-            <button id="tab-diagnostics" class="tab-button" onclick="showTab('diagnostics')">Diagnostics</button>
-            <button id="tab-governed-resources" class="tab-button admin-only" style="display:none" onclick="showTab('governed-resources')">Governed Resources</button>
-            <button id="tab-safety-policies" class="tab-button admin-only" style="display:none" onclick="showTab('safety-policies')">Safety Policies</button>
-        </nav>
-
-        <div id="requests-view">
-            <div class="dashboard-grid">
-                <aside class="card">
-                    <div class="card-header">
-                        <h3>Agent Requests</h3>
-                    </div>
-                    <div id="request-list" class="request-list">
-                        <div class="empty-state">Loading requests...</div>
-                    </div>
-                </aside>
-
-                <main class="card">
-                    <div id="details-view" class="details-view">
-                        <div class="empty-state">
-                            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path>
-                                <polyline points="14 2 14 8 20 8"></polyline>
-                                <line x1="16" y1="13" x2="8" y2="13"></line>
-                                <line x1="16" y1="17" x2="8" y2="17"></line>
-                                <line x1="10" y1="9" x2="8" y2="9"></line>
-                            </svg>
-                            <p>Select an AgentRequest to view details</p>
-                        </div>
-                    </div>
-                </main>
-            </div>
-        </div>
-
-        <div id="diagnostics-view" style="display:none">
-            <div style="display:flex;align-items:center;gap:0.5rem;padding:0.75rem 1rem;border-bottom:1px solid var(--border-color);">
-                <label for="ns-input" style="font-size:0.85rem;color:var(--text-secondary);white-space:nowrap;">Namespace</label>
-                <input id="ns-input" type="text" value="default"
-                    style="font-size:0.85rem;padding:0.3rem 0.6rem;background:var(--surface-color);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);width:160px;"
-                    onchange="loadDiagnostics()"
-                    onkeydown="if(event.key==='Enter')loadDiagnostics()" />
-            </div>
-            <div id="accuracy-chip-container" style="padding: 0 1rem; margin-bottom: 0.5rem; display: none;"></div>
-            <div class="diagnostics-table-container">
-                <table class="diagnostics-table">
-                    <thead>
-                        <tr>
-                            <th>Age</th>
-                            <th>Agent Identity</th>
-                            <th>Type</th>
-                            <th>Summary</th>
-                            <th>Details</th>
-                            <th id="th-diag-verdict" style="display:none">Verdict</th>
-                        </tr>
-                    </thead>
-                    <tbody id="diagnostics-list">
-                        <tr>
-                            <td colspan="5" style="text-align: center; padding: 2rem; color: var(--text-secondary);">
-                                Loading diagnostics...
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <!-- Governed Resources tab (admin only) -->
-        <div id="governed-resources-view" style="display:none">
-            <div style="display:flex;align-items:center;justify-content:space-between;padding:0.75rem 1rem;border-bottom:1px solid var(--border-color);">
-                <span style="font-size:0.9rem;font-weight:600;">Governed Resources</span>
-                <button onclick="openGRForm(null)" style="font-size:0.82rem;padding:0.35rem 0.75rem;background:var(--accent-color);border:none;border-radius:4px;color:white;cursor:pointer;">+ Create</button>
-            </div>
-            <div id="gr-form-container" style="display:none;padding:1rem;border-bottom:1px solid var(--border-color);background:rgba(255,255,255,0.02);"></div>
-            <div class="diagnostics-table-container">
-                <table class="diagnostics-table">
-                    <thead>
-                        <tr><th>Name</th><th>URI Pattern</th><th>Fetcher</th><th>Permitted Actions</th><th>Permitted Agents</th><th>Actions</th></tr>
-                    </thead>
-                    <tbody id="gr-list">
-                        <tr><td colspan="6" style="text-align:center;padding:2rem;color:var(--text-secondary);">Loading...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <!-- Safety Policies tab (admin only) -->
-        <div id="safety-policies-view" style="display:none">
-            <div style="display:flex;align-items:center;justify-content:space-between;padding:0.75rem 1rem;border-bottom:1px solid var(--border-color);">
-                <div style="display:flex;align-items:center;gap:0.5rem;">
-                    <span style="font-size:0.9rem;font-weight:600;">Safety Policies</span>
-                    <label for="sp-ns-input" style="font-size:0.82rem;color:var(--text-secondary);">Namespace</label>
-                    <input id="sp-ns-input" type="text" value="default"
-                        style="font-size:0.82rem;padding:0.3rem 0.6rem;background:var(--surface-color);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);width:130px;"
-                        onchange="loadSafetyPolicies()"
-                        onkeydown="if(event.key==='Enter')loadSafetyPolicies()" />
+    <div id="app-root">
+        <div class="container">
+            <header>
+                <h1>AIP Visual Audit</h1>
+                <div style="display:flex;align-items:center;gap:0.75rem;flex:1;justify-content:flex-end;">
+                    <div id="auth-banner" style="display:none;font-size:0.8rem;padding:0.3rem 0.75rem;border-radius:4px;border:1px solid;"></div>
+                    <div id="identity-chip" style="display:none;font-size:0.78rem;color:var(--text-secondary);font-family:'JetBrains Mono',monospace;"></div>
+                    <button id="token-btn" onclick="toggleTokenPanel()" style="font-size:0.8rem;padding:0.3rem 0.75rem;background:transparent;border:1px solid var(--border-color);border-radius:4px;color:var(--text-secondary);cursor:pointer;">Set Token</button>
                 </div>
-                <button onclick="openSPForm(null)" style="font-size:0.82rem;padding:0.35rem 0.75rem;background:var(--accent-color);border:none;border-radius:4px;color:white;cursor:pointer;">+ Create</button>
+            </header>
+
+            <!-- Token input panel (hidden by default) -->
+            <div id="token-panel" style="display:none;padding:0.75rem 1rem;border-bottom:1px solid var(--border-color);background:rgba(255,255,255,0.02);">
+                <div style="display:flex;align-items:center;gap:0.5rem;max-width:900px;">
+                    <label for="token-input" style="font-size:0.82rem;color:var(--text-secondary);white-space:nowrap;">Bearer token</label>
+                    <input id="token-input" type="password" placeholder="Paste your JWT access token"
+                        autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+                        style="flex:1;font-size:0.82rem;padding:0.35rem 0.6rem;background:var(--surface-color);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);font-family:'JetBrains Mono',monospace;"
+                        onkeydown="if(event.key==='Enter')applyToken()" />
+                    <button onclick="applyToken()" style="font-size:0.82rem;padding:0.35rem 0.75rem;background:var(--accent-color);border:none;border-radius:4px;color:white;cursor:pointer;">Apply</button>
+                    <button onclick="clearToken()" style="font-size:0.82rem;padding:0.35rem 0.75rem;background:transparent;border:1px solid var(--border-color);border-radius:4px;color:var(--text-secondary);cursor:pointer;">Clear</button>
+                </div>
             </div>
-            <div id="sp-form-container" style="display:none;padding:1rem;border-bottom:1px solid var(--border-color);background:rgba(255,255,255,0.02);"></div>
-            <div class="diagnostics-table-container">
-                <table class="diagnostics-table">
-                    <thead>
-                        <tr><th>Name</th><th>Namespace</th><th>Context Type</th><th>Rules</th><th>Actions</th></tr>
-                    </thead>
-                    <tbody id="sp-list">
-                        <tr><td colspan="5" style="text-align:center;padding:2rem;color:var(--text-secondary);">Loading...</td></tr>
-                    </tbody>
-                </table>
+
+            <nav class="tab-bar">
+                <button id="tab-requests" class="tab-button active" onclick="showTab('requests')">Agent Requests</button>
+                <button id="tab-diagnostics" class="tab-button" onclick="showTab('diagnostics')">Diagnostics</button>
+                <button id="tab-governed-resources" class="tab-button admin-only" style="display:none" onclick="showTab('governed-resources')">Governed Resources</button>
+                <button id="tab-safety-policies" class="tab-button admin-only" style="display:none" onclick="showTab('safety-policies')">Safety Policies</button>
+            </nav>
+
+            <div id="requests-view">
+                <div class="dashboard-grid">
+                    <aside class="card">
+                        <div class="card-header">
+                            <h3>Agent Requests</h3>
+                        </div>
+                        <div id="request-list" class="request-list">
+                            <div class="empty-state">Loading requests...</div>
+                        </div>
+                    </aside>
+
+                    <main class="card">
+                        <div id="details-view" class="details-view">
+                            <div class="empty-state">
+                                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path>
+                                    <polyline points="14 2 14 8 20 8"></polyline>
+                                    <line x1="16" y1="13" x2="8" y2="13"></line>
+                                    <line x1="16" y1="17" x2="8" y2="17"></line>
+                                    <line x1="10" y1="9" x2="8" y2="9"></line>
+                                </svg>
+                                <p>Select an AgentRequest to view details</p>
+                            </div>
+                        </div>
+                    </main>
+                </div>
+            </div>
+
+            <div id="diagnostics-view" style="display:none">
+                <div style="display:flex;align-items:center;gap:0.5rem;padding:0.75rem 1rem;border-bottom:1px solid var(--border-color);">
+                    <label for="ns-input" style="font-size:0.85rem;color:var(--text-secondary);white-space:nowrap;">Namespace</label>
+                    <input id="ns-input" type="text" value="default"
+                        style="font-size:0.85rem;padding:0.3rem 0.6rem;background:var(--surface-color);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);width:160px;"
+                        onchange="loadDiagnostics()"
+                        onkeydown="if(event.key==='Enter')loadDiagnostics()" />
+                </div>
+                <div id="accuracy-chip-container" style="padding: 0 1rem; margin-bottom: 0.5rem; display: none;"></div>
+                <div class="diagnostics-table-container">
+                    <table class="diagnostics-table">
+                        <thead>
+                            <tr>
+                                <th>Age</th>
+                                <th>Agent Identity</th>
+                                <th>Type</th>
+                                <th>Summary</th>
+                                <th>Details</th>
+                                <th id="th-diag-verdict" style="display:none">Verdict</th>
+                            </tr>
+                        </thead>
+                        <tbody id="diagnostics-list">
+                            <tr>
+                                <td colspan="5" style="text-align: center; padding: 2rem; color: var(--text-secondary);">
+                                    Loading diagnostics...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Governed Resources tab (admin only) -->
+            <div id="governed-resources-view" style="display:none">
+                <div style="display:flex;align-items:center;justify-content:space-between;padding:0.75rem 1rem;border-bottom:1px solid var(--border-color);">
+                    <span style="font-size:0.9rem;font-weight:600;">Governed Resources</span>
+                    <button onclick="openGRForm(null)" style="font-size:0.82rem;padding:0.35rem 0.75rem;background:var(--accent-color);border:none;border-radius:4px;color:white;cursor:pointer;">+ Create</button>
+                </div>
+                <div id="gr-form-container" style="display:none;padding:1rem;border-bottom:1px solid var(--border-color);background:rgba(255,255,255,0.02);"></div>
+                <div class="diagnostics-table-container">
+                    <table class="diagnostics-table">
+                        <thead>
+                            <tr><th>Name</th><th>URI Pattern</th><th>Fetcher</th><th>Permitted Actions</th><th>Permitted Agents</th><th>Actions</th></tr>
+                        </thead>
+                        <tbody id="gr-list">
+                            <tr><td colspan="6" style="text-align:center;padding:2rem;color:var(--text-secondary);">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Safety Policies tab (admin only) -->
+            <div id="safety-policies-view" style="display:none">
+                <div style="display:flex;align-items:center;justify-content:space-between;padding:0.75rem 1rem;border-bottom:1px solid var(--border-color);">
+                    <div style="display:flex;align-items:center;gap:0.5rem;">
+                        <span style="font-size:0.9rem;font-weight:600;">Safety Policies</span>
+                        <label for="sp-ns-input" style="font-size:0.82rem;color:var(--text-secondary);">Namespace</label>
+                        <input id="sp-ns-input" type="text" value="default"
+                            style="font-size:0.82rem;padding:0.3rem 0.6rem;background:var(--surface-color);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);width:130px;"
+                            onchange="loadSafetyPolicies()"
+                            onkeydown="if(event.key==='Enter')loadSafetyPolicies()" />
+                    </div>
+                    <button onclick="openSPForm(null)" style="font-size:0.82rem;padding:0.35rem 0.75rem;background:var(--accent-color);border:none;border-radius:4px;color:white;cursor:pointer;">+ Create</button>
+                </div>
+                <div id="sp-form-container" style="display:none;padding:1rem;border-bottom:1px solid var(--border-color);background:rgba(255,255,255,0.02);"></div>
+                <div class="diagnostics-table-container">
+                    <table class="diagnostics-table">
+                        <thead>
+                            <tr><th>Name</th><th>Namespace</th><th>Context Type</th><th>Rules</th><th>Actions</th></tr>
+                        </thead>
+                        <tbody id="sp-list">
+                            <tr><td colspan="5" style="text-align:center;padding:2rem;color:var(--text-secondary);">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
     </div>
+
+    <!-- Global Modal System -->
+    <div id="modal-overlay" class="modal-overlay" onclick="if(event.target===this)closeModal()" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-content" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h3 id="modal-title">Modal Title</h3>
+                <button class="close-btn" onclick="closeModal()" aria-label="Close">&times;</button>
+            </div>
+            <div id="modal-body" class="modal-body">
+                <!-- Content injected via JS -->
+            </div>
+            <div id="modal-footer" class="modal-footer">
+                <!-- Actions injected via JS -->
+            </div>
+        </div>
+    </div>
+
     <script src="app.js"></script>
 </body>
 </html>
