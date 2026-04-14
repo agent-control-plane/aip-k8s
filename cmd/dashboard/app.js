@@ -674,7 +674,7 @@ function renderDetails() {
                 ${needsApproval && isReviewer ? `
                     <div class="actions">
                         <button class="primary" data-name="${escapeHtml(name)}" data-endpoints="${!!req.status?.controlPlaneVerification?.hasActiveEndpoints}" onclick="promptApproval(this.dataset.name, this.dataset.endpoints === 'true')">Approve Override</button>
-                        <button class="danger" data-name="${escapeHtml(name)}" onclick="performAction(this.dataset.name, 'deny')">Deny</button>
+                        <button class="danger" data-name="${escapeHtml(name)}" onclick="confirmDenial(this.dataset.name)">Deny</button>
                     </div>
                 ` : needsApproval ? `
                     <div style="margin-top:1rem;font-size:0.82rem;color:var(--text-secondary);font-style:italic;">Awaiting reviewer approval.</div>
@@ -726,6 +726,7 @@ window.showTab = function(tabName) {
 };
 
 window.loadDiagnostics = async function() {
+    if (!getToken() && !state.proxyAuth) return;
     try {
         const ns = document.getElementById('ns-input')?.value.trim() || state.namespace;
         state.namespace = ns;
@@ -797,10 +798,6 @@ function renderDiagnostics() {
     const listEl = document.getElementById('diagnostics-list');
     if (!listEl) return;
 
-    // Don't clobber an open review form or details panel
-    const anyOpen = listEl.querySelector('[id^="review-"][style*="block"], [id^="details-"][style*="block"]');
-    if (anyOpen) return;
-
     const showVerdict = state.role === 'reviewer' || state.role === 'admin';
     const colCount = showVerdict ? 6 : 5;
     const verdictHeader = document.getElementById('th-diag-verdict');
@@ -820,12 +817,10 @@ function renderDiagnostics() {
 
     listEl.innerHTML = sorted.map(diag => {
         const age = formatAge(diag.metadata.creationTimestamp);
-        const detailsId = `details-${escapeHtml(diag.metadata.name)}`;
+        const name = diag.metadata.name;
         const verdict = diag.status?.verdict;
-        const reviewFormId = `review-${escapeHtml(diag.metadata.name)}`;
 
-        // Merge correlationID into the details object so it's visible in the
-        // expansion panel but doesn't take up a top-level table column.
+        // Merge correlationID into the details object for display
         const detailsObj = { ...(diag.spec.details || {}) };
         if (diag.spec.correlationID) detailsObj.correlationID = diag.spec.correlationID;
         const hasDetails = Object.keys(detailsObj).length > 0;
@@ -833,58 +828,38 @@ function renderDiagnostics() {
         let verdictCell = '';
         if (showVerdict) {
             let verdictBadge = '';
-            let reviewFormLabel = 'Review';
+            let gradeLabel = 'Grade';
             if (verdict) {
                 let vclass = 'badge-executing';
                 if (verdict === 'correct') vclass = 'badge-completed';
                 else if (verdict === 'incorrect') vclass = 'badge-failed';
                 else if (verdict === 'partial') vclass = 'badge-warning';
                 verdictBadge = `<span class="badge ${vclass}" style="margin-right:0.4rem;">${escapeHtml(verdict)}</span>`;
-                reviewFormLabel = 'Edit';
+                gradeLabel = 'Edit';
             }
 
-            const selectedCorrect = verdict === 'correct' ? ' selected' : '';
-            const selectedPartial = verdict === 'partial' ? ' selected' : '';
-            const selectedIncorrect = verdict === 'incorrect' ? ' selected' : '';
-            const submitDisabled = verdict ? '' : ' disabled';
-
-            verdictCell = `<td>
-                ${verdictBadge}<button class="details-btn" onclick="toggleDetails('${escapeHtml(reviewFormId)}')">${reviewFormLabel}</button>
-                <div id="${escapeHtml(reviewFormId)}" style="display:none;margin-top:0.5rem;padding:0.5rem;background:var(--surface-color);border:1px solid var(--border-color);border-radius:4px;">
-                    <select id="verdict-${escapeHtml(diag.metadata.name)}" aria-label="Review verdict for ${escapeHtml(diag.metadata.name)}" onchange="document.getElementById('submit-${escapeHtml(diag.metadata.name)}').disabled=!this.value" style="width:100%;margin-bottom:0.5rem;padding:0.4rem;background:rgba(255,255,255,0.05);border:1px solid var(--border-color);color:var(--text-primary);border-radius:3px;font-size:0.8rem;">
-                        ${verdict ? '' : '<option value="">— select verdict —</option>'}
-                        <option value="correct"${selectedCorrect}>correct</option>
-                        <option value="partial"${selectedPartial}>partial</option>
-                        <option value="incorrect"${selectedIncorrect}>incorrect</option>
-                    </select>
-                    <textarea id="note-${escapeHtml(diag.metadata.name)}" aria-label="Reviewer note for ${escapeHtml(diag.metadata.name)}" placeholder="Reviewer note (optional)" maxlength="512" style="width:100%;box-sizing:border-box;margin-bottom:0.5rem;padding:0.4rem;background:rgba(255,255,255,0.05);border:1px solid var(--border-color);color:var(--text-primary);border-radius:3px;font-size:0.8rem;resize:vertical;">${escapeHtml(diag.status?.reviewerNote || '')}</textarea>
-                    <button id="submit-${escapeHtml(diag.metadata.name)}" onclick="submitReview('${escapeHtml(diag.metadata.name)}')"${submitDisabled} style="padding:0.4rem 0.8rem;background:var(--accent-color);border:none;border-radius:3px;color:white;font-size:0.8rem;cursor:pointer;">Submit</button>
+            verdictCell = `<td class="action-cell">
+                <div style="display:flex;align-items:center;gap:0.4rem;">
+                    ${verdictBadge}
+                    <button class="details-btn" onclick="gradeDiagnostic('${escapeHtml(name)}')">${gradeLabel}</button>
                 </div>
             </td>`;
         }
 
+        // Summary column gets summary-cell class for better wrapping
         return `
             <tr>
                 <td style="white-space:nowrap;color:var(--text-secondary);">${age}</td>
                 <td><span class="chip">${escapeHtml(diag.spec.agentIdentity)}</span></td>
                 <td><span class="badge ${getDiagnosticTypeClass(diag.spec.diagnosticType)}">${escapeHtml(diag.spec.diagnosticType)}</span></td>
-                <td>${escapeHtml(diag.spec.summary)}</td>
-                <td>${hasDetails
-                    ? `<button class="details-btn" data-target="${escapeHtml(detailsId)}" onclick="toggleDetails(this.dataset.target)">View</button>
-                       <div id="${escapeHtml(detailsId)}" class="details-json" style="display:none"></div>`
+                <td class="summary-cell">${escapeHtml(diag.spec.summary)}</td>
+                <td class="action-cell">${hasDetails
+                    ? `<button class="details-btn" onclick="viewDiagnosticDetails('${escapeHtml(name)}')">View JSON</button>`
                     : '<span style="color:var(--text-secondary);font-size:0.8rem;">None</span>'
                 }</td>
                 ${verdictCell}
             </tr>`;
     }).join('');
-
-    sorted.forEach(diag => {
-        const el = document.getElementById(`details-${diag.metadata.name}`);
-        if (!el) return;
-        const detailsObj = { ...(diag.spec.details || {}) };
-        if (diag.spec.correlationID) detailsObj.correlationID = diag.spec.correlationID;
-        el.textContent = JSON.stringify(detailsObj, null, 2);
-    });
 }
 
 function getDiagnosticTypeClass(type) {
@@ -894,42 +869,6 @@ function getDiagnosticTypeClass(type) {
     if (t.includes('success') || t.includes('observation') || t.includes('diagnosis')) return 'badge-completed';
     return 'badge-executing';
 }
-
-window.submitReview = async function(name) {
-    const verdict = document.getElementById(`verdict-${name}`).value;
-    const note = document.getElementById(`note-${name}`).value.trim();
-    const ns = state.namespace;
-
-    try {
-        const response = await apiFetch(`/api/agent-diagnostics/${encodeURIComponent(name)}/status?namespace=${encodeURIComponent(ns)}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ verdict, reviewerNote: note })
-        });
-        if (!response.ok) {
-            const errText = await response.text();
-            alert('Failed to submit review: ' + errText);
-            return;
-        }
-        // Close the form before refreshing so renderDiagnostics isn't blocked
-        const form = document.getElementById(`review-${name}`);
-        if (form) form.style.display = 'none';
-        await loadDiagnostics();
-    } catch (e) {
-        alert('Failed to submit review: ' + e.message);
-    }
-};
-
-window.toggleDetails = function(id) {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.style.display = el.style.display === 'none' ? 'block' : 'none';
-    const btn = el.previousElementSibling;
-    if (btn) {
-        if (!btn.dataset.closedLabel) btn.dataset.closedLabel = btn.textContent;
-        btn.textContent = el.style.display === 'none' ? btn.dataset.closedLabel : 'Hide';
-    }
-};
 
 function formatAge(timestamp) {
     const diff = Math.floor((Date.now() - new Date(timestamp)) / 1000);
@@ -1188,6 +1127,155 @@ window.deleteSP = async function(name, ns) {
         const text = await resp.text();
         alert('Delete failed: ' + text);
     }
+};
+
+// ── Modals (P0) ──────────────────────────────────────────────────────────────
+
+window.openModal = function(title, bodyHtml, footerHtml = '') {
+    document.getElementById('modal-title').textContent = title;
+    document.getElementById('modal-body').innerHTML = bodyHtml;
+    document.getElementById('modal-footer').innerHTML = footerHtml;
+    document.getElementById('modal-overlay').style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+};
+
+window.closeModal = function() {
+    document.getElementById('modal-overlay').style.display = 'none';
+    document.body.style.overflow = '';
+};
+
+// Specialized modals
+
+window.viewDiagnosticDetails = function(name) {
+    const diag = state.diagnostics.find(d => d.metadata.name === name);
+    if (!diag) return;
+
+    // Include correlationID in the modal view (same as the inline panel did)
+    const detailsObj = { ...(diag.spec.details || {}) };
+    if (diag.spec.correlationID) detailsObj.correlationID = diag.spec.correlationID;
+    const json = JSON.stringify(detailsObj, null, 2);
+    const body = `
+        <div style="margin-bottom: 1rem; font-size: 0.9rem;">
+            <strong>Agent:</strong> <span class="chip">${escapeHtml(diag.spec.agentIdentity)}</span>
+            <span style="margin-left: 1rem;"><strong>Type:</strong> <span class="badge ${getDiagnosticTypeClass(diag.spec.diagnosticType)}">${escapeHtml(diag.spec.diagnosticType)}</span></span>
+        </div>
+        <div style="margin-bottom: 0.5rem; font-size: 0.85rem; color: var(--text-secondary);">Raw JSON Data:</div>
+        <pre class="details-json-modal" id="modal-json-content">${escapeHtml(json)}</pre>
+    `;
+
+    const footer = `
+        <button class="copy-btn" onclick="copyToClipboard('modal-json-content')">Copy to Clipboard</button>
+        <button onclick="closeModal()" style="padding: 0.5rem 1rem; background: transparent; border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-secondary); cursor: pointer;">Close</button>
+    `;
+
+    openModal('Diagnostic Details', body, footer);
+};
+
+window.gradeDiagnostic = function(name) {
+    const diag = state.diagnostics.find(d => d.metadata.name === name);
+    if (!diag) return;
+
+    const verdict = diag.status?.verdict || '';
+    const note = diag.status?.reviewerNote || '';
+
+    const body = `
+        <div style="margin-bottom: 1.5rem; padding: 1rem; background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); border-radius: 8px;">
+            <div style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 0.25rem;">Diagnostic Summary</div>
+            <div style="font-size: 1rem; color: var(--text-primary);">${escapeHtml(diag.spec.summary)}</div>
+        </div>
+
+        <div style="margin-bottom: 1rem;">
+            <label style="display: block; font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Verdict</label>
+            <select id="modal-verdict" style="width: 100%; padding: 0.6rem; background: var(--surface-color); border: 1px solid var(--border-color); color: var(--text-primary); border-radius: 4px;">
+                <option value="" ${!verdict ? 'selected' : ''}>— select verdict —</option>
+                <option value="correct" ${verdict === 'correct' ? 'selected' : ''}>Correct</option>
+                <option value="partial" ${verdict === 'partial' ? 'selected' : ''}>Partial</option>
+                <option value="incorrect" ${verdict === 'incorrect' ? 'selected' : ''}>Incorrect</option>
+            </select>
+        </div>
+
+        <div>
+            <label style="display: block; font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Reviewer Note (optional)</label>
+            <textarea id="modal-note" rows="4" maxlength="512" style="width: 100%; box-sizing: border-box; padding: 0.6rem; background: var(--surface-color); border: 1px solid var(--border-color); color: var(--text-primary); border-radius: 4px; resize: vertical;">${escapeHtml(note)}</textarea>
+        </div>
+    `;
+
+    const footer = `
+        <button onclick="closeModal()" style="padding: 0.5rem 1.25rem; background: transparent; border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-secondary); cursor: pointer;">Cancel</button>
+        <button onclick="submitModalReview('${escapeHtml(name)}')" style="padding: 0.5rem 1.25rem; background: var(--accent-color); border: none; border-radius: 4px; color: white; font-weight: 600; cursor: pointer;">Submit Grade</button>
+    `;
+
+    openModal('Grade Diagnostic', body, footer);
+};
+
+window.submitModalReview = async function(name) {
+    const verdict = document.getElementById('modal-verdict').value;
+    const note = document.getElementById('modal-note').value.trim();
+    if (!verdict) {
+        document.getElementById('modal-verdict').style.borderColor = 'var(--error)';
+        return;
+    }
+
+    closeModal();
+    const ns = state.namespace;
+    try {
+        const response = await apiFetch(`/api/agent-diagnostics/${encodeURIComponent(name)}/status?namespace=${encodeURIComponent(ns)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ verdict, reviewerNote: note })
+        });
+        if (!response.ok) {
+            const errText = await response.text();
+            alert('Failed to submit review: ' + errText);
+            return;
+        }
+        await loadDiagnostics();
+    } catch (e) {
+        alert('Failed to submit review: ' + e.message);
+    }
+};
+
+window.confirmDenial = function(name) {
+    const req = state.requests.find(r => r.metadata.name === name);
+    if (!req) return;
+
+    const body = `
+        <div style="margin-bottom: 1rem;">
+            <h3 style="color: var(--error); margin-bottom: 0.5rem;">Confirm Denial</h3>
+            <p style="font-size: 0.9rem; color: var(--text-secondary);">
+                You are about to deny the request from <strong>${escapeHtml(req.spec.agentIdentity)}</strong> to 
+                <strong>${escapeHtml(req.spec.action)}</strong> on <code>${escapeHtml(req.spec.target.uri)}</code>.
+            </p>
+        </div>
+        <label style="display: block; font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Reason for denial (optional)</label>
+        <textarea id="deny-reason" rows="3" placeholder="e.g., resources are currently at capacity"
+            style="width: 100%; box-sizing: border-box; padding: 0.6rem; background: var(--surface-color); border: 1px solid var(--border-color); color: var(--text-primary); border-radius: 4px; resize: vertical;"></textarea>
+    `;
+
+    const footer = `
+        <button onclick="closeModal()" style="padding: 0.5rem 1.25rem; background: transparent; border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-secondary); cursor: pointer;">Cancel</button>
+        <button onclick="submitDenial('${escapeHtml(name)}')" style="padding: 0.5rem 1.25rem; background: var(--error); border: none; border-radius: 4px; color: white; font-weight: 600; cursor: pointer;">Deny Request</button>
+    `;
+
+    openModal('Deny Agent Request', body, footer);
+};
+
+window.submitDenial = async function(name) {
+    const reason = document.getElementById('deny-reason').value.trim();
+    closeModal();
+    await performAction(name, 'deny', reason);
+};
+
+window.copyToClipboard = function(elementId) {
+    // Capture synchronously — window.event is not reliable inside async callbacks
+    // and is not supported in Firefox.
+    const btn = event.target;
+    const text = document.getElementById(elementId).innerText;
+    navigator.clipboard.writeText(text).then(() => {
+        const oldText = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = oldText, 2000);
+    });
 };
 
 // ── Bootstrap ────────────────────────────────────────────────────────────────

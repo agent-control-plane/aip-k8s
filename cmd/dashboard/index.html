@@ -145,6 +145,23 @@
             </div>
         </div>
     </div>
+
+    <!-- Global Modal System -->
+    <div id="modal-overlay" class="modal-overlay" onclick="if(event.target===this)closeModal()">
+        <div class="modal-content" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h3 id="modal-title">Modal Title</h3>
+                <button class="close-btn" onclick="closeModal()">&times;</button>
+            </div>
+            <div id="modal-body" class="modal-body">
+                <!-- Content injected via JS -->
+            </div>
+            <div id="modal-footer" class="modal-footer">
+                <!-- Actions injected via JS -->
+            </div>
+        </div>
+    </div>
+
     <script src="app.js"></script>
 </body>
 </html>

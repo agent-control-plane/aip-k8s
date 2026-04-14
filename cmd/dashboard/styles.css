@@ -1,6 +1,7 @@
 :root {
     --bg-color: #0d0f14;
     --card-bg: rgba(23, 27, 34, 0.7);
+    --surface-color: rgba(15, 18, 25, 0.9);
     --border-color: rgba(255, 255, 255, 0.1);
     --accent-color: #3b82f6;
     --accent-hover: #2563eb;
@@ -147,6 +148,102 @@ h1 {
     background: rgba(0, 0, 0, 0.2);
     border-radius: 0.75rem;
     padding: 1.5rem;
+}
+
+/* Modal System */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.8);
+    backdrop-filter: blur(4px);
+    z-index: 1000;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+}
+
+.modal-content {
+    background: var(--bg-color);
+    border: 1px solid var(--border-color);
+    border-radius: 1rem;
+    width: 100%;
+    max-width: 800px;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.4);
+}
+
+.modal-header {
+    padding: 1.5rem;
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.modal-body {
+    padding: 1.5rem;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.modal-footer {
+    padding: 1.25rem 1.5rem;
+    border-top: 1px solid var(--border-color);
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.close-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 1.5rem;
+    cursor: pointer;
+    line-height: 1;
+}
+
+.close-btn:hover { color: var(--text-primary); }
+
+.copy-btn {
+    font-size: 0.75rem;
+    padding: 0.25rem 0.5rem;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.copy-btn:hover { background: rgba(255, 255, 255, 0.1); color: var(--text-primary); }
+
+.details-json-modal {
+    margin: 0;
+    padding: 1rem;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 0.5rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: normal;
+    overflow-wrap: anywhere;
+    overflow-x: auto;
+    border: 1px solid var(--border-color);
+}
+
+.diagnostics-table td.summary-cell {
+    width: auto;
+    min-width: 200px;
+}
+
+.diagnostics-table td.action-cell {
+    width: 120px;
+    white-space: nowrap;
 }
 
 .panel-title {
