@@ -26,8 +26,41 @@ async function apiFetch(url, opts = {}) {
     const token = getToken();
     const headers = { ...(opts.headers || {}) };
     if (token) headers['Authorization'] = 'Bearer ' + token;
-    const resp = await fetch(url, { ...opts, headers });
-    if (resp.status === 401 || (state.proxyAuth && resp.redirected)) {
+
+    let resp;
+    try {
+        resp = await fetch(url, { ...opts, headers });
+    } catch (err) {
+        if (state.proxyAuth) {
+            // Cross-origin redirect from oauth2-proxy can cause fetch to throw.
+            // Apply the same reload cap used for 401/403 to avoid infinite loops.
+            const count = parseInt(sessionStorage.getItem('reload-count') || '0', 10);
+            if (count < 3) {
+                sessionStorage.setItem('reload-count', (count + 1).toString());
+                window.location.reload();
+            } else {
+                showBanner('Session expired. Authentication redirect failed.', 'error');
+            }
+            return new Response(JSON.stringify({ error: 'Session expired' }), {
+                status: 401,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
+        throw err;
+    }
+
+    // 401 always means unauthenticated. 403 from oauth2-proxy means session
+    // expired (AJAX calls get 403, not 302) — oauth2-proxy returns text/html
+    // (the login page); backend permission denials return application/json.
+    // Distinguish them by Content-Type so a real backend 403 shows a banner
+    // instead of incorrectly triggering a reload loop.
+    const is403ProxyExpiry = resp.status === 403 && state.proxyAuth &&
+        (resp.headers.get('content-type') || '').includes('text/html');
+    const isSessionExpiry = resp.status === 401 ||
+        is403ProxyExpiry ||
+        (state.proxyAuth && resp.redirected);
+
+    if (isSessionExpiry) {
         if (state.proxyAuth) {
             const count = parseInt(sessionStorage.getItem('reload-count') || '0', 10);
             if (count < 3) {
@@ -37,13 +70,15 @@ async function apiFetch(url, opts = {}) {
                 showBanner('Session expired. Authentication redirect failed.', 'error');
             }
             // Return a synthetic Response so callers can safely call .json()/.text()
-            return new Response(JSON.stringify({ error: 'Authentication redirect' }), {
+            return new Response(JSON.stringify({ error: 'Session expired' }), {
                 status: 401,
-                statusText: 'Authentication redirect',
+                statusText: 'Session expired',
                 headers: { 'Content-Type': 'application/json' },
             });
         }
         showBanner('Session expired — please re-enter your token.', 'error');
+    } else if (resp.status === 403) {
+        showBanner('Permission denied — check token or access rights.', 'error');
     } else if (state.proxyAuth) {
         sessionStorage.removeItem('reload-count');
     }
@@ -211,8 +246,13 @@ async function fetchRequests() {
 }
 
 async function fetchAuditRecords(name) {
+    // Clear immediately so the details pane doesn't show stale records from a
+    // previously selected request while the new fetch is in flight.
+    state.auditRecords = [];
+    renderDetails();
     try {
         const response = await apiFetch(`/api/audit-records?agentRequest=${encodeURIComponent(name)}`);
+        if (!response.ok) return;
         state.auditRecords = await response.json();
         renderDetails();
     } catch (err) {
@@ -761,9 +801,14 @@ function renderDiagnostics() {
     const anyOpen = listEl.querySelector('[id^="review-"][style*="block"], [id^="details-"][style*="block"]');
     if (anyOpen) return;
 
+    const showVerdict = state.role === 'reviewer' || state.role === 'admin';
+    const colCount = showVerdict ? 6 : 5;
+    const verdictHeader = document.getElementById('th-diag-verdict');
+    if (verdictHeader) verdictHeader.style.display = showVerdict ? '' : 'none';
+
     if (!state.diagnostics || state.diagnostics.length === 0) {
         listEl.innerHTML = `
-            <tr><td colspan="7" style="text-align:center;padding:3rem;color:var(--text-secondary);">
+            <tr><td colspan="${colCount}" style="text-align:center;padding:3rem;color:var(--text-secondary);">
                 No diagnostics found in namespace &ldquo;${escapeHtml(state.namespace)}&rdquo;
             </td></tr>`;
         return;
@@ -776,60 +821,69 @@ function renderDiagnostics() {
     listEl.innerHTML = sorted.map(diag => {
         const age = formatAge(diag.metadata.creationTimestamp);
         const detailsId = `details-${escapeHtml(diag.metadata.name)}`;
-        const hasDetails = diag.spec.details && Object.keys(diag.spec.details).length > 0;
         const verdict = diag.status?.verdict;
         const reviewFormId = `review-${escapeHtml(diag.metadata.name)}`;
 
-        let verdictBadge = '';
-        let reviewFormLabel = 'Review';
-        if (verdict) {
-            let vclass = 'badge-executing';
-            if (verdict === 'correct') vclass = 'badge-completed';
-            else if (verdict === 'incorrect') vclass = 'badge-failed';
-            else if (verdict === 'partial') vclass = 'badge-warning';
-            verdictBadge = `<span class="badge ${vclass}" style="margin-right:0.4rem;">${escapeHtml(verdict)}</span>`;
-            reviewFormLabel = 'Edit';
+        // Merge correlationID into the details object so it's visible in the
+        // expansion panel but doesn't take up a top-level table column.
+        const detailsObj = { ...(diag.spec.details || {}) };
+        if (diag.spec.correlationID) detailsObj.correlationID = diag.spec.correlationID;
+        const hasDetails = Object.keys(detailsObj).length > 0;
+
+        let verdictCell = '';
+        if (showVerdict) {
+            let verdictBadge = '';
+            let reviewFormLabel = 'Review';
+            if (verdict) {
+                let vclass = 'badge-executing';
+                if (verdict === 'correct') vclass = 'badge-completed';
+                else if (verdict === 'incorrect') vclass = 'badge-failed';
+                else if (verdict === 'partial') vclass = 'badge-warning';
+                verdictBadge = `<span class="badge ${vclass}" style="margin-right:0.4rem;">${escapeHtml(verdict)}</span>`;
+                reviewFormLabel = 'Edit';
+            }
+
+            const selectedCorrect = verdict === 'correct' ? ' selected' : '';
+            const selectedPartial = verdict === 'partial' ? ' selected' : '';
+            const selectedIncorrect = verdict === 'incorrect' ? ' selected' : '';
+            const submitDisabled = verdict ? '' : ' disabled';
+
+            verdictCell = `<td>
+                ${verdictBadge}<button class="details-btn" onclick="toggleDetails('${escapeHtml(reviewFormId)}')">${reviewFormLabel}</button>
+                <div id="${escapeHtml(reviewFormId)}" style="display:none;margin-top:0.5rem;padding:0.5rem;background:var(--surface-color);border:1px solid var(--border-color);border-radius:4px;">
+                    <select id="verdict-${escapeHtml(diag.metadata.name)}" aria-label="Review verdict for ${escapeHtml(diag.metadata.name)}" onchange="document.getElementById('submit-${escapeHtml(diag.metadata.name)}').disabled=!this.value" style="width:100%;margin-bottom:0.5rem;padding:0.4rem;background:rgba(255,255,255,0.05);border:1px solid var(--border-color);color:var(--text-primary);border-radius:3px;font-size:0.8rem;">
+                        ${verdict ? '' : '<option value="">— select verdict —</option>'}
+                        <option value="correct"${selectedCorrect}>correct</option>
+                        <option value="partial"${selectedPartial}>partial</option>
+                        <option value="incorrect"${selectedIncorrect}>incorrect</option>
+                    </select>
+                    <textarea id="note-${escapeHtml(diag.metadata.name)}" aria-label="Reviewer note for ${escapeHtml(diag.metadata.name)}" placeholder="Reviewer note (optional)" maxlength="512" style="width:100%;box-sizing:border-box;margin-bottom:0.5rem;padding:0.4rem;background:rgba(255,255,255,0.05);border:1px solid var(--border-color);color:var(--text-primary);border-radius:3px;font-size:0.8rem;resize:vertical;">${escapeHtml(diag.status?.reviewerNote || '')}</textarea>
+                    <button id="submit-${escapeHtml(diag.metadata.name)}" onclick="submitReview('${escapeHtml(diag.metadata.name)}')"${submitDisabled} style="padding:0.4rem 0.8rem;background:var(--accent-color);border:none;border-radius:3px;color:white;font-size:0.8rem;cursor:pointer;">Submit</button>
+                </div>
+            </td>`;
         }
-
-        const selectedCorrect = verdict === 'correct' ? ' selected' : '';
-        const selectedPartial = verdict === 'partial' ? ' selected' : '';
-        const selectedIncorrect = verdict === 'incorrect' ? ' selected' : '';
-        const submitDisabled = verdict ? '' : ' disabled';
-
-        const verdictContent = `
-            ${verdictBadge}<button class="details-btn" onclick="toggleDetails('${escapeHtml(reviewFormId)}')">${reviewFormLabel}</button>
-            <div id="${escapeHtml(reviewFormId)}" style="display:none;margin-top:0.5rem;padding:0.5rem;background:var(--surface-color);border:1px solid var(--border-color);border-radius:4px;">
-                <select id="verdict-${escapeHtml(diag.metadata.name)}" aria-label="Review verdict for ${escapeHtml(diag.metadata.name)}" onchange="document.getElementById('submit-${escapeHtml(diag.metadata.name)}').disabled=!this.value" style="width:100%;margin-bottom:0.5rem;padding:0.4rem;background:rgba(255,255,255,0.05);border:1px solid var(--border-color);color:var(--text-primary);border-radius:3px;font-size:0.8rem;">
-                    ${verdict ? '' : '<option value="">— select verdict —</option>'}
-                    <option value="correct"${selectedCorrect}>correct</option>
-                    <option value="partial"${selectedPartial}>partial</option>
-                    <option value="incorrect"${selectedIncorrect}>incorrect</option>
-                </select>
-                <textarea id="note-${escapeHtml(diag.metadata.name)}" aria-label="Reviewer note for ${escapeHtml(diag.metadata.name)}" placeholder="Reviewer note (optional)" maxlength="512" style="width:100%;box-sizing:border-box;margin-bottom:0.5rem;padding:0.4rem;background:rgba(255,255,255,0.05);border:1px solid var(--border-color);color:var(--text-primary);border-radius:3px;font-size:0.8rem;resize:vertical;">${escapeHtml(diag.status?.reviewerNote || '')}</textarea>
-                <button id="submit-${escapeHtml(diag.metadata.name)}" onclick="submitReview('${escapeHtml(diag.metadata.name)}')"${submitDisabled} style="padding:0.4rem 0.8rem;background:var(--accent-color);border:none;border-radius:3px;color:white;font-size:0.8rem;cursor:pointer;">Submit</button>
-            </div>
-        `;
 
         return `
             <tr>
                 <td style="white-space:nowrap;color:var(--text-secondary);">${age}</td>
                 <td><span class="chip">${escapeHtml(diag.spec.agentIdentity)}</span></td>
                 <td><span class="badge ${getDiagnosticTypeClass(diag.spec.diagnosticType)}">${escapeHtml(diag.spec.diagnosticType)}</span></td>
-                <td><span class="chip">${escapeHtml(diag.spec.correlationID)}</span></td>
                 <td>${escapeHtml(diag.spec.summary)}</td>
                 <td>${hasDetails
                     ? `<button class="details-btn" data-target="${escapeHtml(detailsId)}" onclick="toggleDetails(this.dataset.target)">View</button>
                        <div id="${escapeHtml(detailsId)}" class="details-json" style="display:none"></div>`
                     : '<span style="color:var(--text-secondary);font-size:0.8rem;">None</span>'
                 }</td>
-                <td>${verdictContent}</td>
+                ${verdictCell}
             </tr>`;
     }).join('');
 
     sorted.forEach(diag => {
-        if (!diag.spec.details || Object.keys(diag.spec.details).length === 0) return;
         const el = document.getElementById(`details-${diag.metadata.name}`);
-        if (el) el.textContent = JSON.stringify(diag.spec.details, null, 2);
+        if (!el) return;
+        const detailsObj = { ...(diag.spec.details || {}) };
+        if (diag.spec.correlationID) detailsObj.correlationID = diag.spec.correlationID;
+        el.textContent = JSON.stringify(detailsObj, null, 2);
     });
 }
 

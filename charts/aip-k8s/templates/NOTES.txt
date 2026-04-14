@@ -1,0 +1,48 @@
+AIP Kubernetes Control Plane has been installed.
+
+  Release:   {{ .Release.Name }}
+  Namespace: {{ .Release.Namespace }}
+  Version:   {{ .Chart.Version }}
+
+Verify all pods are running:
+
+  kubectl get pods -n {{ .Release.Namespace }}
+
+Access the gateway and dashboard:
+
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ .Release.Name }}-gateway 8080:8080 &
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ .Release.Name }}-dashboard 8082:8082 &
+
+  curl http://localhost:8080/healthz   # → ok
+  curl http://localhost:8082/healthz   # → ok
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IMPORTANT — CRD upgrades require a manual step
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Helm installs CRDs automatically on the first `helm install`. On subsequent
+`helm upgrade` runs, Helm does NOT update CRDs (standard Helm behaviour for
+the crds/ directory). Before every upgrade, apply the CRDs manually.
+
+If you have the chart source checked out at tag v{{ .Chart.Version }}:
+
+  kubectl apply --server-side --force-conflicts -f charts/aip-k8s/crds/
+
+If you are upgrading without a local checkout, use the matching release tag:
+
+  TAG=v{{ .Chart.Version }}
+  BASE=https://raw.githubusercontent.com/ravisantoshgudimetla/aip-k8s/refs/tags/${TAG}/charts/aip-k8s/crds
+  kubectl apply --server-side --force-conflicts \
+    -f ${BASE}/governance.aip.io_agentrequests.yaml \
+    -f ${BASE}/governance.aip.io_agentdiagnostics.yaml \
+    -f ${BASE}/governance.aip.io_auditrecords.yaml \
+    -f ${BASE}/governance.aip.io_safetypolicies.yaml \
+    -f ${BASE}/governance.aip.io_governedresources.yaml \
+    -f ${BASE}/governance.aip.io_diagnosticaccuracysummaries.yaml
+
+Then upgrade the chart:
+
+  helm upgrade {{ .Release.Name }} oci://ghcr.io/ravisantoshgudimetla/aip-k8s/charts/aip-k8s \
+    --namespace {{ .Release.Namespace }} --reuse-values
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

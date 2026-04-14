@@ -79,6 +79,28 @@ make chart-e2e CHART_IMAGE_TAG=sha-<short-sha>
 The chart specs in `test/e2e/helm_test.go` skip automatically when `GATEWAY_URL` is not
 set, so they are never run during `make test-e2e`.
 
+## CRD changes and the Helm chart
+
+When you add or modify fields in `api/v1alpha1/`, run:
+
+```bash
+make manifests        # regenerates config/crd/bases/ and RBAC from markers
+make generate         # regenerates DeepCopy methods (zz_generated.deepcopy.go)
+make sync-helm-crds   # copies updated CRDs into charts/aip-k8s/crds/
+make helm-crds-check  # verify they match (also runs in CI)
+```
+
+`make generate` must follow `make manifests` — missing it leaves `zz_generated.deepcopy.go`
+stale, which causes subtle runtime bugs or build failures on the next PR.
+
+**Why the manual sync?** Helm's `crds/` directory is only applied on `helm install`,
+not on `helm upgrade`. This is standard Helm behaviour adopted by cert-manager,
+prometheus-operator, and others. Operators must run `kubectl apply --server-side`
+before every upgrade — see [Upgrading](README.md#upgrading) in the README.
+
+Never edit files under `charts/aip-k8s/crds/` by hand — they are generated outputs.
+Always go through `make manifests && make sync-helm-crds`.
+
 ## Helm chart publishing
 
 The Helm chart is published to `ghcr.io` as an OCI artifact automatically after every

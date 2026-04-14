@@ -64,7 +64,9 @@ helm install aip-k8s \
   --create-namespace
 ```
 
-This single command installs CRDs, the governance controller, the gateway (port 8080), and the dashboard (port 8082). No separate `kubectl apply` for CRDs is needed — Helm hooks handle install and upgrade automatically.
+This single command installs CRDs, the governance controller, the gateway (port 8080), and the dashboard (port 8082).
+
+> **Upgrading an existing installation?** See [Upgrading](#upgrading) below — CRDs require a manual step before every `helm upgrade`.
 
 **Verify the installation:**
 
@@ -85,6 +87,51 @@ kubectl port-forward -n aip-k8s-system svc/aip-k8s-dashboard 8082:8082 &
 curl http://localhost:8080/healthz   # → ok
 curl http://localhost:8082/healthz   # → ok
 ```
+
+### Upgrading
+
+Helm does not update CRDs on `helm upgrade` (standard Helm behaviour — the `crds/` directory is only processed on first install). Before every upgrade, apply the latest CRD schemas first, then upgrade the chart.
+
+**If you have the chart source checked out at the target tag:**
+
+```sh
+# Step 1 — update CRD schemas from local checkout
+kubectl apply --server-side --force-conflicts -f charts/aip-k8s/crds/
+
+# Step 2 — upgrade the chart
+helm upgrade aip-k8s \
+  oci://ghcr.io/ravisantoshgudimetla/aip-k8s/charts/aip-k8s \
+  --namespace aip-k8s-system \
+  --reuse-values
+```
+
+Or use the Makefile shortcut which does both steps in order:
+
+```sh
+make helm-upgrade
+# Override release name/namespace if needed:
+# make helm-upgrade HELM_RELEASE_NAME=aip HELM_NAMESPACE=aip-system
+```
+
+**If you are upgrading without a local checkout (OCI-only):**
+
+```sh
+TAG=v0.1.0   # replace with the target chart version
+BASE=https://raw.githubusercontent.com/ravisantoshgudimetla/aip-k8s/refs/tags/${TAG}/charts/aip-k8s/crds
+kubectl apply --server-side --force-conflicts \
+  -f ${BASE}/governance.aip.io_agentrequests.yaml \
+  -f ${BASE}/governance.aip.io_agentdiagnostics.yaml \
+  -f ${BASE}/governance.aip.io_auditrecords.yaml \
+  -f ${BASE}/governance.aip.io_safetypolicies.yaml \
+  -f ${BASE}/governance.aip.io_governedresources.yaml \
+  -f ${BASE}/governance.aip.io_diagnosticaccuracysummaries.yaml
+helm upgrade aip-k8s \
+  oci://ghcr.io/ravisantoshgudimetla/aip-k8s/charts/aip-k8s \
+  --namespace aip-k8s-system \
+  --reuse-values
+```
+
+> Skipping the CRD step means the controller gets new code but the old schema — new fields will fail validation or be silently dropped.
 
 ### Prerequisites (for local development)
 - `go` version v1.24.0+

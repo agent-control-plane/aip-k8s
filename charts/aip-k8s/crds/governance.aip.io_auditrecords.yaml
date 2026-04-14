@@ -4,34 +4,37 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-    helm.sh/resource-policy: keep
-    "helm.sh/hook": pre-install,pre-upgrade
-    "helm.sh/hook-weight": "-5"
-  name: safetypolicies.governance.aip.io
+  name: auditrecords.governance.aip.io
 spec:
   group: governance.aip.io
   names:
-    kind: SafetyPolicy
-    listKind: SafetyPolicyList
-    plural: safetypolicies
-    singular: safetypolicy
+    kind: AuditRecord
+    listKind: AuditRecordList
+    plural: auditrecords
+    singular: auditrecord
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.failureMode
-      name: FailureMode
+    - jsonPath: .spec.event
+      name: Event
       type: string
-    - jsonPath: .spec.rules[*].name
-      name: Rules
+    - jsonPath: .spec.agentIdentity
+      name: Agent
+      type: string
+    - jsonPath: .spec.action
+      name: Action
+      type: string
+    - jsonPath: .spec.targetURI
+      name: Target
       priority: 1
-      type: integer
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: SafetyPolicy is the Schema for the safetypolicies API
+        description: AuditRecord is the Schema for the auditrecords API
         properties:
           apiVersion:
             description: |-
@@ -51,107 +54,108 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of SafetyPolicy
+            description: spec defines the desired state of AuditRecord
             properties:
-              contextType:
-                description: |-
-                  ContextType binds CEL rules that reference context.* fields to a specific
-                  context fetcher type. Must match a GovernedResource.spec.contextFetcher value.
-                  Empty means no context-aware rules are permitted in this policy.
+              action:
+                description: AgentRequest snapshot at the time of the event
+                minLength: 1
                 type: string
-              failureMode:
-                default: FailClosed
-                enum:
-                - FailClosed
-                - FailOpen
+              agentIdentity:
+                minLength: 1
                 type: string
-              governedResourceSelector:
-                description: |-
-                  GovernedResourceSelector selects which GovernedResources this policy applies to.
-                  An empty selector matches all GovernedResources in scope.
-                properties:
-                  matchExpressions:
-                    description: matchExpressions is a list of label selector requirements.
-                      The requirements are ANDed.
-                    items:
-                      description: |-
-                        A label selector requirement is a selector that contains values, a key, and an operator that
-                        relates the key and values.
-                      properties:
-                        key:
-                          description: key is the label key that the selector applies
-                            to.
-                          type: string
-                        operator:
-                          description: |-
-                            operator represents a key's relationship to a set of values.
-                            Valid operators are In, NotIn, Exists and DoesNotExist.
-                          type: string
-                        values:
-                          description: |-
-                            values is an array of string values. If the operator is In or NotIn,
-                            the values array must be non-empty. If the operator is Exists or DoesNotExist,
-                            the values array must be empty. This array is replaced during a strategic
-                            merge patch.
-                          items:
-                            type: string
-                          type: array
-                          x-kubernetes-list-type: atomic
-                      required:
-                      - key
-                      - operator
-                      type: object
-                    type: array
-                    x-kubernetes-list-type: atomic
-                  matchLabels:
-                    additionalProperties:
-                      type: string
-                    description: |-
-                      matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
-                      map is equivalent to an element of matchExpressions, whose key field is "key", the
-                      operator is "In", and the values array contains only "value". The requirements are ANDed.
-                    type: object
+              agentRequestRef:
+                minLength: 1
+                type: string
+              annotations:
+                additionalProperties:
+                  type: string
+                description: Extensible metadata (e.g., CASCADE_MISMATCH details)
                 type: object
-                x-kubernetes-map-type: atomic
-              rules:
+              details:
+                description: Event-specific details (e.g., denial reason, heartbeat
+                  data)
+                x-kubernetes-preserve-unknown-fields: true
+              event:
+                description: Event classification
+                enum:
+                - request.submitted
+                - request.approved
+                - request.denied
+                - request.executing
+                - request.completed
+                - request.failed
+                - request.revoked
+                - lock.acquired
+                - lock.released
+                - lock.expired
+                - policy.evaluated
+                - cascade.mismatch
+                - heartbeat.timeout
+                - state.drifted
+                - state.drifted.verify
+                type: string
+              lockStatus:
+                description: Lock state at the time of the event
+                properties:
+                  event:
+                    type: string
+                  leaseName:
+                    type: string
+                  targetURI:
+                    type: string
+                required:
+                - event
+                - leaseName
+                - targetURI
+                type: object
+              phaseTransition:
+                description: Transition details
+                properties:
+                  from:
+                    type: string
+                  to:
+                    type: string
+                required:
+                - from
+                - to
+                type: object
+              policyEvaluations:
+                description: Policy evaluation outcomes
                 items:
                   properties:
-                    action:
-                      enum:
-                      - Allow
-                      - Deny
-                      - Log
-                      - RequireApproval
+                    policyName:
                       type: string
-                    config:
-                      x-kubernetes-preserve-unknown-fields: true
-                    expression:
-                      minLength: 1
+                    reason:
                       type: string
-                    message:
+                    result:
                       type: string
-                    name:
-                      minLength: 1
-                      type: string
-                    type:
-                      enum:
-                      - StateEvaluation
-                      - TimeWindow
-                      - RateLimit
+                    ruleName:
                       type: string
                   required:
-                  - action
-                  - expression
-                  - name
-                  - type
+                  - policyName
+                  - result
+                  - ruleName
                   type: object
-                minItems: 1
                 type: array
+              reason:
+                type: string
+              targetURI:
+                minLength: 1
+                type: string
+              timestamp:
+                format: date-time
+                type: string
             required:
-            - rules
+            - action
+            - agentIdentity
+            - agentRequestRef
+            - event
+            - reason
+            - targetURI
+            - timestamp
             type: object
           status:
-            description: status defines the observed state of SafetyPolicy
+            description: status defines the observed state of AuditRecord
             properties:
               conditions:
                 items:

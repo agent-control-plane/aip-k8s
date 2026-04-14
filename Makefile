@@ -110,6 +110,16 @@ helm-crds-check: ## Verify Helm chart CRDs match config/crd/bases/ (run after ma
 sync-helm-crds: ## Sync Helm chart CRDs from config/crd/bases/ (run after make manifests)
 	@scripts/sync-helm-crds.sh
 
+.PHONY: helm-crds-upgrade
+helm-crds-upgrade: ## Apply CRD schema updates to an existing cluster (required before helm upgrade)
+	"$(KUBECTL)" apply --server-side --force-conflicts -f charts/aip-k8s/crds/
+
+.PHONY: helm-upgrade
+helm-upgrade: helm-crds-upgrade ## Upgrade the Helm release (applies CRDs first, then upgrades the chart)
+	helm upgrade $(HELM_RELEASE_NAME) $(HELM_CHART) \
+	  --namespace $(HELM_NAMESPACE) \
+	  --reuse-values
+
 ##@ Build
 
 .PHONY: build
@@ -328,6 +338,12 @@ local-clean: ## Delete all AIP objects from the cluster (AgentRequests, AuditRec
 	@bash demo/cleanup.sh
 
 ##@ Chart E2E
+
+# Production Helm release defaults — override on the command line:
+#   make helm-upgrade HELM_RELEASE_NAME=aip HELM_NAMESPACE=aip-system
+HELM_RELEASE_NAME   ?= aip-k8s
+HELM_CHART          ?= oci://ghcr.io/ravisantoshgudimetla/aip-k8s/charts/aip-k8s
+HELM_NAMESPACE      ?= aip-k8s-system
 
 IMAGE_REPO          ?= ghcr.io/ravisantoshgudimetla/aip-k8s
 CHART_IMAGE_TAG     ?= local

@@ -324,7 +324,9 @@ button.danger:hover {
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.75rem;
     color: var(--text-secondary);
-    white-space: pre;
+    white-space: pre-wrap;
+    word-break: normal;
+    overflow-wrap: anywhere;
     overflow-x: auto;
 }
 
