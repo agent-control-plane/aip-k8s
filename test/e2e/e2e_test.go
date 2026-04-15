@@ -692,7 +692,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(out).NotTo(ContainSubstring("--gc-health-probe-bind-address"))
 		})
 
-		It("should verify the GC health probe is serving on the main health port", func() {
+		It("should verify the GC health check is registered and /healthz responds ok", func() {
 			By("ensuring the controller pod name is known")
 			if controllerPodName == "" {
 				// Try to fetch it if it wasn't set by previous tests
@@ -706,11 +706,10 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(controllerPodName).NotTo(BeEmpty())
 
 			By("creating a temporary curl pod to verify GC health probe")
-			// GC health is served at /healthz/gc-healthz on port 8081 (same port as main health).
-			// The manager image is distroless so we use a separate curl pod.
-			// The pod is deleted unconditionally via DeferCleanup to ensure no leaked resources
-			// regardless of test outcome, and explicitly before each create to avoid
-			// "already exists" on retry.
+			// The GC health check is registered with AddHealthzCheck("gc-healthz", ...) and is
+			// exercised at /healthz (the root path that the kubelet liveness probe also uses —
+			// all registered checks run there). The manager image is distroless so we use a
+			// separate curl pod. The pod is deleted unconditionally via DeferCleanup.
 			const curlPodName = "curl-gc-test"
 			DeferCleanup(func() {
 				cmd := exec.Command("kubectl", "delete", "pod", curlPodName, "-n", namespace, "--ignore-not-found")
@@ -728,14 +727,15 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(podIP).NotTo(BeEmpty())
 			}, 30*time.Second, 2*time.Second).Should(Succeed())
 
-			By("running curl pod and verifying gc-healthz responds ok")
+			By("running curl pod and verifying /healthz (includes gc-healthz) responds ok")
 			// Delete any leftover pod from a previous attempt before creating.
 			_, _ = utils.Run(exec.Command("kubectl", "delete", "pod", curlPodName, "-n", namespace, "--ignore-not-found", "--wait=true"))
 
-			// Retry loop: the health endpoint may not be reachable immediately
-			// (e.g. if the controller just restarted). The pod keeps retrying
-			// until curl succeeds, then prints "ok" and exits cleanly.
-			curlCmd := fmt.Sprintf("until curl -sf http://%s:8081/healthz/gc-healthz; do sleep 1; done; echo ok", podIP)
+			// Use /healthz (the root path, same as the liveness probe). All registered checks —
+			// including gc-healthz — are evaluated there and guaranteed to be served.
+			// -o /dev/null discards the response body ("ok") so only the echo below produces
+			// output; without this, the body + echo combine to "okok", breaking Equal("ok").
+			curlCmd := fmt.Sprintf("until curl -sf -o /dev/null http://%s:8081/healthz; do sleep 1; done; echo ok", podIP)
 			_, err := utils.Run(exec.Command("kubectl", "run", curlPodName, "--restart=Never",
 				"--namespace", namespace,
 				"--image=curlimages/curl:latest",
@@ -762,8 +762,6 @@ var _ = Describe("Manager", Ordered, func() {
 				}`, curlCmd)))
 			Expect(err).NotTo(HaveOccurred())
 
-			// 90s: image pull on a cold Kind node (curlimages/curl:latest not pre-loaded)
-			// can take 30-60s in CI before the container even starts.
 			Eventually(func(g Gomega) {
 				logCmd := exec.Command("kubectl", "logs", curlPodName, "-n", namespace)
 				logs, err := utils.Run(logCmd)
