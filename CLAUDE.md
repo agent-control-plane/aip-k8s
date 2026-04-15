@@ -116,9 +116,8 @@ test/e2e/            — Ginkgo e2e test suite
 7. **Named-only cleanup in e2e AfterAll.** See e2e test cleanup section above.
 8. **e2e tests must pass in both Kustomize and Helm modes.** The chart-e2e workflow runs
    the full suite with `HELM_DEPLOYED=true`. Every new e2e test must:
-   - Use `controllerDeploymentName` / `serviceAccountName` vars (not hardcoded strings)
-     because Helm names resources `aip-k8s-<component>` while Kustomize uses
-     `aip-k8s-controller-manager`.
+   - Use the `serviceAccountName` / `controllerDeploymentName` constants — both are
+     `"aip-k8s-controller"`, which is the unified name for both Kustomize and Helm.
    - Ensure any feature flag tested (e.g. `--gc-enabled=true`) is also set in the
      `helm upgrade --install` command in `.github/workflows/chart-e2e.yml`.
    - Either work correctly with `HELM_DEPLOYED=true` or be explicitly skipped with

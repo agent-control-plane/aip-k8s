@@ -10,7 +10,7 @@ metadata:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: controller-manager
+  name: controller
   namespace: system
   labels:
     control-plane: controller-manager
@@ -95,5 +95,5 @@ spec:
             memory: 64Mi
         volumeMounts: []
       volumes: []
-      serviceAccountName: controller-manager
+      serviceAccountName: controller
       terminationGracePeriodSeconds: 10

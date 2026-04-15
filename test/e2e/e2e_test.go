@@ -42,20 +42,14 @@ import (
 // namespace where the project is deployed in
 const namespace = "aip-k8s-system"
 
-// serviceAccountName created for the project.
-// Kustomize default: aip-k8s-controller-manager
-// Helm (release "aip-k8s"): aip-k8s-controller
-// Set in BeforeAll based on HELM_DEPLOYED.
-var serviceAccountName = "aip-k8s-controller-manager"
+// serviceAccountName created for the project
+const serviceAccountName = "aip-k8s-controller"
 
-// controllerDeploymentName is the Deployment name for the controller.
-// Kustomize default: aip-k8s-controller-manager
-// Helm (release "aip-k8s"): aip-k8s-controller
-// Set in BeforeAll based on HELM_DEPLOYED.
-var controllerDeploymentName = "aip-k8s-controller-manager"
+// controllerDeploymentName is the Deployment name for the controller
+const controllerDeploymentName = "aip-k8s-controller"
 
 // metricsServiceName is the name of the metrics service of the project
-const metricsServiceName = "aip-k8s-controller-manager-metrics-service"
+const metricsServiceName = "aip-k8s-controller-metrics-service"
 
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "aip-k8s-metrics-binding"
@@ -67,13 +61,6 @@ var _ = Describe("Manager", Ordered, func() {
 	// enforce the restricted security policy to the namespace, installing CRDs,
 	// and deploying the controller.
 	BeforeAll(func() {
-		if os.Getenv("HELM_DEPLOYED") == "true" {
-			// Helm release name is "aip-k8s"; fullname template produces "aip-k8s"
-			// (release name contains chart name), so resources are named "aip-k8s-<component>".
-			serviceAccountName = "aip-k8s-controller"
-			controllerDeploymentName = "aip-k8s-controller"
-		}
-
 		By("creating manager namespace")
 		// Use apply instead of create so this is idempotent: if Phase 6 BeforeAll
 		// ran first (Ginkgo randomises top-level Describe order) it will have
@@ -179,10 +166,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 	Context("Manager", func() {
 		It("should run successfully", func() {
-			if os.Getenv("HELM_DEPLOYED") == "true" {
-				Skip("Manager check is specific to Kustomize naming/labels — skipping in Helm mode")
-			}
-			By("validating that the controller-manager pod is running as expected")
+			By("validating that the controller pod is running as expected")
 			verifyControllerUp := func(g Gomega) {
 				// Get the name of the controller-manager pod
 				cmd := exec.Command("kubectl", "get",
@@ -199,7 +183,7 @@ var _ = Describe("Manager", Ordered, func() {
 				podNames := utils.GetNonEmptyLines(podOutput)
 				g.Expect(podNames).To(HaveLen(1), "expected 1 controller pod running")
 				controllerPodName = podNames[0]
-				g.Expect(controllerPodName).To(ContainSubstring("controller-manager"))
+				g.Expect(controllerPodName).To(ContainSubstring("aip-k8s-controller"))
 
 				// Validate the pod's status
 				cmd = exec.Command("kubectl", "get",

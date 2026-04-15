@@ -5,7 +5,7 @@ metadata:
     control-plane: controller-manager
     app.kubernetes.io/name: aip-k8s
     app.kubernetes.io/managed-by: kustomize
-  name: controller-manager-metrics-service
+  name: controller-metrics-service
   namespace: system
 spec:
   ports:

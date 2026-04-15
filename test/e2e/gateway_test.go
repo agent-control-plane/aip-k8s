@@ -76,18 +76,17 @@ var _ = Describe("Phase 6: Gateway API", Ordered, func() {
 		// calling make deploy again would re-create the aip-k8s-system namespace
 		// and conflict with Manager's own kubectl create ns. In the chart-e2e
 		// workflow the images are loaded under ghcr.io tags, not managerImage, so
-		// make deploy would pull a non-existent image and fail.
-		// When HELM_DEPLOYED=true the chart already deployed the controller under a
-		// different deployment name (aip-k8s-controller); skip make deploy entirely.
-		By("ensuring controller-manager is deployed (skips if already running)")
+		// make deploy would pull a non-existent image and fail. Skip make deploy
+		// when HELM_DEPLOYED=true (chart already deployed the controller).
+		By("ensuring controller is deployed (skips if already running)")
 		if os.Getenv("HELM_DEPLOYED") != "true" {
 			checkCmd := exec.Command("kubectl", "get", "deployment",
-				"aip-k8s-controller-manager", "-n", "aip-k8s-system")
+				"aip-k8s-controller", "-n", "aip-k8s-system")
 			if _, checkErr := utils.Run(checkCmd); checkErr != nil {
 				cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
 				cmd.Dir = projDir
 				out, err = cmd.CombinedOutput()
-				Expect(err).NotTo(HaveOccurred(), "failed to deploy controller-manager: %s", string(out))
+				Expect(err).NotTo(HaveOccurred(), "failed to deploy controller: %s", string(out))
 			}
 		} else {
 			By("skipping make deploy; HELM_DEPLOYED=true")
