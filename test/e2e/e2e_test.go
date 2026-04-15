@@ -692,7 +692,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(out).NotTo(ContainSubstring("--gc-health-probe-bind-address"))
 		})
 
-		It("should verify the GC health check is registered and /healthz responds ok", func() {
+		It("should verify the gc-healthz check is registered at /healthz/gc-healthz", func() {
 			By("ensuring the controller pod name is known")
 			if controllerPodName == "" {
 				// Try to fetch it if it wasn't set by previous tests
@@ -706,10 +706,12 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(controllerPodName).NotTo(BeEmpty())
 
 			By("creating a temporary curl pod to verify GC health probe")
-			// The GC health check is registered with AddHealthzCheck("gc-healthz", ...) and is
-			// exercised at /healthz (the root path that the kubelet liveness probe also uses —
-			// all registered checks run there). The manager image is distroless so we use a
-			// separate curl pod. The pod is deleted unconditionally via DeferCleanup.
+			// Verify AddHealthzCheck("gc-healthz", ...) was called by hitting the named
+			// sub-path /healthz/gc-healthz. The root /healthz is already exercised by the
+			// kubelet liveness probe (pod Ready=True). The manager image is distroless so
+			// we use a separate curl pod. The pod is deleted unconditionally via DeferCleanup.
+			// -o /dev/null discards the response body ("ok") so only the echo below produces
+			// output; without this, body + echo combine to "okok", breaking Equal("ok").
 			const curlPodName = "curl-gc-test"
 			DeferCleanup(func() {
 				cmd := exec.Command("kubectl", "delete", "pod", curlPodName, "-n", namespace, "--ignore-not-found")
@@ -727,15 +729,11 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(podIP).NotTo(BeEmpty())
 			}, 30*time.Second, 2*time.Second).Should(Succeed())
 
-			By("running curl pod and verifying /healthz (includes gc-healthz) responds ok")
+			By("running curl pod and verifying /healthz/gc-healthz responds ok")
 			// Delete any leftover pod from a previous attempt before creating.
 			_, _ = utils.Run(exec.Command("kubectl", "delete", "pod", curlPodName, "-n", namespace, "--ignore-not-found", "--wait=true"))
 
-			// Use /healthz (the root path, same as the liveness probe). All registered checks —
-			// including gc-healthz — are evaluated there and guaranteed to be served.
-			// -o /dev/null discards the response body ("ok") so only the echo below produces
-			// output; without this, the body + echo combine to "okok", breaking Equal("ok").
-			curlCmd := fmt.Sprintf("until curl -sf -o /dev/null http://%s:8081/healthz; do sleep 1; done; echo ok", podIP)
+			curlCmd := fmt.Sprintf("until curl -sf -o /dev/null http://%s:8081/healthz/gc-healthz; do sleep 1; done; echo ok", podIP)
 			_, err := utils.Run(exec.Command("kubectl", "run", curlPodName, "--restart=Never",
 				"--namespace", namespace,
 				"--image=curlimages/curl:latest",
