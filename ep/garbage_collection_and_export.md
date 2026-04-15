@@ -17,9 +17,10 @@ A single, unified engine is needed to manage the **Retention → Export → Dele
 
 1. **Resource Agnostic**: A single engine capable of cleaning up any AIP GVK (`AgentDiagnostic`, `AgentRequest`, `AuditRecord`).
 2. **Cluster Stability First**: Protect etcd from OOMs and tombstone spikes via paging and rate-limiting.
-3. **Pluggable Export**: Emit records to external sinks (OTLP, Webhooks) before deletion.
-4. **Hard TTL Safety Valve**: Ensure deletion occurs even if export sinks are down, preventing cluster failure.
-5. **Linked Deletions**: Support coherent group deletions (e.g., an `AuditRecord` is not purged before its parent `AgentRequest`).
+3. **Dry Run Mode**: Support "safe rollout" where the engine identifies and logs expired records without actually deleting them.
+4. **Pluggable Export**: Emit records to external sinks (OTLP, Webhooks) before deletion.
+5. **Hard TTL Safety Valve**: Ensure deletion occurs even if export sinks are down, preventing cluster failure.
+6. **Linked Deletions**: Support coherent group deletions (e.g., an `AuditRecord` is not purged before its parent `AgentRequest`).
 
 ## Alternatives Considered
 
@@ -47,10 +48,12 @@ The `GCManager` is a background `Runnable` in the controller manager that orches
 
 - **Leader-Election Binding**: The `GCManager` runs only on the leader replica via controller-manager leader election, ensuring only one instance performs GC operations at a time. No additional manual coordination is required.
 - **Paginated Scans**: Uses `Limit` and `Continue` tokens (configurable page size, default: 500) via a direct client (`APIReader`, not the informer cache) to ensure consistency and avoid stale reads.
-- **Token-Bucket Rate Limiting**: Deletions are throttled at the **object level** (default: 100 objects/sec), not at the API-call level. Each deleted object emits a watch event to every watcher of that GVK; an unthrottled GC run on a large backlog can spike the API server's event queue. For `DeleteCollection` batches, the worker acquires N tokens before issuing a batch of N objects — the bucket is never bypassed by a single large `DeleteCollection` call. For individual `Delete` calls, 1 token is consumed per call.
+- **Token-Bucket Rate Limiting**: Deletions are throttled at the **object level** (default: 100 objects/sec), not at the API-call level. Each deleted object emits a watch event to every watcher of that GVK; an unthrottled GC run on a large backlog can spike the API server's event queue.
+- **Dry Run Mode**: When `--gc-dry-run=true`, the engine identifies expired records and logs them (e.g., `DRY-RUN: would delete AgentDiagnostic production/diag-123 (expired 2d ago)`) but does not issue the `Delete` call. This allows operators to verify paging and retention logic before enabling enforcement.
+- **Global Safety Valve**: To prevent catastrophic misconfiguration (e.g., setting retention to 0 accidentally), GC for a resource type is **skipped** if the total count of that resource in the cluster is below a minimum threshold (default: 10). This ensures a "healthy minimum" remains in etcd for debugging even if GC rules are overly aggressive.
 - **Deletion SLA**: When no export is configured, or when export succeeds, a record is guaranteed to be deleted within one GC interval after its retention window expires (e.g., 7-day retention + 1-hour interval → deleted between day 7 and day 7h1m). When export is configured and fails, deletion is delayed by export retries up to the Hard TTL, at which point deletion is unconditional (see Hard TTL Check in the lifecycle below).
 
-**Note on `DeleteCollection`:** `DeleteCollection` reduces client-to-API-server round trips compared to individual `Delete` calls. It does **not** reduce etcd tombstone pressure — each deletion still writes a tombstone; only etcd compaction removes tombstones. The benefit is purely fewer network calls. Rate limiting applies at the object level regardless of which deletion mechanism is used.
+**Note on Deletion Mechanism:** Phase 1 uses individual `Delete` calls per object rather than `DeleteCollection`. `DeleteCollection` cannot selectively target individual expired objects within a page — it deletes all matching objects by label selector, not by the per-object TTL check performed in the scan loop. Individual `Delete` calls enable precise rate limiting (1 token per object) and failure isolation: a 404 (already deleted by another actor) or a transient API error on one object does not abort the rest of the batch.
 
 ### 2. The Export-and-Purge Lifecycle
 
@@ -60,7 +63,7 @@ For each expired record, the engine follows a strict state machine:
 2. **Hard TTL Check**: If `now() - creationTimestamp >= hardTTL`, skip export and **delete immediately**. Cluster health takes precedence over data retention. Log a warning so operators know export was skipped. (Same boundary rule: equality is expired.)
 3. **Export (Optional)**: Hand the object to the bounded async worker pool. The GC loop is never blocked by this step.
 4. **Retry with Backoff**: If export fails, retain the record and retry with exponential backoff (base: 5s, multiplier: 2×, max: 10m, jitter: ±20% — example sequence: 5s → 10s → 20s → 40s → … → 10m). Retry state is tracked in memory only; see Leader-Transition Semantics below.
-5. **Purge**: Issue a `DeleteCollection` (per page) or `Delete` call once export is confirmed or Hard TTL is reached.
+5. **Purge**: Issue a per-object `Delete` call once export is confirmed or Hard TTL is reached. (Phase 1 and Phase 2 both use individual `Delete` calls — `DeleteCollection` cannot selectively target only the expired objects identified by the scan loop.)
 
 ### 3. Leader-Transition Semantics
 
@@ -87,7 +90,42 @@ The engine supports optional `DependencyProvider` per resource type to enforce c
 
 **Current dependency:** `AuditRecord` → `AgentRequest`. An `AuditRecord` is not purged before its parent `AgentRequest` is also expired (or gone), preserving the coherent audit trail required by the AIP spec.
 
+### 5. DiagnosticAccuracySummary Lifecycle
+
+`DiagnosticAccuracySummary` records store aggregate reputation data for agents. Unlike diagnostics themselves, these are **intentionally long-lived**.
+
+- **Decision**: `DiagnosticAccuracySummary` records are **not** managed by the GC engine. They remain in etcd as a permanent "reputation trail" even after the individual diagnostics that contributed to them are purged.
+- **Rationale**: Purging summaries would break the "Agent Maturity Model" (#105) which requires tracking agent performance over months/years. The etcd footprint of one summary record per agent is negligible compared to the diagnostic stream.
+
+### 6. Observability (Prometheus Metrics)
+
+The GC engine exports the following metrics to monitor performance and health:
+
+| Metric | Labels | Phase 1 label values | Description |
+|---|---|---|---|
+| `aip_gc_objects_deleted_total` | `resource`, `reason` | `reason`: `"hard_ttl"` | Total objects purged. Phase 2 adds `"expired"` (soft retention). |
+| `aip_gc_objects_skipped_total` | `resource`, `reason` | `reason`: `"dry_run"`, `"safety_valve"` | Objects eligible but not deleted. Phase 2 adds `"export_pending"`; Phase 3 adds `"dependency"`. |
+| `aip_gc_scan_duration_seconds` | `resource` | — | Duration of the full list-and-evaluate cycle |
+| `aip_gc_scan_objects_evaluated_total` | `resource` | — | Total objects scanned from etcd |
+| `aip_gc_export_failures_total` | `resource` | _(Phase 2 — not yet implemented)_ | Failures sending records to external sinks |
+
+> For the current implemented set see `internal/gc/metrics.go`.
+
 ## Configuration
+
+For Phase 1, configuration is delivered via **CLI flags** on the controller manager for simplicity and operational parity with other controller features.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--gc-enabled` | `false` | Enable the GC engine |
+| `--gc-interval` | `1h` | Time between GC cycles |
+| `--gc-dry-run` | `true` | Log deletions without acting (default true for safety) |
+| `--gc-diagnostic-hard-ttl` | `14d` | Forced deletion window (safety valve) |
+| `--gc-delete-rate-per-sec` | `100` | Rate limit for object deletions (tokens per second) |
+| `--gc-page-size` | `500` | Objects per list page during GC scan |
+| `--gc-safety-min-count` | `10` | Skip GC if total object count is below this threshold |
+
+Full YAML configuration (via `values.yaml` and ConfigMap) is deferred to Phase 2 to support structured export endpoint configuration. The schema below is a **Phase 2 (future)** design — it is not active in Phase 1.
 
 ```yaml
 gc:
@@ -149,7 +187,7 @@ _Goal: etcd protection in production with no export complexity. Pure deletion on
 - [ ] Create `internal/gc/` package containing `GCManager` and `GCWorker`.
 - [ ] Wire `GCManager` into `cmd/main.go` using `mgr.Add()`; document leader-election reliance in code comments.
 - [ ] Implement paginated list via direct client (`APIReader`) with configurable page size (default: 500).
-- [ ] Implement `DeleteCollection` per page with token-bucket rate limiter (default: 100 objects/sec); acquire N tokens before issuing a batch of N objects.
+- [ ] Implement individual `Delete` calls per expired object with token-bucket rate limiter (default: 100 objects/sec); acquire 1 token per object before issuing the call. (`DeleteCollection` cannot target specific expired objects from a page — see Note on Deletion Mechanism above.)
 - [ ] Hard TTL only — delete records where `now() - creationTimestamp >= hardTTL` unconditionally; log a single startup warning when export is not configured (not per-deletion).
 - [ ] Register `AgentDiagnostic` as the first and only managed resource in Phase 1.
 - [ ] Update RBAC: `list`, `delete`, `deletecollection` on `agentdiagnostics`.
@@ -169,7 +207,8 @@ _Goal: add OTLP export with bounded async worker pool and retry before deletion.
 ### Phase 3 — AgentRequest, AuditRecord, and dependency handling
 _Goal: extend GC to all AIP resource types with coherent ordered deletion._
 
-- [ ] Implement `DependencyProvider` interface and register `AuditRecord → AgentRequest`. **Do NOT use `SetControllerReference` when creating `AuditRecord` objects** — Kubernetes cascading deletion via owner references would bypass the GC manager's retention policy. Use a non-owning label reference and rely on `DependencyProvider` for retention-aware deletion.
+- [ ] **Remove the existing `ctrl.SetControllerReference` calls** in `agentrequest_controller.go` (`emitAuditRecord` at line ~878 and the `policy.evaluated` path at line ~471). The controller already sets `AgentRequest` as owner of every `AuditRecord`, which means Kubernetes is silently cascade-deleting `AuditRecords` today whenever an `AgentRequest` is manually deleted — bypassing any retention policy. Replace the owner reference with a non-owning label (`aip.io/agentRequestRef`) and rely on `DependencyProvider` for retention-aware deletion.
+- [ ] Implement `DependencyProvider` interface and register `AuditRecord → AgentRequest`. `AuditRecords` are exclusively linked to `AgentRequests` (the `AgentRequestRef` field is mandatory; there is no `AgentDiagnosticRef`). Use a non-owning label reference and rely on `DependencyProvider` for retention-aware deletion.
 - [ ] Implement Webhook export provider: POST raw JSON with `X-AIP-Resource-Kind` header.
 - [ ] Add startup validation: reject config where `agentRequests.retentionDays > auditRecords.retentionDays` (parent must not outlive child).
 - [ ] Register `AgentRequest` and `AuditRecord` GCWorkers with dependency checks; Hard TTL overrides dependency checks unconditionally.

@@ -31,6 +31,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -84,15 +85,15 @@ var _ = Describe("Manager", Ordered, func() {
 			By("skipping make install; HELM_DEPLOYED=true")
 		}
 
-		By("deploying the controller-manager (skips if already running)")
+		By("deploying the controller-manager")
 		if os.Getenv("HELM_DEPLOYED") != "true" {
-			checkCmd := exec.Command("kubectl", "get", "deployment",
-				"aip-k8s-controller-manager", "-n", namespace)
-			if _, checkErr := utils.Run(checkCmd); checkErr != nil {
-				cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
-				_, err = utils.Run(cmd)
-				Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
-			}
+			// Always run make deploy so that RBAC and other manifests stay current
+			// (e.g. kubebuilder marker changes in internal/gc/worker.go). kubectl
+			// apply is idempotent — it will not restart the pod unless the pod
+			// template spec actually changes.
+			cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 		} else {
 			By("skipping make deploy; HELM_DEPLOYED=true")
 		}
@@ -664,6 +665,159 @@ var _ = Describe("Manager", Ordered, func() {
 			out, err := utils.Run(cmd)
 			Expect(err).To(HaveOccurred(), "spec mutation should be rejected by CEL immutability rule")
 			Expect(out).To(ContainSubstring("immutable"), "rejection message should reference immutability")
+		})
+	})
+
+	// Phase 6: Garbage Collection
+	Context("Phase 6: Garbage Collection", Ordered, func() {
+		AfterEach(func() {
+			By("cleaning up AgentDiagnostics in default namespace")
+			// Use kubectl delete --all per project convention.
+			cmd := exec.Command("kubectl", "delete", "agentdiagnostic", "--all", "-n", "default", "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should verify the controller has GC flags in the deployment", func() {
+			By("fetching the controller deployment container args")
+			cmd := exec.Command("kubectl", "get", "deployment",
+				"aip-k8s-controller-manager", "-n", namespace,
+				"-o", "jsonpath={.spec.template.spec.containers[0].args}")
+			out, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("checking for GC-related flags")
+			Expect(out).To(ContainSubstring("--gc-enabled=true"))
+			Expect(out).To(ContainSubstring("--gc-interval=1m"))
+			// --gc-health-probe-bind-address was removed
+			Expect(out).NotTo(ContainSubstring("--gc-health-probe-bind-address"))
+		})
+
+		It("should verify the gc-healthz check is registered at /healthz/gc-healthz", func() {
+			By("ensuring the controller pod name is known")
+			if controllerPodName == "" {
+				// Try to fetch it if it wasn't set by previous tests
+				cmd := exec.Command("kubectl", "get", "pods", "-n", namespace,
+					"-l", "control-plane=controller-manager",
+					"-o", "jsonpath={.items[0].metadata.name}")
+				out, err := utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred())
+				controllerPodName = strings.TrimSpace(out)
+			}
+			Expect(controllerPodName).NotTo(BeEmpty())
+
+			By("creating a temporary curl pod to verify GC health probe")
+			// Verify AddHealthzCheck("gc-healthz", ...) was called by hitting the named
+			// sub-path /healthz/gc-healthz. The root /healthz is already exercised by the
+			// kubelet liveness probe (pod Ready=True). The manager image is distroless so
+			// we use a separate curl pod. The pod is deleted unconditionally via DeferCleanup.
+			// -o /dev/null discards the response body ("ok") so only the echo below produces
+			// output; without this, body + echo combine to "okok", breaking Equal("ok").
+			const curlPodName = "curl-gc-test"
+			DeferCleanup(func() {
+				cmd := exec.Command("kubectl", "delete", "pod", curlPodName, "-n", namespace, "--ignore-not-found")
+				_, _ = utils.Run(cmd)
+			})
+
+			By("getting the controller pod IP")
+			var podIP string
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pod", controllerPodName, "-n", namespace,
+					"-o", "jsonpath={.status.podIP}")
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				podIP = strings.TrimSpace(out)
+				g.Expect(podIP).NotTo(BeEmpty())
+			}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+			By("running curl pod and verifying /healthz/gc-healthz responds ok")
+			// Delete any leftover pod from a previous attempt before creating.
+			_, _ = utils.Run(exec.Command("kubectl", "delete", "pod", curlPodName, "-n", namespace, "--ignore-not-found", "--wait=true"))
+
+			curlCmd := fmt.Sprintf("until curl -sf -o /dev/null http://%s:8081/healthz/gc-healthz; do sleep 1; done; echo ok", podIP)
+			_, err := utils.Run(exec.Command("kubectl", "run", curlPodName, "--restart=Never",
+				"--namespace", namespace,
+				"--image=curlimages/curl:latest",
+				"--overrides",
+				fmt.Sprintf(`{
+					"spec": {
+						"containers": [{
+							"name": "curl",
+							"image": "curlimages/curl:latest",
+							"imagePullPolicy": "IfNotPresent",
+							"command": ["/bin/sh", "-c"],
+							"args": ["%s"],
+							"securityContext": {
+								"readOnlyRootFilesystem": true,
+								"allowPrivilegeEscalation": false,
+								"capabilities": {"drop": ["ALL"]},
+								"runAsNonRoot": true,
+								"runAsUser": 1000,
+								"seccompProfile": {"type": "RuntimeDefault"}
+							}
+						}],
+						"restartPolicy": "Never"
+					}
+				}`, curlCmd)))
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				logCmd := exec.Command("kubectl", "logs", curlPodName, "-n", namespace)
+				logs, err := utils.Run(logCmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(logs)).To(Equal("ok"))
+			}, 90*time.Second, 2*time.Second).Should(Succeed())
+		})
+
+		It("should verify RBAC permissions for GC (agentdiagnostics delete)", func() {
+			By("checking if the controller service account can delete agentdiagnostics")
+			cmd := exec.Command("kubectl", "auth", "can-i", "delete", "agentdiagnostics",
+				"--as", fmt.Sprintf("system:serviceaccount:%s:%s", namespace, serviceAccountName),
+				"-n", "default")
+			out, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(out)).To(Equal("yes"), "Controller SA should have permission to delete agentdiagnostics")
+		})
+
+		It("should verify GC deletes an expired AgentDiagnostic", func() {
+			By("creating an AgentDiagnostic")
+			diagName := "gc-test-diag"
+			diagManifest := fmt.Sprintf(`
+apiVersion: governance.aip.io/v1alpha1
+kind: AgentDiagnostic
+metadata:
+  name: %s
+  namespace: default
+spec:
+  agentIdentity: e2e-agent
+  diagnosticType: e2e-test
+  correlationID: e2e-corr
+  summary: e2e-summary
+`, diagName)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(diagManifest)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for it to exist")
+			Eventually(func() error {
+				cmd := exec.Command("kubectl", "get", "agentdiagnostic", diagName, "-n", "default")
+				_, err := utils.Run(cmd)
+				return err
+			}, 30*time.Second, 5*time.Second).Should(Succeed())
+
+			By("verifying it eventually gets deleted")
+			// GC interval is 1m, hard TTL is 1m. Worst case: object created just
+			// after a tick → waits up to 2 cycles (2m) plus slow-CI overhead.
+			// 6 minutes gives comfortable headroom without masking real failures.
+			Eventually(func() bool {
+				var diag governancev1alpha1.AgentDiagnostic
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: diagName, Namespace: "default"}, &diag)
+				if apierrors.IsNotFound(err) {
+					return true
+				}
+				// Unexpected error: let Eventually surface it on the next tick.
+				return false
+			}, 6*time.Minute, 10*time.Second).Should(BeTrue())
 		})
 	})
 })

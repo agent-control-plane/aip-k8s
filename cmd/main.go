@@ -42,6 +42,7 @@ import (
 	governancev1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
 	"github.com/ravisantoshgudimetla/aip-k8s/internal/controller"
 	"github.com/ravisantoshgudimetla/aip-k8s/internal/evaluation"
+	"github.com/ravisantoshgudimetla/aip-k8s/internal/gc"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -84,6 +85,20 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+
+	// GC flags
+	gcCfg := gc.DefaultGCConfig()
+	flag.BoolVar(&gcCfg.Enabled, "gc-enabled", gcCfg.Enabled, "Enable the GC engine.")
+	flag.DurationVar(&gcCfg.Interval, "gc-interval", gcCfg.Interval, "Time between GC cycles.")
+	flag.BoolVar(&gcCfg.DryRun, "gc-dry-run", gcCfg.DryRun, "Log deletions without acting. Defaults true for safety.")
+	flag.DurationVar(&gcCfg.DiagnosticHardTTL, "gc-diagnostic-hard-ttl", gcCfg.DiagnosticHardTTL,
+		"Forced deletion age for AgentDiagnostics regardless of export state.")
+	flag.Int64Var(&gcCfg.PageSize, "gc-page-size", gcCfg.PageSize, "Objects per list page during GC scan.")
+	flag.Float64Var(&gcCfg.DeleteRatePerSec, "gc-delete-rate-per-sec", gcCfg.DeleteRatePerSec,
+		"Max object deletions per second.")
+	flag.IntVar(&gcCfg.SafetyMinCount, "gc-safety-min-count", gcCfg.SafetyMinCount,
+		"Skip GC if total object count is below this threshold.")
+
 	opts := zap.Options{
 		Development: true,
 	}
@@ -210,6 +225,23 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "GovernedResource")
+		os.Exit(1)
+	}
+
+	gcMgr := &gc.GCManager{
+		APIReader: mgr.GetAPIReader(),
+		Client:    mgr.GetClient(),
+		Config:    gcCfg,
+		Now:       time.Now,
+	}
+
+	if err := mgr.Add(gcMgr); err != nil {
+		setupLog.Error(err, "Failed to register GC manager")
+		os.Exit(1)
+	}
+
+	if err := mgr.AddHealthzCheck("gc-healthz", gcMgr.Check); err != nil {
+		setupLog.Error(err, "Failed to set up GC health check")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

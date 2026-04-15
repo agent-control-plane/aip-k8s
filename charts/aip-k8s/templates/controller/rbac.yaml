@@ -45,6 +45,7 @@ rules:
 - apiGroups:
   - governance.aip.io
   resources:
+  - agentdiagnostics
   - agentrequests
   - auditrecords
   - governedresources
@@ -68,6 +69,7 @@ rules:
 - apiGroups:
   - governance.aip.io
   resources:
+  - agentdiagnostics/status
   - agentrequests/status
   - auditrecords/status
   - governedresources/status

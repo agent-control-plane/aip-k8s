@@ -67,3 +67,12 @@ dashboard:
     extraArgs: []
   extraVolumeMounts: []
   extraVolumes: []
+
+gc:
+  enabled: false
+  dryRun: true
+  interval: "1h"
+  diagnosticHardTTL: "336h"   # 14 days
+  deleteRatePerSec: 100
+  pageSize: 500
+  safetyMinCount: 10

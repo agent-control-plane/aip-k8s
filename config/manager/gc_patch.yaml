@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+  namespace: system
+spec:
+  template:
+    spec:
+      containers:
+      - name: manager
+        args:
+        - --leader-elect
+        - --health-probe-bind-address=:8081
+        - --gc-enabled=true
+        - --gc-interval=1m
+        - --gc-diagnostic-hard-ttl=1m
+        - --gc-dry-run=false
+        - --gc-safety-min-count=1

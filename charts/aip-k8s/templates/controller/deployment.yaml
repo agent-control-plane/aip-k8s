@@ -29,6 +29,19 @@ spec:
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=0
             - --leader-elect
+            - --gc-enabled={{ .Values.gc.enabled }}
+            {{- if .Values.gc.enabled }}
+            - --gc-dry-run={{ .Values.gc.dryRun }}
+            - --gc-interval={{ .Values.gc.interval }}
+            - --gc-diagnostic-hard-ttl={{ .Values.gc.diagnosticHardTTL }}
+            - --gc-delete-rate-per-sec={{ .Values.gc.deleteRatePerSec }}
+            - --gc-page-size={{ .Values.gc.pageSize }}
+            - --gc-safety-min-count={{ .Values.gc.safetyMinCount }}
+            {{- end }}
+          ports:
+            - containerPort: 8081
+              name: health
+              protocol: TCP
           livenessProbe:
             httpGet:
               path: /healthz
