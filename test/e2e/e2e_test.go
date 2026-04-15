@@ -31,6 +31,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -731,7 +732,10 @@ var _ = Describe("Manager", Ordered, func() {
 			// Delete any leftover pod from a previous attempt before creating.
 			_, _ = utils.Run(exec.Command("kubectl", "delete", "pod", curlPodName, "-n", namespace, "--ignore-not-found", "--wait=true"))
 
-			curlCmd := fmt.Sprintf("curl -sf http://%s:8081/healthz/gc-healthz", podIP)
+			// Retry loop: the health endpoint may not be reachable immediately
+			// (e.g. if the controller just restarted). The pod keeps retrying
+			// until curl succeeds, then prints "ok" and exits cleanly.
+			curlCmd := fmt.Sprintf("until curl -sf http://%s:8081/healthz/gc-healthz; do sleep 1; done; echo ok", podIP)
 			_, err := utils.Run(exec.Command("kubectl", "run", curlPodName, "--restart=Never",
 				"--namespace", namespace,
 				"--image=curlimages/curl:latest",
@@ -808,11 +812,12 @@ spec:
 			// after a tick → waits up to 2 cycles (2m) plus slow-CI overhead.
 			// 6 minutes gives comfortable headroom without masking real failures.
 			Eventually(func() bool {
-				cmd := exec.Command("kubectl", "get", "agentdiagnostic", diagName, "-n", "default")
-				_, err := utils.Run(cmd)
-				if err != nil && strings.Contains(err.Error(), "NotFound") {
+				var diag governancev1alpha1.AgentDiagnostic
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: diagName, Namespace: "default"}, &diag)
+				if apierrors.IsNotFound(err) {
 					return true
 				}
+				// Unexpected error: let Eventually surface it on the next tick.
 				return false
 			}, 6*time.Minute, 10*time.Second).Should(BeTrue())
 		})

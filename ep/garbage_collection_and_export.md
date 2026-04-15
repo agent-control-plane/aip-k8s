@@ -63,7 +63,7 @@ For each expired record, the engine follows a strict state machine:
 2. **Hard TTL Check**: If `now() - creationTimestamp >= hardTTL`, skip export and **delete immediately**. Cluster health takes precedence over data retention. Log a warning so operators know export was skipped. (Same boundary rule: equality is expired.)
 3. **Export (Optional)**: Hand the object to the bounded async worker pool. The GC loop is never blocked by this step.
 4. **Retry with Backoff**: If export fails, retain the record and retry with exponential backoff (base: 5s, multiplier: 2×, max: 10m, jitter: ±20% — example sequence: 5s → 10s → 20s → 40s → … → 10m). Retry state is tracked in memory only; see Leader-Transition Semantics below.
-5. **Purge**: Issue a `DeleteCollection` (per page) or `Delete` call once export is confirmed or Hard TTL is reached.
+5. **Purge**: Issue a per-object `Delete` call once export is confirmed or Hard TTL is reached. (Phase 1 and Phase 2 both use individual `Delete` calls — `DeleteCollection` cannot selectively target only the expired objects identified by the scan loop.)
 
 ### 3. Leader-Transition Semantics
 
@@ -101,13 +101,15 @@ The engine supports optional `DependencyProvider` per resource type to enforce c
 
 The GC engine exports the following metrics to monitor performance and health:
 
-| Metric | Labels | Description |
-|---|---|---|
-| `aip_gc_objects_deleted_total` | `resource`, `reason` | Total objects purged (`reason`: "expired" \| "hard_ttl") |
-| `aip_gc_objects_skipped_total` | `resource`, `reason` | Objects eligible but not deleted (`reason`: "dependency" \| "dry_run" \| "export_pending" \| "safety_valve") |
-| `aip_gc_scan_duration_seconds` | `resource` | Duration of the full list-and-evaluate cycle |
-| `aip_gc_scan_objects_evaluated_total` | `resource` | Total objects scanned from etcd |
-| `aip_gc_export_failures_total` | `resource` | (Phase 2) Failures sending to external sinks |
+| Metric | Labels | Phase 1 label values | Description |
+|---|---|---|---|
+| `aip_gc_objects_deleted_total` | `resource`, `reason` | `reason`: `"hard_ttl"` | Total objects purged. Phase 2 adds `"expired"` (soft retention). |
+| `aip_gc_objects_skipped_total` | `resource`, `reason` | `reason`: `"dry_run"`, `"safety_valve"` | Objects eligible but not deleted. Phase 2 adds `"export_pending"`; Phase 3 adds `"dependency"`. |
+| `aip_gc_scan_duration_seconds` | `resource` | — | Duration of the full list-and-evaluate cycle |
+| `aip_gc_scan_objects_evaluated_total` | `resource` | — | Total objects scanned from etcd |
+| `aip_gc_export_failures_total` | `resource` | _(Phase 2 — not yet implemented)_ | Failures sending records to external sinks |
+
+> For the current implemented set see `internal/gc/metrics.go`.
 
 ## Configuration
 

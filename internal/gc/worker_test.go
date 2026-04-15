@@ -36,25 +36,36 @@ func (f *failingClient) Delete(ctx context.Context, obj client.Object, opts ...c
 	return f.Client.Delete(ctx, obj, opts...)
 }
 
+// Shared test constants. Using named values avoids magic numbers drifting
+// independently across subtests.
+const (
+	testHardTTL          = 14 * 24 * time.Hour
+	testPageSize         = 500
+	testDeleteRatePerSec = 100
+	testSafetyMinCount   = 2 // low so most tests need only a couple of objects
+)
+
 func TestGCWorker_Run(t *testing.T) {
 	scheme := runtime.NewScheme()
-	_ = governancev1alpha1.AddToScheme(scheme)
+	if err := governancev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("failed to register scheme: %v", err)
+	}
 
 	now := time.Date(2026, 4, 12, 12, 0, 0, 0, time.UTC)
 	config := GCConfig{
 		Enabled:           true,
 		DryRun:            false,
-		DiagnosticHardTTL: 14 * 24 * time.Hour,
-		PageSize:          500,
-		DeleteRatePerSec:  100,
-		SafetyMinCount:    2, // Low for testing
+		DiagnosticHardTTL: testHardTTL,
+		PageSize:          testPageSize,
+		DeleteRatePerSec:  testDeleteRatePerSec,
+		SafetyMinCount:    testSafetyMinCount,
 	}
 
 	t.Run("Hard TTL boundary - object exactly at cutoff is deleted", func(g *testing.T) {
 		gm := gomega.NewWithT(g)
-		// Cutoff is now - 14 days.
+		// Cutoff is now - testHardTTL.
 		// diagnostic creation timestamp <= cutoff should be deleted.
-		expiredTime := metav1.NewTime(now.Add(-14 * 24 * time.Hour))
+		expiredTime := metav1.NewTime(now.Add(-testHardTTL))
 
 		diag := &governancev1alpha1.AgentDiagnostic{
 			ObjectMeta: metav1.ObjectMeta{Name: "expired", Namespace: "default", CreationTimestamp: expiredTime},
@@ -85,7 +96,7 @@ func TestGCWorker_Run(t *testing.T) {
 
 	t.Run("Hard TTL boundary - object one second before cutoff is NOT deleted", func(g *testing.T) {
 		gm := gomega.NewWithT(g)
-		notExpiredTime := metav1.NewTime(now.Add(-14 * 24 * time.Hour).Add(time.Second))
+		notExpiredTime := metav1.NewTime(now.Add(-testHardTTL).Add(time.Second))
 
 		diag := &governancev1alpha1.AgentDiagnostic{
 			ObjectMeta: metav1.ObjectMeta{Name: "not-expired", Namespace: "default", CreationTimestamp: notExpiredTime},
@@ -306,26 +317,27 @@ func TestGCWorker_Run(t *testing.T) {
 
 	t.Run("Paging - unexpired objects on page 1, expired on page 2", func(g *testing.T) {
 		gm := gomega.NewWithT(g)
-		// Page size = 2.
-		// Page 1: 2 unexpired objects
-		// Page 2: 3 expired objects
+		// Page size = 2. The fake client returns objects in lexicographic name order.
+		// "a-" prefix sorts before "z-", so:
+		//   Page 1: a-unexpired-1, a-unexpired-2  (not expired → kept)
+		//   Page 2: z-expired-1,   z-expired-2    (expired → deleted)
+		//   Page 3: z-expired-3                   (expired → deleted)
 		unexpired1 := &governancev1alpha1.AgentDiagnostic{
-			ObjectMeta: metav1.ObjectMeta{Name: "unexpired-1", Namespace: "default", CreationTimestamp: metav1.NewTime(now)},
+			ObjectMeta: metav1.ObjectMeta{Name: "a-unexpired-1", Namespace: "default", CreationTimestamp: metav1.NewTime(now)},
 		}
 		unexpired2 := &governancev1alpha1.AgentDiagnostic{
-			ObjectMeta: metav1.ObjectMeta{Name: "unexpired-2", Namespace: "default", CreationTimestamp: metav1.NewTime(now)},
+			ObjectMeta: metav1.ObjectMeta{Name: "a-unexpired-2", Namespace: "default", CreationTimestamp: metav1.NewTime(now)},
 		}
 		expired1 := &governancev1alpha1.AgentDiagnostic{
-			ObjectMeta: metav1.ObjectMeta{Name: "expired-1", Namespace: "default", CreationTimestamp: metav1.NewTime(now.Add(-20 * 24 * time.Hour))},
+			ObjectMeta: metav1.ObjectMeta{Name: "z-expired-1", Namespace: "default", CreationTimestamp: metav1.NewTime(now.Add(-20 * 24 * time.Hour))},
 		}
 		expired2 := &governancev1alpha1.AgentDiagnostic{
-			ObjectMeta: metav1.ObjectMeta{Name: "expired-2", Namespace: "default", CreationTimestamp: metav1.NewTime(now.Add(-20 * 24 * time.Hour))},
+			ObjectMeta: metav1.ObjectMeta{Name: "z-expired-2", Namespace: "default", CreationTimestamp: metav1.NewTime(now.Add(-20 * 24 * time.Hour))},
 		}
 		expired3 := &governancev1alpha1.AgentDiagnostic{
-			ObjectMeta: metav1.ObjectMeta{Name: "expired-3", Namespace: "default", CreationTimestamp: metav1.NewTime(now.Add(-20 * 24 * time.Hour))},
+			ObjectMeta: metav1.ObjectMeta{Name: "z-expired-3", Namespace: "default", CreationTimestamp: metav1.NewTime(now.Add(-20 * 24 * time.Hour))},
 		}
 
-		// Note: fake client sorts by name usually. To ensure paging order, we rely on its behavior.
 		c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(
 			unexpired1, unexpired2, expired1, expired2, expired3,
 		).Build()
@@ -349,7 +361,7 @@ func TestGCWorker_Run(t *testing.T) {
 		gm.Expect(c.List(context.Background(), &list)).To(gomega.Succeed())
 		gm.Expect(list.Items).To(gomega.HaveLen(2))
 		names := []string{list.Items[0].Name, list.Items[1].Name}
-		gm.Expect(names).To(gomega.ContainElements("unexpired-1", "unexpired-2"))
+		gm.Expect(names).To(gomega.ContainElements("a-unexpired-1", "a-unexpired-2"))
 	})
 
 	t.Run("Rate limiter - token consumption is exactly N for N deletions", func(g *testing.T) {
