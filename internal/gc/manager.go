@@ -67,10 +67,7 @@ func (m *GCManager) Start(ctx context.Context) error {
 	}
 
 	// Burst must be >= 1; int() truncates so 0.5 → 0 which deadlocks every Wait.
-	burst := int(m.Config.DeleteRatePerSec)
-	if burst < 1 {
-		burst = 1
-	}
+	burst := max(1, int(m.Config.DeleteRatePerSec))
 	worker := &GCWorker{
 		APIReader: m.APIReader,
 		Client:    m.Client,
