@@ -398,6 +398,262 @@ func TestGCWorker_Run(t *testing.T) {
 
 		gm.Expect(limiter.waitCount.Load()).To(gomega.Equal(int64(5)))
 	})
+
+	t.Run("Soft retention - object before retention window is NOT deleted", func(g *testing.T) {
+		gm := gomega.NewWithT(g)
+		cfg := config
+		cfg.DiagnosticRetentionTTL = 7 * 24 * time.Hour
+		cfg.DiagnosticHardTTL = 14 * 24 * time.Hour
+
+		diag := &governancev1alpha1.AgentDiagnostic{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              "before-retention",
+				Namespace:         "default",
+				CreationTimestamp: metav1.NewTime(now.Add(-5 * 24 * time.Hour)),
+			},
+		}
+		diag2 := &governancev1alpha1.AgentDiagnostic{
+			ObjectMeta: metav1.ObjectMeta{Name: "safety", Namespace: "default", CreationTimestamp: metav1.NewTime(now)},
+		}
+
+		c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(diag, diag2).Build()
+		worker := NewGCWorker(c, c, cfg, func() time.Time { return now }, rate.NewLimiter(rate.Inf, 1), nil)
+
+		err := worker.Run(context.Background())
+		gm.Expect(err).NotTo(gomega.HaveOccurred())
+
+		var list governancev1alpha1.AgentDiagnosticList
+		gm.Expect(c.List(context.Background(), &list)).To(gomega.Succeed())
+		gm.Expect(list.Items).To(gomega.HaveLen(2))
+	})
+
+	t.Run("Soft retention - object past retention window (no pool) is deleted", func(g *testing.T) {
+		gm := gomega.NewWithT(g)
+		cfg := config
+		cfg.DiagnosticRetentionTTL = 7 * 24 * time.Hour
+		cfg.DiagnosticHardTTL = 14 * 24 * time.Hour
+
+		diag := &governancev1alpha1.AgentDiagnostic{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              "past-retention",
+				Namespace:         "default",
+				CreationTimestamp: metav1.NewTime(now.Add(-8 * 24 * time.Hour)),
+			},
+		}
+		diag2 := &governancev1alpha1.AgentDiagnostic{
+			ObjectMeta: metav1.ObjectMeta{Name: "safety", Namespace: "default", CreationTimestamp: metav1.NewTime(now)},
+		}
+
+		c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(diag, diag2).Build()
+		worker := NewGCWorker(c, c, cfg, func() time.Time { return now }, rate.NewLimiter(rate.Inf, 1), nil)
+
+		err := worker.Run(context.Background())
+		gm.Expect(err).NotTo(gomega.HaveOccurred())
+
+		var list governancev1alpha1.AgentDiagnosticList
+		gm.Expect(c.List(context.Background(), &list)).To(gomega.Succeed())
+		gm.Expect(list.Items).To(gomega.HaveLen(1))
+		gm.Expect(list.Items[0].Name).To(gomega.Equal("safety"))
+	})
+
+	t.Run("Hard TTL overrides export — object past hard TTL deleted unconditionally", func(g *testing.T) {
+		gm := gomega.NewWithT(g)
+		cfg := config
+		cfg.DiagnosticRetentionTTL = 7 * 24 * time.Hour
+		cfg.ExportType = exportTypeOTLP
+		cfg.Concurrency = 5
+
+		diag := &governancev1alpha1.AgentDiagnostic{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              "past-hard-ttl",
+				Namespace:         "default",
+				CreationTimestamp: metav1.NewTime(now.Add(-15 * 24 * time.Hour)),
+			},
+		}
+		diag2 := &governancev1alpha1.AgentDiagnostic{
+			ObjectMeta: metav1.ObjectMeta{Name: "safety", Namespace: "default", CreationTimestamp: metav1.NewTime(now)},
+		}
+
+		c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(diag, diag2).Build()
+		pool := NewExportPool(context.Background(), 1, &mockExporter{
+			exportFn: func(ctx context.Context, obj *governancev1alpha1.AgentDiagnostic) error {
+				return fmt.Errorf("fail")
+			},
+		})
+		defer pool.Stop()
+		worker := NewGCWorker(c, c, cfg, func() time.Time { return now }, rate.NewLimiter(rate.Inf, 1), pool)
+
+		err := worker.Run(context.Background())
+		gm.Expect(err).NotTo(gomega.HaveOccurred())
+
+		var list governancev1alpha1.AgentDiagnosticList
+		gm.Expect(c.List(context.Background(), &list)).To(gomega.Succeed())
+		gm.Expect(list.Items).To(gomega.HaveLen(1))
+		gm.Expect(list.Items[0].Name).To(gomega.Equal("safety"))
+	})
+
+	t.Run("Export path - successful export causes deletion", func(g *testing.T) {
+		gm := gomega.NewWithT(g)
+		cfg := config
+		cfg.DiagnosticRetentionTTL = 7 * 24 * time.Hour
+		cfg.ExportType = exportTypeOTLP
+
+		diag := &governancev1alpha1.AgentDiagnostic{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              "to-export",
+				Namespace:         "default",
+				CreationTimestamp: metav1.NewTime(now.Add(-8 * 24 * time.Hour)),
+			},
+		}
+		diag2 := &governancev1alpha1.AgentDiagnostic{
+			ObjectMeta: metav1.ObjectMeta{Name: "safety", Namespace: "default", CreationTimestamp: metav1.NewTime(now)},
+		}
+
+		c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(diag, diag2).Build()
+		pool := NewExportPool(context.Background(), 5, NoopExporter{})
+		worker := NewGCWorker(c, c, cfg, func() time.Time { return now }, rate.NewLimiter(rate.Inf, 1), pool)
+
+		err := worker.Run(context.Background())
+		gm.Expect(err).NotTo(gomega.HaveOccurred())
+		pool.Stop() // wait for async delete
+
+		var list governancev1alpha1.AgentDiagnosticList
+		gm.Expect(c.List(context.Background(), &list)).To(gomega.Succeed())
+		gm.Expect(list.Items).To(gomega.HaveLen(1))
+		gm.Expect(list.Items[0].Name).To(gomega.Equal("safety"))
+	})
+
+	t.Run("Export failure - object skipped with export_pending, retryState populated", func(g *testing.T) {
+		gm := gomega.NewWithT(g)
+		cfg := config
+		cfg.DiagnosticRetentionTTL = 7 * 24 * time.Hour
+		cfg.ExportType = exportTypeOTLP
+
+		diag := &governancev1alpha1.AgentDiagnostic{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              "fail-export",
+				Namespace:         "default",
+				CreationTimestamp: metav1.NewTime(now.Add(-8 * 24 * time.Hour)),
+			},
+		}
+		diag2 := &governancev1alpha1.AgentDiagnostic{
+			ObjectMeta: metav1.ObjectMeta{Name: "safety", Namespace: "default", CreationTimestamp: metav1.NewTime(now)},
+		}
+
+		c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(diag, diag2).Build()
+		pool := NewExportPool(context.Background(), 1, &mockExporter{
+			exportFn: func(ctx context.Context, obj *governancev1alpha1.AgentDiagnostic) error {
+				return fmt.Errorf("permanent fail")
+			},
+		})
+		defer pool.Stop()
+		worker := NewGCWorker(c, c, cfg, func() time.Time { return now }, rate.NewLimiter(rate.Inf, 1), pool)
+
+		err := worker.Run(context.Background())
+		gm.Expect(err).NotTo(gomega.HaveOccurred())
+		pool.Stop() // wait for async failure callback
+
+		// Object should still exist
+		var list governancev1alpha1.AgentDiagnosticList
+		gm.Expect(c.List(context.Background(), &list)).To(gomega.Succeed())
+		gm.Expect(list.Items).To(gomega.HaveLen(2))
+
+		// retryState should have an entry
+		key := "default/fail-export"
+		gm.Expect(worker.retryState).To(gomega.HaveKey(key))
+		gm.Expect(worker.retryState[key].attempts).To(gomega.Equal(1))
+	})
+
+	t.Run("Retry backoff - object is skipped when nextRetryAt is in the future", func(g *testing.T) {
+		gm := gomega.NewWithT(g)
+		cfg := config
+		cfg.DiagnosticRetentionTTL = 7 * 24 * time.Hour
+		cfg.ExportType = exportTypeOTLP
+
+		diag := &governancev1alpha1.AgentDiagnostic{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              "retry-later",
+				Namespace:         "default",
+				CreationTimestamp: metav1.NewTime(now.Add(-8 * 24 * time.Hour)),
+			},
+		}
+		diag2 := &governancev1alpha1.AgentDiagnostic{
+			ObjectMeta: metav1.ObjectMeta{Name: "safety", Namespace: "default", CreationTimestamp: metav1.NewTime(now)},
+		}
+
+		c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(diag, diag2).Build()
+		pool := NewExportPool(context.Background(), 1, NoopExporter{})
+		defer pool.Stop()
+		worker := NewGCWorker(c, c, cfg, func() time.Time { return now }, rate.NewLimiter(rate.Inf, 1), pool)
+
+		// Pre-populate retryState
+		worker.retryState["default/retry-later"] = &retryRecord{
+			attempts:    1,
+			nextRetryAt: now.Add(time.Hour),
+		}
+
+		err := worker.Run(context.Background())
+		gm.Expect(err).NotTo(gomega.HaveOccurred())
+
+		// Object should still exist and NOT be submitted to pool
+		var list governancev1alpha1.AgentDiagnosticList
+		gm.Expect(c.List(context.Background(), &list)).To(gomega.Succeed())
+		gm.Expect(list.Items).To(gomega.HaveLen(2))
+	})
+
+	t.Run("retentionTTL=0 with export pool — objects NOT deleted (hard TTL only mode)", func(g *testing.T) {
+		// Regression test: when DiagnosticRetentionTTL==0, the export path (step 4)
+		// must be skipped even if Pool != nil and ExportType="otlp".
+		// Without the guard, all objects under the hard TTL would be exported+deleted.
+		gm := gomega.NewWithT(g)
+		cfg := config
+		cfg.DiagnosticRetentionTTL = 0 // disabled — hard TTL only
+		cfg.ExportType = exportTypeOTLP
+		cfg.Concurrency = 2
+
+		// Object is 8 days old: past any soft retention, but not past 14d hard TTL.
+		diag := &governancev1alpha1.AgentDiagnostic{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              "should-not-export",
+				Namespace:         "default",
+				CreationTimestamp: metav1.NewTime(now.Add(-8 * 24 * time.Hour)),
+			},
+		}
+		diag2 := &governancev1alpha1.AgentDiagnostic{
+			ObjectMeta: metav1.ObjectMeta{Name: "safety", Namespace: "default", CreationTimestamp: metav1.NewTime(now)},
+		}
+
+		c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(diag, diag2).Build()
+		pool := NewExportPool(context.Background(), cfg.Concurrency, NoopExporter{})
+		worker := NewGCWorker(c, c, cfg, func() time.Time { return now }, rate.NewLimiter(rate.Inf, 1), pool)
+
+		err := worker.Run(context.Background())
+		gm.Expect(err).NotTo(gomega.HaveOccurred())
+		pool.Stop()
+
+		// Object must still exist — no soft retention configured, hard TTL not reached
+		var list governancev1alpha1.AgentDiagnosticList
+		gm.Expect(c.List(context.Background(), &list)).To(gomega.Succeed())
+		gm.Expect(list.Items).To(gomega.HaveLen(2))
+	})
+}
+
+func TestNextBackoff(t *testing.T) {
+	gm := gomega.NewWithT(t)
+
+	t.Run("nextBackoff respects max of 10 minutes", func(t *testing.T) {
+		res := nextBackoff(100)
+		gm.Expect(res).To(gomega.BeNumerically("<=", 10*time.Minute))
+	})
+
+	t.Run("nextBackoff jitter is within 20% of base", func(t *testing.T) {
+		// attempts=0 -> base=5s. Jitter is +/- 20% -> [4s, 6s]
+		for range 100 {
+			res := nextBackoff(0)
+			gm.Expect(res).To(gomega.BeNumerically(">=", 4*time.Second))
+			gm.Expect(res).To(gomega.BeNumerically("<=", 6*time.Second))
+		}
+	})
 }
 
 type countingLimiter struct {

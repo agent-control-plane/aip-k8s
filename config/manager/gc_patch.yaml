@@ -14,5 +14,7 @@ spec:
         - --gc-enabled=true
         - --gc-interval=1m
         - --gc-diagnostic-hard-ttl=1m
+        - --gc-diagnostic-retention-ttl=1m
+        - --gc-export-type=none
         - --gc-dry-run=false
         - --gc-safety-min-count=1

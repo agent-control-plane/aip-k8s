@@ -688,6 +688,8 @@ var _ = Describe("Manager", Ordered, func() {
 			By("checking for GC-related flags")
 			Expect(out).To(ContainSubstring("--gc-enabled=true"))
 			Expect(out).To(ContainSubstring("--gc-interval=1m"))
+			Expect(out).To(ContainSubstring("--gc-diagnostic-retention-ttl"))
+			Expect(out).To(ContainSubstring("--gc-export-type"))
 			// --gc-health-probe-bind-address was removed
 			Expect(out).NotTo(ContainSubstring("--gc-health-probe-bind-address"))
 		})
@@ -817,6 +819,41 @@ spec:
 				}
 				// Unexpected error: let Eventually surface it on the next tick.
 				return false
+			}, 6*time.Minute, 10*time.Second).Should(BeTrue())
+		})
+
+		It("should verify GC deletes an AgentDiagnostic via soft retention (exportType=none)", func() {
+			By("creating an AgentDiagnostic")
+			diagName := "gc-soft-retention-diag"
+			diagManifest := fmt.Sprintf(`
+apiVersion: governance.aip.io/v1alpha1
+kind: AgentDiagnostic
+metadata:
+  name: %s
+  namespace: default
+spec:
+  agentIdentity: e2e-agent
+  diagnosticType: e2e-test
+  correlationID: e2e-corr
+  summary: e2e-soft-retention-summary
+`, diagName)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(diagManifest)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for it to exist")
+			Eventually(func() error {
+				cmd := exec.Command("kubectl", "get", "agentdiagnostic", diagName, "-n", "default")
+				_, err := utils.Run(cmd)
+				return err
+			}, 30*time.Second, 5*time.Second).Should(Succeed())
+
+			By("waiting for soft-retention deletion (interval=1m, retentionTTL=1m in Kustomize; 30s in Helm — worst case 2 cycles + overhead = 6 minutes)")
+			Eventually(func() bool {
+				var diag governancev1alpha1.AgentDiagnostic
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: diagName, Namespace: "default"}, &diag)
+				return apierrors.IsNotFound(err)
 			}, 6*time.Minute, 10*time.Second).Should(BeTrue())
 		})
 	})

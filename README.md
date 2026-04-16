@@ -322,6 +322,7 @@ Requests from outside the trusted CIDRs that supply proxy headers will have thos
 | Doc | Description |
 |---|---|
 | [`docs/governed-resources.md`](docs/governed-resources.md) | Operator guide: creating GovernedResources, context fetchers, SafetyPolicy binding, admin API, schema evolution, deletion protection. |
+| [`docs/garbage-collection.md`](docs/garbage-collection.md) | Operator guide: GC engine configuration, safe rollout, OTLP export setup, and Prometheus metrics reference. |
 | [`docs/oidc-keycloak.md`](docs/oidc-keycloak.md) | Step-by-step setup for OIDC authentication using Keycloak (agent, reviewer, and admin identities). |
 
 ## Testing

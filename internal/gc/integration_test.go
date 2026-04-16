@@ -193,6 +193,76 @@ func TestGCIntegration(t *testing.T) {
 			return k8sClient.Get(ctx, client.ObjectKey{Name: "keep-me", Namespace: "default"}, &fetched)
 		}, 500*time.Millisecond, 100*time.Millisecond).Should(gomega.Succeed())
 	})
+
+	t.Run("Export pool with noop exporter deletes soft-retention expired objects", func(g *testing.T) {
+		gm := gomega.NewWithT(g)
+		ctx, cancel := context.WithCancel(g.Context())
+		defer cancel()
+
+		mgr, err := manager.New(cfg, manager.Options{
+			Scheme: scheme.Scheme,
+			Metrics: metricsserver.Options{
+				BindAddress: "0",
+			},
+		})
+		gm.Expect(err).NotTo(gomega.HaveOccurred())
+
+		config := GCConfig{
+			Enabled:                true,
+			DryRun:                 false,
+			Interval:               100 * time.Millisecond,
+			DiagnosticRetentionTTL: 1 * time.Hour,
+			DiagnosticHardTTL:      24 * time.Hour,
+			ExportType:             "otlp",
+			Concurrency:            2,
+			PageSize:               10,
+			DeleteRatePerSec:       100,
+			SafetyMinCount:         1,
+		}
+
+		getFutureNow := func() time.Time { return time.Now().Add(2 * time.Hour) }
+
+		err = mgr.Add(&GCManager{
+			APIReader: mgr.GetAPIReader(),
+			Client:    mgr.GetClient(),
+			Config:    config,
+			Now:       getFutureNow,
+			Exporter:  NoopExporter{},
+		})
+		gm.Expect(err).NotTo(gomega.HaveOccurred())
+
+		mgrCtx, mgrCancel := context.WithCancel(g.Context())
+		defer mgrCancel()
+		go func() {
+			_ = mgr.Start(mgrCtx)
+		}()
+
+		gm.Eventually(func() bool {
+			return mgr.GetCache().WaitForCacheSync(ctx)
+		}, 5*time.Second, 100*time.Millisecond).Should(gomega.BeTrue())
+
+		diag := &governancev1alpha1.AgentDiagnostic{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "soft-delete",
+				Namespace: "default",
+			},
+			Spec: governancev1alpha1.AgentDiagnosticSpec{
+				AgentIdentity:  "test-agent",
+				DiagnosticType: "test",
+				CorrelationID:  "test-correlation-id",
+				Summary:        "test summary",
+			},
+		}
+		gm.Expect(k8sClient.Create(ctx, diag)).To(gomega.Succeed())
+		t.Cleanup(func() {
+			_ = k8sClient.Delete(context.Background(), diag)
+		})
+
+		gm.Eventually(func() error {
+			var fetched governancev1alpha1.AgentDiagnostic
+			return k8sClient.Get(ctx, client.ObjectKey{Name: "soft-delete", Namespace: "default"}, &fetched)
+		}, 10*time.Second, 500*time.Millisecond).Should(gomega.Satisfy(apierrors.IsNotFound))
+	})
 }
 
 func getFirstFoundEnvTestBinaryDir() string {

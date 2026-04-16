@@ -20,7 +20,8 @@ type GCManager struct {
 	Client    client.Client
 	Config    GCConfig
 	// Now is the clock function. Set to time.Now in production; injectable in tests.
-	Now func() time.Time
+	Now      func() time.Time
+	Exporter Exporter // nil means no-op (NoopExporter used)
 
 	mu          sync.RWMutex
 	lastCheckIn time.Time
@@ -66,15 +67,29 @@ func (m *GCManager) Start(ctx context.Context) error {
 			"interval", m.Config.Interval, "hardTTL", m.Config.DiagnosticHardTTL)
 	}
 
+	exporter := m.Exporter
+	if exporter == nil {
+		exporter = NoopExporter{}
+	}
+
+	var pool *ExportPool
+	if m.Config.ExportType != "none" && m.Config.ExportType != "" {
+		pool = NewExportPool(ctx, m.Config.Concurrency, exporter)
+		defer pool.Stop()
+		logger.Info("GC export pool started", "concurrency", m.Config.Concurrency,
+			"exportType", m.Config.ExportType)
+	}
+
+	if m.Config.DiagnosticRetentionTTL > 0 {
+		logger.Info("GC soft retention enabled",
+			"retentionTTL", m.Config.DiagnosticRetentionTTL,
+			"exportType", m.Config.ExportType)
+	}
+
 	// Burst must be >= 1; int() truncates so 0.5 → 0 which deadlocks every Wait.
 	burst := max(1, int(m.Config.DeleteRatePerSec))
-	worker := &GCWorker{
-		APIReader: m.APIReader,
-		Client:    m.Client,
-		Config:    m.Config,
-		Now:       m.Now,
-		Limiter:   rate.NewLimiter(rate.Limit(m.Config.DeleteRatePerSec), burst),
-	}
+	worker := NewGCWorker(m.APIReader, m.Client, m.Config, m.Now,
+		rate.NewLimiter(rate.Limit(m.Config.DeleteRatePerSec), burst), pool)
 
 	ticker := time.NewTicker(m.Config.Interval)
 	defer ticker.Stop()

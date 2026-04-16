@@ -73,6 +73,8 @@ jobs:
             --set gc.enabled=true \
             --set gc.interval=1m \
             --set gc.diagnosticHardTTL=1m \
+            --set gc.diagnosticRetentionTTL=30s \
+            --set gc.exportType=none \
             --set gc.dryRun=false \
             --set gc.safetyMinCount=1 \
             --wait --timeout 3m

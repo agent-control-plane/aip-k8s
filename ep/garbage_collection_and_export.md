@@ -101,41 +101,53 @@ The engine supports optional `DependencyProvider` per resource type to enforce c
 
 The GC engine exports the following metrics to monitor performance and health:
 
-| Metric | Labels | Phase 1 label values | Description |
+| Metric | Labels | Implemented label values | Description |
 |---|---|---|---|
-| `aip_gc_objects_deleted_total` | `resource`, `reason` | `reason`: `"hard_ttl"` | Total objects purged. Phase 2 adds `"expired"` (soft retention). |
-| `aip_gc_objects_skipped_total` | `resource`, `reason` | `reason`: `"dry_run"`, `"safety_valve"` | Objects eligible but not deleted. Phase 2 adds `"export_pending"`; Phase 3 adds `"dependency"`. |
+| `aip_gc_objects_deleted_total` | `resource`, `reason` | `reason`: `"hard_ttl"`, `"expired"` | Total objects purged. `"hard_ttl"`: forced deletion past hard TTL. `"expired"`: deleted after soft retention window (Phase 2+). |
+| `aip_gc_objects_skipped_total` | `resource`, `reason` | `reason`: `"dry_run"`, `"safety_valve"`, `"export_pending"` | Objects eligible but not deleted. `"export_pending"`: export in-flight or backing off (Phase 2+). `"dependency"` added in Phase 3. |
 | `aip_gc_scan_duration_seconds` | `resource` | — | Duration of the full list-and-evaluate cycle |
 | `aip_gc_scan_objects_evaluated_total` | `resource` | — | Total objects scanned from etcd |
-| `aip_gc_export_failures_total` | `resource` | _(Phase 2 — not yet implemented)_ | Failures sending records to external sinks |
+| `aip_gc_export_failures_total` | `resource` | — | Failures sending records to external sinks (Phase 2+) |
 
 > For the current implemented set see `internal/gc/metrics.go`.
 
 ## Configuration
 
-For Phase 1, configuration is delivered via **CLI flags** on the controller manager for simplicity and operational parity with other controller features.
+Configuration is delivered via **CLI flags** on the controller manager. The Helm chart (`charts/aip-k8s/values.yaml` → `charts/aip-k8s/templates/controller/deployment.yaml`) maps `values.yaml` keys to these flags.
 
-| Flag | Default | Description |
-|---|---|---|
-| `--gc-enabled` | `false` | Enable the GC engine |
-| `--gc-interval` | `1h` | Time between GC cycles |
-| `--gc-dry-run` | `true` | Log deletions without acting (default true for safety) |
-| `--gc-diagnostic-hard-ttl` | `14d` | Forced deletion window (safety valve) |
-| `--gc-delete-rate-per-sec` | `100` | Rate limit for object deletions (tokens per second) |
-| `--gc-page-size` | `500` | Objects per list page during GC scan |
-| `--gc-safety-min-count` | `10` | Skip GC if total object count is below this threshold |
+| Flag | Default | Phase | Description |
+|---|---|---|---|
+| `--gc-enabled` | `false` | 1 | Enable the GC engine |
+| `--gc-interval` | `1h` | 1 | Time between GC cycles |
+| `--gc-dry-run` | `true` | 1 | Log deletions without acting (default true for safety) |
+| `--gc-diagnostic-hard-ttl` | `14d` | 1 | Forced deletion window (safety valve) |
+| `--gc-delete-rate-per-sec` | `100` | 1 | Rate limit for object deletions (tokens per second) |
+| `--gc-page-size` | `500` | 1 | Objects per list page during GC scan |
+| `--gc-safety-min-count` | `10` | 1 | Skip GC if total object count is below this threshold |
+| `--gc-diagnostic-retention-ttl` | `0` (disabled) | 2 | Soft retention window; `0` means hard TTL only |
+| `--gc-export-type` | `none` | 2 | Export provider: `none` or `otlp` |
+| `--gc-otlp-endpoint` | `""` | 2 | OTLP gRPC endpoint (required when `--gc-export-type=otlp`) |
+| `--gc-export-concurrency` | `5` | 2 | Export worker pool size per resource type |
 
-Full YAML configuration (via `values.yaml` and ConfigMap) is deferred to Phase 2 to support structured export endpoint configuration. The schema below is a **Phase 2 (future)** design — it is not active in Phase 1.
+**Important:** `--gc-diagnostic-retention-ttl=0` disables soft retention — the export pipeline is never invoked and only the hard TTL applies. Setting `--gc-export-type=otlp` without also setting a non-zero `--gc-diagnostic-retention-ttl` has no effect.
+
+The Helm values schema (under `gc:` in `values.yaml`) is now active:
 
 ```yaml
 gc:
-  enabled: false   # disabled by default; operators must opt in
+  enabled: false         # disabled by default; operators must opt in
   interval: 1h
-  defaults:
-    pageSize: 500
-    deleteRatePerSec: 100
-    concurrency: 5  # export worker pool size per resource type
+  dryRun: true           # set false to enable actual deletion
+  diagnosticHardTTL: 14d
+  diagnosticRetentionTTL: "0"  # "0" disables soft retention; use e.g. "7d" to enable
+  exportType: "none"           # "none" or "otlp"
+  otlpEndpoint: ""             # required when exportType=otlp
+  exportConcurrency: 5
+  deleteRatePerSec: 100
+  pageSize: 500
+  safetyMinCount: 10
 
+  # Phase 3 (future) — per-resource structured config:
   resources:
     agentDiagnostics:
       enabled: true
@@ -173,7 +185,7 @@ gc:
 
 ## Export Hook Providers
 
-The `Exporter` interface is generic: `Export(ctx context.Context, obj runtime.Object) error`.
+The `Exporter` interface (`internal/gc/exporter.go`): `Export(ctx context.Context, obj *v1alpha1.AgentDiagnostic) error`.
 
 - **OTLP Provider**: Maps Kubernetes object fields to OTLP LogRecord attributes. Sends as log entries (not traces/spans) to the configured collector endpoint.
 - **Webhook Provider**: POSTs the raw JSON with a `X-AIP-Resource-Kind` header.
@@ -181,28 +193,28 @@ The `Exporter` interface is generic: `Export(ctx context.Context, obj runtime.Ob
 
 ## Implementation Checklist
 
-### Phase 1 — Hard TTL deletion for AgentDiagnostic (ship this week)
+### Phase 1 — Hard TTL deletion for AgentDiagnostic ✅ Done
 _Goal: etcd protection in production with no export complexity. Pure deletion only._
 
-- [ ] Create `internal/gc/` package containing `GCManager` and `GCWorker`.
-- [ ] Wire `GCManager` into `cmd/main.go` using `mgr.Add()`; document leader-election reliance in code comments.
-- [ ] Implement paginated list via direct client (`APIReader`) with configurable page size (default: 500).
-- [ ] Implement individual `Delete` calls per expired object with token-bucket rate limiter (default: 100 objects/sec); acquire 1 token per object before issuing the call. (`DeleteCollection` cannot target specific expired objects from a page — see Note on Deletion Mechanism above.)
-- [ ] Hard TTL only — delete records where `now() - creationTimestamp >= hardTTL` unconditionally; log a single startup warning when export is not configured (not per-deletion).
-- [ ] Register `AgentDiagnostic` as the first and only managed resource in Phase 1.
-- [ ] Update RBAC: `list`, `delete`, `deletecollection` on `agentdiagnostics`.
-- [ ] Define full `gc:` config shape now (including `retentionDays` and export fields) even though unused in Phase 1, to avoid a breaking config change in Phase 2.
-- [ ] Unit tests: paging stability, rate-limiter token consumption for batches, Hard TTL boundary (`>=`) correctness, startup warning log.
+- [x] Create `internal/gc/` package containing `GCManager` and `GCWorker`.
+- [x] Wire `GCManager` into `cmd/main.go` using `mgr.Add()`; document leader-election reliance in code comments.
+- [x] Implement paginated list via direct client (`APIReader`) with configurable page size (default: 500).
+- [x] Implement individual `Delete` calls per expired object with token-bucket rate limiter (default: 100 objects/sec); acquire 1 token per object before issuing the call. (`DeleteCollection` cannot target specific expired objects from a page — see Note on Deletion Mechanism above.)
+- [x] Hard TTL only — delete records where `now() - creationTimestamp >= hardTTL` unconditionally; log a single startup warning when export is not configured (not per-deletion).
+- [x] Register `AgentDiagnostic` as the first and only managed resource in Phase 1.
+- [x] Update RBAC: `list`, `delete`, `deletecollection` on `agentdiagnostics`.
+- [x] Define full `gc:` config shape now (including `retentionDays` and export fields) even though unused in Phase 1, to avoid a breaking config change in Phase 2.
+- [x] Unit tests: paging stability, rate-limiter token consumption for batches, Hard TTL boundary (`>=`) correctness, startup warning log.
 
-### Phase 2 — Export pipeline for AgentDiagnostic
+### Phase 2 — Export pipeline for AgentDiagnostic ✅ Done
 _Goal: add OTLP export with bounded async worker pool and retry before deletion._
 
-- [ ] Define `Exporter` interface: `Export(ctx context.Context, obj runtime.Object) error`.
-- [ ] Implement OTLP provider: maps object fields to OTLP LogRecord attributes (log entries, not traces).
-- [ ] Implement bounded export worker pool: fixed size (`concurrency`), bounded input channel (capacity: `concurrency × 10`), skip-on-full overflow (never block the GC loop).
-- [ ] Implement exponential-backoff retry (base: 5s, multiplier: 2×, max: 10m, ±20% jitter) bounded by Hard TTL; retry state is in-memory only (see Leader-Transition Semantics).
-- [ ] Activate soft `retentionDays` check (`now() - creationTimestamp >= retentionWindow`) alongside Hard TTL.
-- [ ] Unit tests: bounded-channel skip-on-full, export retry/backoff sequence, Hard TTL forced deletion when export fails, leader-transition retry-reset behavior.
+- [x] Define `Exporter` interface: `Export(ctx context.Context, obj *v1alpha1.AgentDiagnostic) error`. `NoopExporter` used when `--gc-export-type=none`.
+- [x] Implement OTLP provider (`internal/gc/exporter_otlp.go`): maps object fields to OTLP LogRecord attributes (log entries, not traces). Compile-time interface check included.
+- [x] Implement bounded export worker pool (`internal/gc/pool.go`): fixed size (`concurrency`), bounded input channel (capacity: `concurrency × 10`), skip-on-full overflow (never block the GC loop).
+- [x] Implement exponential-backoff retry (base: 5s, multiplier: 2×, max: 10m, ±20% jitter using `crypto/rand`) bounded by Hard TTL; retry state is in-memory only (see Leader-Transition Semantics).
+- [x] Activate soft retention check (`--gc-diagnostic-retention-ttl`). Guard: `retentionTTL=0` disables soft retention entirely — export pipeline is never invoked regardless of `--gc-export-type`.
+- [x] Unit tests: bounded-channel skip-on-full, export retry/backoff sequence, Hard TTL forced deletion when export fails, leader-transition retry-reset behavior, `retentionTTL=0` guard.
 
 ### Phase 3 — AgentRequest, AuditRecord, and dependency handling
 _Goal: extend GC to all AIP resource types with coherent ordered deletion._

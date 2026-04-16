@@ -2,7 +2,10 @@ package gc
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
+	"sync"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -13,7 +16,11 @@ import (
 
 // +kubebuilder:rbac:groups=governance.aip.io,resources=agentdiagnostics,verbs=get;list;delete
 
-const resourceAgentDiagnostic = "agentdiagnostics"
+const (
+	resourceAgentDiagnostic = "agentdiagnostics"
+	exportTypeOTLP          = "otlp"
+	exportTypeNone          = "none"
+)
 
 // RateLimiter defines the subset of rate.Limiter needed by the worker.
 type RateLimiter interface {
@@ -22,25 +29,44 @@ type RateLimiter interface {
 
 // GCWorker runs a single GC scan for AgentDiagnostic resources.
 type GCWorker struct {
-	// APIReader is a direct client that bypasses the informer cache.
-	// Must be mgr.GetAPIReader() — never mgr.GetClient() — to avoid stale reads.
 	APIReader client.Reader
-	// Client is used for Delete operations.
-	Client  client.Client
-	Config  GCConfig
-	Now     func() time.Time
-	Limiter RateLimiter
+	Client    client.Client
+	Config    GCConfig
+	Now       func() time.Time
+	Limiter   RateLimiter
+
+	// Pool is the async export worker pool. If nil, export is skipped (no-op path).
+	Pool *ExportPool
+	// retryState tracks per-object export retry info (in-memory only).
+	// Key: "<namespace>/<name>"
+	retryState map[string]*retryRecord
+	mu         sync.Mutex
 }
 
-// Run executes one full scan cycle. It is called by GCManager on every interval tick.
-// It is safe to call concurrently but GCManager never does so.
+// NewGCWorker initialises a new GCWorker with Phase 2 capabilities.
+func NewGCWorker(apiReader client.Reader, c client.Client, cfg GCConfig, now func() time.Time, limiter RateLimiter, pool *ExportPool) *GCWorker {
+	return &GCWorker{
+		APIReader:  apiReader,
+		Client:     c,
+		Config:     cfg,
+		Now:        now,
+		Limiter:    limiter,
+		Pool:       pool,
+		retryState: make(map[string]*retryRecord),
+	}
+}
+
+type retryRecord struct {
+	attempts    int
+	nextRetryAt time.Time
+	firstFail   time.Time
+}
+
+// Run executes one full scan cycle.
 func (w *GCWorker) Run(ctx context.Context) error {
 	logger := log.FromContext(ctx).WithValues("resource", resourceAgentDiagnostic)
 	start := w.Now()
 
-	// --- Safety valve: count total objects cluster-wide ---
-	// List with limit=SafetyMinCount+1 to avoid fetching the full corpus just for counting.
-	// If we receive fewer than SafetyMinCount items and no continuation token, skip.
 	var countCheck governancev1alpha1.AgentDiagnosticList
 	if err := w.APIReader.List(ctx, &countCheck, client.Limit(int64(w.Config.SafetyMinCount+1))); err != nil {
 		return fmt.Errorf("gc safety-valve count: %w", err)
@@ -52,10 +78,8 @@ func (w *GCWorker) Run(ctx context.Context) error {
 		return nil
 	}
 
-	// --- Paginated scan ---
 	var continueToken string
 	deleted, skipped, evaluated := 0, 0, 0
-	hardTTLCutoff := w.Now().Add(-w.Config.DiagnosticHardTTL)
 
 	for {
 		var page governancev1alpha1.AgentDiagnosticList
@@ -72,41 +96,16 @@ func (w *GCWorker) Run(ctx context.Context) error {
 			evaluated++
 			gcScanObjectsEvaluatedTotal.WithLabelValues(resourceAgentDiagnostic).Inc()
 
-			// Hard TTL check: delete if creationTimestamp + hardTTL <= now (equality = expired)
-			if diag.CreationTimestamp.After(hardTTLCutoff) {
-				// Not yet expired
-				continue
+			res, err := w.processDiagnostic(ctx, diag)
+			if err != nil {
+				return err
 			}
-
-			age := w.Now().Sub(diag.CreationTimestamp.Time)
-
-			if w.Config.DryRun {
-				logger.Info("DRY-RUN: would delete AgentDiagnostic (hard TTL exceeded)",
-					"name", diag.Name, "namespace", diag.Namespace,
-					"age", age.Round(time.Second),
-					"hardTTL", w.Config.DiagnosticHardTTL)
-				gcObjectsSkippedTotal.WithLabelValues(resourceAgentDiagnostic, "dry_run").Inc()
+			switch res {
+			case resultDeleted:
+				deleted++
+			case resultSkipped:
 				skipped++
-				continue
 			}
-
-			// Acquire 1 rate-limiter token before each Delete
-			if err := w.Limiter.Wait(ctx); err != nil {
-				// ctx cancelled; abort cleanly
-				return fmt.Errorf("gc rate limiter: %w", err)
-			}
-
-			if err := w.Client.Delete(ctx, diag); client.IgnoreNotFound(err) != nil {
-				logger.Error(err, "Failed to delete AgentDiagnostic",
-					"name", diag.Name, "namespace", diag.Namespace)
-				// Do not return; continue to next object. Log the error and move on.
-				continue
-			}
-
-			logger.V(1).Info("Deleted AgentDiagnostic",
-				"name", diag.Name, "namespace", diag.Namespace, "age", age.Round(time.Second))
-			gcObjectsDeletedTotal.WithLabelValues(resourceAgentDiagnostic, "hard_ttl").Inc()
-			deleted++
 		}
 
 		continueToken = page.Continue
@@ -117,8 +116,132 @@ func (w *GCWorker) Run(ctx context.Context) error {
 
 	duration := w.Now().Sub(start)
 	gcScanDurationSeconds.WithLabelValues(resourceAgentDiagnostic).Observe(duration.Seconds())
-	logger.Info("GC scan complete",
-		"evaluated", evaluated, "deleted", deleted, "skipped", skipped,
+	logger.Info("GC scan complete", "evaluated", evaluated, "deleted", deleted, "skipped", skipped,
 		"dryRun", w.Config.DryRun, "duration", duration.Round(time.Millisecond))
 	return nil
+}
+
+type processResult int
+
+const (
+	resultNone processResult = iota
+	resultDeleted
+	resultSkipped
+)
+
+func (w *GCWorker) processDiagnostic(ctx context.Context, diag *governancev1alpha1.AgentDiagnostic) (processResult, error) {
+	logger := log.FromContext(ctx).WithValues("resource", resourceAgentDiagnostic)
+	key := fmt.Sprintf("%s/%s", diag.Namespace, diag.Name)
+	age := w.Now().Sub(diag.CreationTimestamp.Time)
+
+	// 1. age < retentionWindow (soft TTL)
+	if w.Config.DiagnosticRetentionTTL > 0 && age < w.Config.DiagnosticRetentionTTL {
+		return resultNone, nil
+	}
+
+	// 2. age >= hardTTL
+	if age >= w.Config.DiagnosticHardTTL {
+		if w.Config.DryRun {
+			logger.Info("DRY-RUN: would delete AgentDiagnostic (hard TTL exceeded)",
+				"name", diag.Name, "namespace", diag.Namespace, "age", age.Round(time.Second))
+			gcObjectsSkippedTotal.WithLabelValues(resourceAgentDiagnostic, "dry_run").Inc()
+			return resultSkipped, nil
+		}
+		if err := w.Limiter.Wait(ctx); err != nil {
+			return resultNone, fmt.Errorf("gc rate limiter: %w", err)
+		}
+		if err := w.Client.Delete(ctx, diag); client.IgnoreNotFound(err) != nil {
+			logger.Error(err, "Failed to delete AgentDiagnostic", "name", diag.Name)
+			return resultNone, nil
+		}
+		gcObjectsDeletedTotal.WithLabelValues(resourceAgentDiagnostic, "hard_ttl").Inc()
+		w.mu.Lock()
+		delete(w.retryState, key)
+		w.mu.Unlock()
+		return resultDeleted, nil
+	}
+
+	// 3. Pool == nil OR Config.ExportType == "none"
+	if w.Pool == nil || w.Config.ExportType == exportTypeNone {
+		if w.Config.DiagnosticRetentionTTL > 0 && age >= w.Config.DiagnosticRetentionTTL {
+			if w.Config.DryRun {
+				logger.Info("DRY-RUN: would delete AgentDiagnostic (soft TTL exceeded, no export)",
+					"name", diag.Name, "namespace", diag.Namespace, "age", age.Round(time.Second))
+				gcObjectsSkippedTotal.WithLabelValues(resourceAgentDiagnostic, "dry_run").Inc()
+				return resultSkipped, nil
+			}
+			if err := w.Limiter.Wait(ctx); err != nil {
+				return resultNone, fmt.Errorf("gc rate limiter: %w", err)
+			}
+			if err := w.Client.Delete(ctx, diag); client.IgnoreNotFound(err) != nil {
+				logger.Error(err, "Failed to delete AgentDiagnostic", "name", diag.Name)
+				return resultNone, nil
+			}
+			gcObjectsDeletedTotal.WithLabelValues(resourceAgentDiagnostic, "expired").Inc()
+			return resultDeleted, nil
+		}
+		return resultNone, nil
+	}
+
+	// 4. Export path
+	if w.Config.DiagnosticRetentionTTL <= 0 {
+		return resultNone, nil
+	}
+
+	w.mu.Lock()
+	if r, exists := w.retryState[key]; exists && w.Now().Before(r.nextRetryAt) {
+		w.mu.Unlock()
+		gcObjectsSkippedTotal.WithLabelValues(resourceAgentDiagnostic, "export_pending").Inc()
+		return resultSkipped, nil
+	}
+	w.mu.Unlock()
+
+	objToExport := diag.DeepCopy()
+	success := w.Pool.Submit(objToExport, func() {
+		if w.Config.DryRun {
+			return
+		}
+		delCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := w.Limiter.Wait(delCtx); err != nil {
+			return
+		}
+		if err := w.Client.Delete(delCtx, objToExport); client.IgnoreNotFound(err) != nil {
+			return
+		}
+		gcObjectsDeletedTotal.WithLabelValues(resourceAgentDiagnostic, "expired").Inc()
+		w.mu.Lock()
+		delete(w.retryState, key)
+		w.mu.Unlock()
+	}, func(err error) {
+		gcExportFailuresTotal.WithLabelValues(resourceAgentDiagnostic).Inc()
+		w.mu.Lock()
+		r, exists := w.retryState[key]
+		if !exists {
+			r = &retryRecord{firstFail: w.Now()}
+			w.retryState[key] = r
+		}
+		r.attempts++
+		r.nextRetryAt = w.Now().Add(nextBackoff(r.attempts))
+		w.mu.Unlock()
+	})
+
+	if !success {
+		logger.V(1).Info("Export pool full, skipping AgentDiagnostic", "name", diag.Name)
+		gcObjectsSkippedTotal.WithLabelValues(resourceAgentDiagnostic, "export_pending").Inc()
+		return resultSkipped, nil
+	}
+	return resultNone, nil
+}
+
+func nextBackoff(attempts int) time.Duration {
+	base := 5 * time.Second
+	shift := min(attempts, 10)
+	delay := base * time.Duration(1<<uint(shift))
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	f := float64(binary.LittleEndian.Uint64(b[:])&((1<<53)-1)) / float64(1<<53)
+	jitter := time.Duration(float64(delay) * 0.2 * (2*f - 1))
+	final := max(0, delay+jitter)
+	return min(final, 10*time.Minute)
 }
