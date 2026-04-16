@@ -14,6 +14,7 @@ type GCConfig struct {
 	DiagnosticRetentionTTL time.Duration // soft retention window; 0 means disabled (hard TTL only)
 	ExportType             string        // "none" or "otlp"; default "none"
 	OTLPEndpoint           string        // gRPC endpoint e.g. "otel-collector:4317"
+	OTLPInsecure           bool          // if true, use insecure connection for OTLP
 	Concurrency            int           // export worker pool size per resource; default 5
 	PageSize               int64
 	DeleteRatePerSec       float64
@@ -31,6 +32,7 @@ func DefaultGCConfig() GCConfig {
 		DiagnosticRetentionTTL: 0,
 		ExportType:             "none",
 		OTLPEndpoint:           "",
+		OTLPInsecure:           false,
 		Concurrency:            5,
 		PageSize:               500,
 		DeleteRatePerSec:       100,

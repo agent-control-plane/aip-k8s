@@ -16,15 +16,23 @@ var _ Exporter = (*OTLPExporter)(nil)
 type OTLPExporter struct {
 	provider *sdklog.LoggerProvider
 	logger   log.Logger
+	// Clock is the clock function. Set to time.Now in production; injectable in tests.
+	Clock func() time.Time
+	// insecure indicates if the connection to the OTLP collector should be insecure.
+	insecure bool
 }
 
 // NewOTLPExporter creates an OTLPExporter that sends records to the given
 // gRPC endpoint (e.g. "otel-collector:4317").
-func NewOTLPExporter(ctx context.Context, endpoint string) (*OTLPExporter, error) {
-	exporter, err := otlploggrpc.New(ctx,
+func NewOTLPExporter(ctx context.Context, endpoint string, insecure bool) (*OTLPExporter, error) {
+	opts := []otlploggrpc.Option{
 		otlploggrpc.WithEndpoint(endpoint),
-		otlploggrpc.WithInsecure(),
-	)
+	}
+	if insecure {
+		opts = append(opts, otlploggrpc.WithInsecure())
+	}
+
+	exporter, err := otlploggrpc.New(ctx, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -38,6 +46,8 @@ func NewOTLPExporter(ctx context.Context, endpoint string) (*OTLPExporter, error
 	return &OTLPExporter{
 		provider: provider,
 		logger:   logger,
+		Clock:    time.Now,
+		insecure: insecure,
 	}, nil
 }
 
@@ -47,8 +57,10 @@ func (e *OTLPExporter) Shutdown(ctx context.Context) error {
 }
 
 // Export maps an AgentDiagnostic to an OTLP log record and emits it.
+// logger.Emit is asynchronous and best-effort; Export returning nil only
+// indicates the record was successfully queued, not acknowledged by the collector.
 func (e *OTLPExporter) Export(ctx context.Context, diag *governancev1alpha1.AgentDiagnostic) error {
-	now := time.Now()
+	now := e.Clock()
 	record := log.Record{}
 	record.SetTimestamp(diag.CreationTimestamp.Time)
 	record.SetObservedTimestamp(now)

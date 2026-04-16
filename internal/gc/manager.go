@@ -73,7 +73,7 @@ func (m *GCManager) Start(ctx context.Context) error {
 	}
 
 	var pool *ExportPool
-	if m.Config.ExportType != "none" && m.Config.ExportType != "" {
+	if m.Config.ExportType == "otlp" && m.Config.DiagnosticRetentionTTL > 0 {
 		pool = NewExportPool(ctx, m.Config.Concurrency, exporter)
 		defer pool.Stop()
 		logger.Info("GC export pool started", "concurrency", m.Config.Concurrency,

@@ -86,6 +86,8 @@ func main() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 
+	const otlpShutdownTimeout = 5 * time.Second
+
 	// GC flags
 	gcCfg := gc.DefaultGCConfig()
 	flag.BoolVar(&gcCfg.Enabled, "gc-enabled", gcCfg.Enabled, "Enable the GC engine.")
@@ -100,7 +102,9 @@ func main() {
 		"Export provider type. Valid values: none, otlp.")
 	flag.StringVar(&gcCfg.OTLPEndpoint, "gc-otlp-endpoint", "",
 		"OTLP gRPC endpoint for export (e.g. otel-collector:4317). "+
-			"Required when --gc-export-type=otlp.")
+			"Required when --gc-export-type=otlp and soft retention is enabled.")
+	flag.BoolVar(&gcCfg.OTLPInsecure, "gc-otlp-insecure", gcCfg.OTLPInsecure,
+		"If true, use an insecure connection for OTLP export.")
 	flag.IntVar(&gcCfg.Concurrency, "gc-export-concurrency", 5,
 		"Number of concurrent export workers per resource type.")
 	flag.Int64Var(&gcCfg.PageSize, "gc-page-size", gcCfg.PageSize, "Objects per list page during GC scan.")
@@ -115,8 +119,9 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
-	if gcCfg.ExportType == "otlp" && gcCfg.OTLPEndpoint == "" {
-		setupLog.Error(nil, "--gc-otlp-endpoint is required when --gc-export-type=otlp")
+	// Validate ExportType
+	if gcCfg.ExportType != "none" && gcCfg.ExportType != "otlp" {
+		setupLog.Error(nil, "Invalid --gc-export-type", "type", gcCfg.ExportType)
 		os.Exit(1)
 	}
 
@@ -125,13 +130,24 @@ func main() {
 	ctx := ctrl.SetupSignalHandler()
 
 	var gcExporter gc.Exporter
-	if gcCfg.ExportType == "otlp" {
-		otlpExp, err := gc.NewOTLPExporter(ctx, gcCfg.OTLPEndpoint)
+	if gcCfg.ExportType == "otlp" && gcCfg.DiagnosticRetentionTTL > 0 {
+		if gcCfg.OTLPEndpoint == "" {
+			setupLog.Error(nil, "--gc-otlp-endpoint is required when --gc-export-type=otlp and retention is enabled")
+			os.Exit(1)
+		}
+
+		otlpExp, err := gc.NewOTLPExporter(ctx, gcCfg.OTLPEndpoint, gcCfg.OTLPInsecure)
 		if err != nil {
 			setupLog.Error(err, "Failed to create OTLP exporter")
 			os.Exit(1)
 		}
-		defer otlpExp.Shutdown(context.Background()) //nolint:errcheck
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), otlpShutdownTimeout)
+			defer cancel()
+			if err := otlpExp.Shutdown(shutdownCtx); err != nil {
+				setupLog.Error(err, "Failed to shutdown OTLP exporter")
+			}
+		}()
 		gcExporter = otlpExp
 	}
 

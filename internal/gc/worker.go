@@ -20,6 +20,9 @@ const (
 	resourceAgentDiagnostic = "agentdiagnostics"
 	exportTypeOTLP          = "otlp"
 	exportTypeNone          = "none"
+	deleteCallbackTimeout   = 10 * time.Second
+	backoffBase             = 5 * time.Second
+	backoffMax              = 10 * time.Minute
 )
 
 // RateLimiter defines the subset of rate.Limiter needed by the worker.
@@ -201,12 +204,16 @@ func (w *GCWorker) processDiagnostic(ctx context.Context, diag *governancev1alph
 		if w.Config.DryRun {
 			return
 		}
-		delCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		delCtx, cancel := context.WithTimeout(context.Background(), deleteCallbackTimeout)
 		defer cancel()
 		if err := w.Limiter.Wait(delCtx); err != nil {
+			logger.Error(err, "Failed to wait for rate limiter in export success callback",
+				"name", objToExport.Name, "namespace", objToExport.Namespace)
 			return
 		}
 		if err := w.Client.Delete(delCtx, objToExport); client.IgnoreNotFound(err) != nil {
+			logger.Error(err, "Failed to delete AgentDiagnostic in export success callback",
+				"name", objToExport.Name, "namespace", objToExport.Namespace)
 			return
 		}
 		gcObjectsDeletedTotal.WithLabelValues(resourceAgentDiagnostic, "expired").Inc()
@@ -235,13 +242,14 @@ func (w *GCWorker) processDiagnostic(ctx context.Context, diag *governancev1alph
 }
 
 func nextBackoff(attempts int) time.Duration {
-	base := 5 * time.Second
 	shift := min(attempts, 10)
-	delay := base * time.Duration(1<<uint(shift))
+	delay := backoffBase * time.Duration(1<<uint(shift))
 	var b [8]byte
+	// Errors from rand.Read are ignored as they only affect jitter magnitude,
+	// not the core exponential backoff behavior.
 	_, _ = rand.Read(b[:])
 	f := float64(binary.LittleEndian.Uint64(b[:])&((1<<53)-1)) / float64(1<<53)
 	jitter := time.Duration(float64(delay) * 0.2 * (2*f - 1))
 	final := max(0, delay+jitter)
-	return min(final, 10*time.Minute)
+	return min(final, backoffMax)
 }

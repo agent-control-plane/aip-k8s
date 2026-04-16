@@ -105,9 +105,9 @@ rate(aip_gc_objects_deleted_total[5m])
 increase(aip_gc_export_failures_total[1h])
 ```
 
-**Objects currently waiting for export:**
+**Export skip rate (due to pending export):**
 ```promql
-aip_gc_objects_skipped_total{reason="export_pending"}
+rate(aip_gc_objects_skipped_total{reason="export_pending"}[5m])
 ```
 
 ---

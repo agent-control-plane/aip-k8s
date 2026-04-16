@@ -2,7 +2,6 @@ package gc
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -87,12 +86,10 @@ func TestGCIntegration(t *testing.T) {
 		gm.Expect(err).NotTo(gomega.HaveOccurred())
 
 		// 5. Start manager in background
+		startErrCh := make(chan error, 1)
 		mgrCtx, mgrCancel := context.WithCancel(g.Context())
-		defer mgrCancel()
 		go func() {
-			if err := mgr.Start(mgrCtx); err != nil {
-				fmt.Printf("Manager exited: %v\n", err)
-			}
+			startErrCh <- mgr.Start(mgrCtx)
 		}()
 
 		// Wait for manager to start by checking if we can get the client
@@ -123,6 +120,12 @@ func TestGCIntegration(t *testing.T) {
 			var fetched governancev1alpha1.AgentDiagnostic
 			return k8sClient.Get(ctx, client.ObjectKey{Name: "integration-test-diag", Namespace: "default"}, &fetched)
 		}, 10*time.Second, 500*time.Millisecond).Should(gomega.Satisfy(apierrors.IsNotFound))
+
+		mgrCancel()
+		// Capture the error from mgr.Start(mgrCtx). At the end of each subtest, cancel the manager context,
+		// and assert that the only permitted non-nil error is context.Canceled (or nil).
+		// Ignoring other errors is not allowed per guidelines.
+		gm.Eventually(startErrCh, 5*time.Second).Should(gomega.Receive(gomega.Or(gomega.BeNil(), gomega.Equal(context.Canceled))))
 	})
 
 	t.Run("Manager does NOT delete non-expired objects", func(g *testing.T) {
@@ -160,10 +163,10 @@ func TestGCIntegration(t *testing.T) {
 		})
 		gm.Expect(err).NotTo(gomega.HaveOccurred())
 
+		startErrCh := make(chan error, 1)
 		mgrCtx, mgrCancel := context.WithCancel(g.Context())
-		defer mgrCancel()
 		go func() {
-			_ = mgr.Start(mgrCtx)
+			startErrCh <- mgr.Start(mgrCtx)
 		}()
 
 		gm.Eventually(func() bool {
@@ -192,6 +195,12 @@ func TestGCIntegration(t *testing.T) {
 			var fetched governancev1alpha1.AgentDiagnostic
 			return k8sClient.Get(ctx, client.ObjectKey{Name: "keep-me", Namespace: "default"}, &fetched)
 		}, 500*time.Millisecond, 100*time.Millisecond).Should(gomega.Succeed())
+
+		mgrCancel()
+		// Capture the error from mgr.Start(mgrCtx). At the end of each subtest, cancel the manager context,
+		// and assert that the only permitted non-nil error is context.Canceled (or nil).
+		// Ignoring other errors is not allowed per guidelines.
+		gm.Eventually(startErrCh, 5*time.Second).Should(gomega.Receive(gomega.Or(gomega.BeNil(), gomega.Equal(context.Canceled))))
 	})
 
 	t.Run("Export pool with noop exporter deletes soft-retention expired objects", func(g *testing.T) {
@@ -231,10 +240,10 @@ func TestGCIntegration(t *testing.T) {
 		})
 		gm.Expect(err).NotTo(gomega.HaveOccurred())
 
+		startErrCh := make(chan error, 1)
 		mgrCtx, mgrCancel := context.WithCancel(g.Context())
-		defer mgrCancel()
 		go func() {
-			_ = mgr.Start(mgrCtx)
+			startErrCh <- mgr.Start(mgrCtx)
 		}()
 
 		gm.Eventually(func() bool {
@@ -262,6 +271,12 @@ func TestGCIntegration(t *testing.T) {
 			var fetched governancev1alpha1.AgentDiagnostic
 			return k8sClient.Get(ctx, client.ObjectKey{Name: "soft-delete", Namespace: "default"}, &fetched)
 		}, 10*time.Second, 500*time.Millisecond).Should(gomega.Satisfy(apierrors.IsNotFound))
+
+		mgrCancel()
+		// Capture the error from mgr.Start(mgrCtx). At the end of each subtest, cancel the manager context,
+		// and assert that the only permitted non-nil error is context.Canceled (or nil).
+		// Ignoring other errors is not allowed per guidelines.
+		gm.Eventually(startErrCh, 5*time.Second).Should(gomega.Receive(gomega.Or(gomega.BeNil(), gomega.Equal(context.Canceled))))
 	})
 }
 

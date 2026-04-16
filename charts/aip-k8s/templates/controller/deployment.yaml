@@ -37,7 +37,7 @@ spec:
             - --gc-diagnostic-retention-ttl={{ .Values.gc.diagnosticRetentionTTL }}
             - --gc-export-type={{ .Values.gc.exportType }}
             {{- if eq .Values.gc.exportType "otlp" }}
-            - --gc-otlp-endpoint={{ .Values.gc.otlpEndpoint }}
+            - --gc-otlp-endpoint={{ .Values.gc.otlpEndpoint | quote }}
             {{- end }}
             - --gc-export-concurrency={{ .Values.gc.exportConcurrency }}
             - --gc-delete-rate-per-sec={{ .Values.gc.deleteRatePerSec }}

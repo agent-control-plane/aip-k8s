@@ -49,13 +49,14 @@ func startFakeOTLPServer(t *testing.T) (*fakeOTLPServer, string) {
 }
 
 func TestOTLPExporter(t *testing.T) {
-	gm := gomega.NewWithT(t)
-
 	t.Run("Export sends a LogRecord with correct attributes", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
 		fake, endpoint := startFakeOTLPServer(t)
 		ctx := context.Background()
-		exporter, err := NewOTLPExporter(ctx, endpoint)
+		fixedTime := time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC)
+		exporter, err := NewOTLPExporter(ctx, endpoint, true)
 		gm.Expect(err).NotTo(gomega.HaveOccurred())
+		exporter.Clock = func() time.Time { return fixedTime }
 
 		diag := &governancev1alpha1.AgentDiagnostic{
 			ObjectMeta: metav1.ObjectMeta{
@@ -95,12 +96,14 @@ func TestOTLPExporter(t *testing.T) {
 		gm.Expect(attrs["aip.diagnostic.agent_identity"]).To(gomega.Equal("agent1"))
 		gm.Expect(attrs["aip.diagnostic.correlation_id"]).To(gomega.Equal("corr1"))
 		gm.Expect(attrs["aip.diagnostic.verdict"]).To(gomega.Equal("correct"))
+		gm.Expect(record.ObservedTimeUnixNano).To(gomega.Equal(uint64(fixedTime.UnixNano())))
 	})
 
 	t.Run("Export omits verdict attribute when Status.Verdict is empty", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
 		fake, endpoint := startFakeOTLPServer(t)
 		ctx := context.Background()
-		exporter, err := NewOTLPExporter(ctx, endpoint)
+		exporter, err := NewOTLPExporter(ctx, endpoint, true)
 		gm.Expect(err).NotTo(gomega.HaveOccurred())
 
 		diag := &governancev1alpha1.AgentDiagnostic{
@@ -108,8 +111,10 @@ func TestOTLPExporter(t *testing.T) {
 			Spec:       governancev1alpha1.AgentDiagnosticSpec{Summary: "summary2"},
 		}
 
-		_ = exporter.Export(ctx, diag)
-		_ = exporter.Shutdown(ctx)
+		err = exporter.Export(ctx, diag)
+		gm.Expect(err).NotTo(gomega.HaveOccurred())
+		err = exporter.Shutdown(ctx)
+		gm.Expect(err).NotTo(gomega.HaveOccurred())
 
 		gm.Expect(fake.requests).To(gomega.HaveLen(1))
 		record := fake.requests[0].ResourceLogs[0].ScopeLogs[0].LogRecords[0]
@@ -119,9 +124,11 @@ func TestOTLPExporter(t *testing.T) {
 	})
 
 	t.Run("Shutdown is idempotent — second call returns nil", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
 		_, endpoint := startFakeOTLPServer(t)
 		ctx := context.Background()
-		exporter, _ := NewOTLPExporter(ctx, endpoint)
+		exporter, err := NewOTLPExporter(ctx, endpoint, true)
+		gm.Expect(err).NotTo(gomega.HaveOccurred())
 
 		err1 := exporter.Shutdown(ctx)
 		gm.Expect(err1).NotTo(gomega.HaveOccurred())

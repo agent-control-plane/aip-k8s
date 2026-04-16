@@ -13,9 +13,8 @@ import (
 )
 
 func TestExportPool(t *testing.T) {
-	gm := gomega.NewWithT(t)
-
 	t.Run("Submit returns true and onSuccess is called for successful export", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
 		var counter int32
 		exporter := &mockExporter{
 			exportFn: func(ctx context.Context, obj *governancev1alpha1.AgentDiagnostic) error {
@@ -30,6 +29,7 @@ func TestExportPool(t *testing.T) {
 	})
 
 	t.Run("Submit returns true and onFailure is called for failed export", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
 		var counter int32
 		exporter := &mockExporter{
 			exportFn: func(ctx context.Context, obj *governancev1alpha1.AgentDiagnostic) error {
@@ -44,6 +44,7 @@ func TestExportPool(t *testing.T) {
 	})
 
 	t.Run("Pool is full — Submit returns false without blocking", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
 		var startedOnce sync.Once
 		started := make(chan struct{})
 		blocker := make(chan struct{})
@@ -79,6 +80,7 @@ func TestExportPool(t *testing.T) {
 	})
 
 	t.Run("Stop drains in-flight work", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
 		var counter int32
 		exporter := &mockExporter{
 			exportFn: func(ctx context.Context, obj *governancev1alpha1.AgentDiagnostic) error {
@@ -95,6 +97,7 @@ func TestExportPool(t *testing.T) {
 	})
 
 	t.Run("Context cancellation stops workers", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
 		ctx, cancel := context.WithCancel(context.Background())
 		exporter := &mockExporter{
 			exportFn: func(ctx context.Context, obj *governancev1alpha1.AgentDiagnostic) error {

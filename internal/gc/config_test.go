@@ -8,9 +8,8 @@ import (
 )
 
 func TestDefaultGCConfig(t *testing.T) {
-	gm := gomega.NewWithT(t)
-
 	t.Run("DefaultGCConfig has safe defaults", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
 		cfg := DefaultGCConfig()
 		gm.Expect(cfg.Enabled).To(gomega.BeFalse())
 		gm.Expect(cfg.DryRun).To(gomega.BeTrue())
@@ -22,6 +21,7 @@ func TestDefaultGCConfig(t *testing.T) {
 	})
 
 	t.Run("Zero DiagnosticRetentionTTL means soft retention disabled", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
 		cfg := GCConfig{
 			DiagnosticRetentionTTL: 0,
 			DiagnosticHardTTL:      14 * 24 * time.Hour,

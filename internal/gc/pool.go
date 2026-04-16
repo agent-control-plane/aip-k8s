@@ -13,6 +13,11 @@ type exportJob struct {
 	onFailure func(err error)
 }
 
+const (
+	// jobQueueMultiplier is the factor by which concurrency is multiplied to set the job channel capacity.
+	jobQueueMultiplier = 10
+)
+
 // ExportPool implements a bounded worker pool for exporting AgentDiagnostics.
 type ExportPool struct {
 	exporter Exporter
@@ -21,11 +26,11 @@ type ExportPool struct {
 	stopOnce sync.Once
 }
 
-// NewExportPool creates a pool with concurrency workers and a job queue of size concurrency*10.
+// NewExportPool creates a pool with concurrency workers and a job queue of size concurrency*jobQueueMultiplier.
 func NewExportPool(ctx context.Context, concurrency int, exporter Exporter) *ExportPool {
 	p := &ExportPool{
 		exporter: exporter,
-		jobs:     make(chan exportJob, concurrency*10),
+		jobs:     make(chan exportJob, concurrency*jobQueueMultiplier),
 	}
 
 	for range concurrency {
