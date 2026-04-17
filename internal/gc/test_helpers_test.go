@@ -3,7 +3,7 @@ package gc
 import (
 	"context"
 
-	governancev1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
+	governancev1alpha1 "github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 

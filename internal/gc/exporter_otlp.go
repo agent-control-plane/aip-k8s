@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	governancev1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
+	governancev1alpha1 "github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"

@@ -110,7 +110,7 @@ steps are needed.
 The published chart is available at:
 
 ```
-oci://ghcr.io/ravisantoshgudimetla/aip-k8s/charts/aip-k8s
+oci://ghcr.io/agent-control-plane/aip-k8s/charts/aip-k8s
 ```
 
 To publish a new chart version, bump `version` in `charts/aip-k8s/Chart.yaml` and merge

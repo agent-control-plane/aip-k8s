@@ -2,14 +2,14 @@
 
 controller:
   image:
-    repository: ghcr.io/ravisantoshgudimetla/aip-k8s/controller
+    repository: ghcr.io/agent-control-plane/aip-k8s/controller
     tag: latest
     pullPolicy: IfNotPresent
   replicaCount: 1
 
 gateway:
   image:
-    repository: ghcr.io/ravisantoshgudimetla/aip-k8s/gateway
+    repository: ghcr.io/agent-control-plane/aip-k8s/gateway
     tag: latest
     pullPolicy: IfNotPresent
   replicaCount: 1
@@ -43,7 +43,7 @@ gateway:
 
 dashboard:
   image:
-    repository: ghcr.io/ravisantoshgudimetla/aip-k8s/dashboard
+    repository: ghcr.io/agent-control-plane/aip-k8s/dashboard
     tag: latest
     pullPolicy: IfNotPresent
   replicaCount: 1

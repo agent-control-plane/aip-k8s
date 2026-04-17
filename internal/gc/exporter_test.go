@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
+	governancev1alpha1 "github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 	"github.com/onsi/gomega"
-	governancev1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
 )
 
 func TestNoopExporter(t *testing.T) {

@@ -14,7 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
+	"github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 )
 
 func TestAgentRequestLabels(t *testing.T) {

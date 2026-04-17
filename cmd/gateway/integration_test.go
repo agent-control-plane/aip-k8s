@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agent-control-plane/aip-k8s/api/v1alpha1"
+	"github.com/agent-control-plane/aip-k8s/internal/controller"
+	"github.com/agent-control-plane/aip-k8s/internal/evaluation"
 	"github.com/onsi/gomega"
-	"github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
-	"github.com/ravisantoshgudimetla/aip-k8s/internal/controller"
-	"github.com/ravisantoshgudimetla/aip-k8s/internal/evaluation"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"

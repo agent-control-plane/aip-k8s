@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"sync"
 
+	aipv1alpha1 "github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
-	aipv1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 

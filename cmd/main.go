@@ -39,10 +39,10 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	governancev1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
-	"github.com/ravisantoshgudimetla/aip-k8s/internal/controller"
-	"github.com/ravisantoshgudimetla/aip-k8s/internal/evaluation"
-	"github.com/ravisantoshgudimetla/aip-k8s/internal/gc"
+	governancev1alpha1 "github.com/agent-control-plane/aip-k8s/api/v1alpha1"
+	"github.com/agent-control-plane/aip-k8s/internal/controller"
+	"github.com/agent-control-plane/aip-k8s/internal/evaluation"
+	"github.com/agent-control-plane/aip-k8s/internal/gc"
 	// +kubebuilder:scaffold:imports
 )
 

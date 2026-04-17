@@ -30,7 +30,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
+	"github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 )
 

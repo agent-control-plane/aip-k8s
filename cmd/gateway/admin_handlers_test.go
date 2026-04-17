@@ -15,7 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
+	"github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 )
 
 func newAdminTestServer(objs ...client.Object) *Server {

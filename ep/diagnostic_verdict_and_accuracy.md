@@ -13,7 +13,7 @@ The missing link is a structured human verdict on each `AgentDiagnostic`, aggreg
 ## Non-Goals
 
 - Replace `CalibrationEvidence` (spec Section 3.1.5). That mechanism attests model benchmark performance at submission time via a signed JWT. This design is complementary: it measures in-production diagnostic quality via SRE observation.
-- Implement the full `AgentTrustProfile` CRD. That is tracked in [agent-intent-protocol#7](https://github.com/ravisantoshgudimetla/agent-intent-protocol/issues/7). This design introduces a precursor CR that will feed into it.
+- Implement the full `AgentTrustProfile` CRD. That is tracked in [agent-intent-protocol#7](https://github.com/agent-control-plane/agent-intent-protocol/issues/7). This design introduces a precursor CR that will feed into it.
 - Build a reconciler/controller for aggregation. The gateway handler is sufficient for v1alpha1.
 
 ## Design

@@ -11,7 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	governancev1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
+	governancev1alpha1 "github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 )
 
 // +kubebuilder:rbac:groups=governance.aip.io,resources=agentdiagnostics,verbs=get;list;delete

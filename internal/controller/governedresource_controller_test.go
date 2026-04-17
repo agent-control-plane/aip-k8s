@@ -30,8 +30,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	governancev1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
-	"github.com/ravisantoshgudimetla/aip-k8s/internal/evaluation"
+	governancev1alpha1 "github.com/agent-control-plane/aip-k8s/api/v1alpha1"
+	"github.com/agent-control-plane/aip-k8s/internal/evaluation"
 )
 
 func setupScheme() *runtime.Scheme {

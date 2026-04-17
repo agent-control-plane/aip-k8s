@@ -16,7 +16,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/ravisantoshgudimetla/aip-k8s/test/utils"
+	"github.com/agent-control-plane/aip-k8s/test/utils"
 )
 
 const (

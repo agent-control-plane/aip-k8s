@@ -34,8 +34,8 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
-	governancev1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
-	"github.com/ravisantoshgudimetla/aip-k8s/test/utils"
+	governancev1alpha1 "github.com/agent-control-plane/aip-k8s/api/v1alpha1"
+	"github.com/agent-control-plane/aip-k8s/test/utils"
 )
 
 // Phase 6: Gateway API — exercises the full agent path through the gateway

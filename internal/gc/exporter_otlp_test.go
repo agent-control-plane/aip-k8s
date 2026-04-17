@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	governancev1alpha1 "github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 	"github.com/onsi/gomega"
-	governancev1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	"google.golang.org/grpc"

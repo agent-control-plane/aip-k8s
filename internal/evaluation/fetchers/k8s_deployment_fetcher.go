@@ -13,7 +13,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/ravisantoshgudimetla/aip-k8s/internal/evaluation"
+	"github.com/agent-control-plane/aip-k8s/internal/evaluation"
 )
 
 // FetchK8sDeployment fetches the state of a Kubernetes Deployment.

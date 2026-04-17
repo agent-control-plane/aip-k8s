@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	governancev1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
+	governancev1alpha1 "github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 )
 
 type exportJob struct {

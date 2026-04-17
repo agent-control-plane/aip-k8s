@@ -40,9 +40,9 @@ import (
 
 	"encoding/json"
 
-	governancev1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
-	"github.com/ravisantoshgudimetla/aip-k8s/internal/evaluation"
-	"github.com/ravisantoshgudimetla/aip-k8s/internal/evaluation/fetchers"
+	governancev1alpha1 "github.com/agent-control-plane/aip-k8s/api/v1alpha1"
+	"github.com/agent-control-plane/aip-k8s/internal/evaluation"
+	"github.com/agent-control-plane/aip-k8s/internal/evaluation/fetchers"
 	apiextensions "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apiextensions-apiserver/pkg/apiserver/validation"

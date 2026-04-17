@@ -24,7 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	governancev1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
+	governancev1alpha1 "github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 )
 
 // SafetyPolicyReconciler reconciles a SafetyPolicy object

@@ -3,7 +3,7 @@ package evaluation
 import (
 	"context"
 
-	aipv1alpha1 "github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1"
+	aipv1alpha1 "github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 )
 
 const failModeClosed = "FailClosed"

@@ -1,7 +1,7 @@
 # Agent Intent Protocol (AIP) Kubernetes Control Plane
 
 ## Description
-`aip-k8s` is a Kubernetes-native Control Plane implementation of the [Agent Intent Protocol (AIP)](https://github.com/ravisantoshgudimetla/agent-intent-protocol).
+`aip-k8s` is a Kubernetes-native Control Plane implementation of the [Agent Intent Protocol (AIP)](https://github.com/agent-control-plane/agent-intent-protocol).
 
 AIP is an open standard designed to govern autonomous AI agents interacting with critical infrastructure. By requiring agents to declare their intents as cryptographic `AgentRequests` *before* action, this control plane provides strict mutual exclusion (via locking), policy-based governance (via CEL rules), and irrefutable audit trails (via immutable `AuditRecords`).
 
@@ -58,7 +58,7 @@ The quickest way to get the full AIP stack (controller + gateway + dashboard) ru
 
 ```sh
 helm install aip-k8s \
-  oci://ghcr.io/ravisantoshgudimetla/aip-k8s/charts/aip-k8s \
+  oci://ghcr.io/agent-control-plane/aip-k8s/charts/aip-k8s \
   --version 0.1.0 \
   --namespace aip-k8s-system \
   --create-namespace
@@ -100,7 +100,7 @@ kubectl apply --server-side --force-conflicts -f charts/aip-k8s/crds/
 
 # Step 2 — upgrade the chart
 helm upgrade aip-k8s \
-  oci://ghcr.io/ravisantoshgudimetla/aip-k8s/charts/aip-k8s \
+  oci://ghcr.io/agent-control-plane/aip-k8s/charts/aip-k8s \
   --namespace aip-k8s-system \
   --reuse-values
 ```
@@ -117,7 +117,7 @@ make helm-upgrade
 
 ```sh
 TAG=v0.1.0   # replace with the target chart version
-BASE=https://raw.githubusercontent.com/ravisantoshgudimetla/aip-k8s/refs/tags/${TAG}/charts/aip-k8s/crds
+BASE=https://raw.githubusercontent.com/agent-control-plane/aip-k8s/refs/tags/${TAG}/charts/aip-k8s/crds
 kubectl apply --server-side --force-conflicts \
   -f ${BASE}/governance.aip.io_agentrequests.yaml \
   -f ${BASE}/governance.aip.io_agentdiagnostics.yaml \
@@ -126,7 +126,7 @@ kubectl apply --server-side --force-conflicts \
   -f ${BASE}/governance.aip.io_governedresources.yaml \
   -f ${BASE}/governance.aip.io_diagnosticaccuracysummaries.yaml
 helm upgrade aip-k8s \
-  oci://ghcr.io/ravisantoshgudimetla/aip-k8s/charts/aip-k8s \
+  oci://ghcr.io/agent-control-plane/aip-k8s/charts/aip-k8s \
   --namespace aip-k8s-system \
   --reuse-values
 ```
@@ -285,7 +285,7 @@ The gateway supports OIDC/JWT authentication. When enabled, every non-healthz re
 
 ```sh
 helm upgrade --install aip-k8s \
-  oci://ghcr.io/ravisantoshgudimetla/aip-k8s/charts/aip-k8s \
+  oci://ghcr.io/agent-control-plane/aip-k8s/charts/aip-k8s \
   --namespace aip-k8s-system --create-namespace \
   --set gateway.auth.oidcIssuerURL=https://accounts.google.com \
   --set gateway.auth.agentSubjects=<agent-service-account-sub> \
