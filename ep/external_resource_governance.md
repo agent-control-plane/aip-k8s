@@ -389,33 +389,80 @@ Hard enforcement requires either a `WebhookPlugin` (platform pushes events to AI
 
 ---
 
-## 7. What This Does Not Solve (Phase 2)
+## 7. What This Does Not Solve (Deferred)
 
 1. **Scoped-mode requests** (`executionMode: scoped`): agents that do not know the specific resource upfront. Requires pattern containment checks and OpsLock acquisition per matching resource.
 
 2. **Multi-`GovernedResource` overlap**: a single request spanning URIs governed by multiple `GovernedResource` objects. Requires union-of-policies evaluation.
 
-3. **Dynamic webhook registration**: When a platform engineer creates a `GovernedResource` for a GitHub repo, AIP should automatically register the webhook on that repo. Currently requires manual setup. Controller can manage this via the GitHub App API — deferred.
+3. **Dynamic webhook registration**: When a platform engineer creates a `GovernedResource` for a GitHub repo, AIP should automatically register the webhook on that repo. Currently requires manual one-time setup. Controller can manage this via the GitHub App API — deferred to Phase 3.
 
-4. **Fine-grained action filtering in WebhookPlugin**: Phase 1 verifies that the changed resources match the target URI. It does not verify the nature of the change (e.g., only `maxNodes` field changed, not the node type). Schema-level diff validation is a Phase 2 concern.
+4. **Fine-grained action filtering**: Phase 3 verifies that changed resources match the target URI. It does not verify the nature of the change (e.g., only `maxNodes` field changed, not the node type). Schema-level diff validation is a later concern.
+
+5. **Plugin SDK interfaces**: Do not design plugin interfaces before two platform implementations exist. The interface designed before two real implementations is almost always wrong. Extract after Phase 3 (GitHub) and Phase 3+ (Terraform) are both working.
 
 ---
 
 ## 8. Implementation Phases
 
-### Phase 1 — Plugin SDK + GitHub + Webhook Enforcement
-- Define plugin interfaces (`Plugin`, `CredentialMinter`, `WebhookPlugin`, `ProxyPlugin`) in `plugin/` package
-- Define `PluginRegistry` with capability-based dispatch
-- Implement `github` plugin: `FetchContext` (blob SHA via PR Files API), `MintCredential` (App installation token), `WebhookPlugin` (`pull_request` events → commit status)
-- Replace direct `KubernetesTargetContextFetcher` dispatch in controller with registry lookup
-- Add `POST /hooks/{scheme}` webhook endpoint in gateway with shared `verifyEvent` logic
-- Add `POST /agent-requests/{name}/token` subresource endpoint in gateway; calls `CredentialMinter` plugin, never persists to etcd
-- Document one-time webhook setup and required status check configuration
+### Phase 1 — Cooperative GitHub PR Governance
+**Goal**: first real agent submits `AgentRequest` before opening a GitHub PR. Humans review via dashboard. OpsLock prevents duplicates. No webhooks, no plugins, no credential minting.
 
-### Phase 2 — Scoped Mode, Multi-GR, Dynamic Registration
+- Replace `path.Match` with a `**`-aware glob matcher (e.g. `gobwas/glob`) — `path.Match` does not cross `/` boundaries, so `github://myorg/infra/files/main/nodepools/**` silently matches nothing
+- Fix OpsLock renewal: `reconcileExecuting` detects lease expiry but never renews — patch `RenewTime` on each requeue, requeue at half lease duration; without this, any PR review longer than 5 minutes fails the request
+- Remove K8s-only URI scheme restrictions from gateway admission — accept any URI scheme
+- Document and enforce `github://{org}/{repo}/files/{branch}/{path}` URI convention in `spec.md §3.6`
+- Confirm CEL evaluates safely with empty `target.*` for `github://` URIs with no context fetcher (already safe — `cel.go` falls back to empty `TargetContext`)
+
+**Does NOT require**: GitHub App, webhooks, blob SHA fetching, plugin interfaces, credential minting.
+
+---
+
+### Phase 2 — AccuracySummary by Classification (Agent Graduation)
+**Goal**: track accuracy per `(agent, rootCauseCategory, rootCauseSubCategory)`. Foundation for agents earning autonomy per action type.
+
+_Note: this phase is owned by `ep/diagnostic_verdict_and_accuracy.md`. Referenced here because it is the primary differentiator that justifies the Phase 1 investment — agents earning per-classification autonomy is what separates AIP from every other agent framework._
+
+---
+
+### Phase 3 — GitHub Webhook Verification
+**Goal**: defense-in-depth. AIP verifies the actual PR matches what was approved. Catches intent drift and state drift.
+
+- GitHub context fetcher: fetch file blob SHA via `GET /repos/{owner}/{repo}/contents/{path}` → `status.evaluatedStateFingerprint`
+- `POST /hooks/github` endpoint: validate `X-GitHub-Signature-256` HMAC; deduplicate on `X-GitHub-Delivery`
+- Verification logic: intent drift (changed files ⊆ `target.uri`), state drift (blob SHA match), phase check
+- GitHub commit status: set `AIP Governance = success/failure`; configure as required status check on target repo
+- PR correlation: agent writes `{prNumber, repository}` to `status.executionEvidence` when signalling `Executing`; webhook resolves `AgentRequest` via stored evidence, not PR title parsing
+- Replay protection: store seen `X-GitHub-Delivery` IDs in a short-lived cache (TTL = webhook retry window)
+
+**Build directly — hardcode the GitHub handler. Do not design plugin interfaces yet.**
+
+---
+
+### Phase 4 — Plugin SDK Extraction
+**Goal**: extract common interfaces when the Terraform integration forces the abstraction.
+
+- Extract `ContextFetcher` interface from GitHub + K8s fetcher implementations
+- Extract `WebhookVerifier` interface from the hardcoded GitHub webhook handler
+- `PluginRegistry` with scheme-based dispatch; explicit registration in `main.go`, not `init()` blank imports
+- Terraform Cloud plugin as the second implementation that validates the interfaces
+
+**Do not build this before Phase 3 ships. Premature abstraction produces the wrong interface.**
+
+---
+
+### Phase 5 — Credential Gating
+**Goal**: agents with zero baseline write access. Opt-in per `GovernedResource`.
+
+- `POST /agent-requests/{name}/token` subresource: idempotent within TTL (return cached credential if not expired, mint fresh within 60s of expiry); `409` on revoked request
+- `CredentialMinter` interface: `MintCredential` + `RevokeCredential`; revoke on `AgentRequest` denial or expiry
+- GitHub App installation token minting: scoped to repo, `contents:write`, max 1h TTL
+- `spec.credentialGating: true` on `GovernedResource` — independent of webhook verification; orthogonal capability
+
+---
+
+### Phase 6 — Scoped Mode and Multi-GR
 - `executionMode: scoped` pattern containment check at admission
 - OpsLock acquisition per matching resource pattern
 - Union-of-policies evaluation for multi-GR overlap
 - Controller manages webhook lifecycle: auto-register/deregister webhooks when `GovernedResource` is created/deleted
-- Terraform Cloud plugin
-- Jira plugin (detect-and-record model; proxy model for blocking enforcement)
