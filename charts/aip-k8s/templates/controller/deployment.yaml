@@ -44,6 +44,9 @@ spec:
             - --gc-page-size={{ .Values.gc.pageSize }}
             - --gc-safety-min-count={{ .Values.gc.safetyMinCount }}
             {{- end }}
+            {{- with .Values.controller.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           ports:
             - containerPort: 8081
               name: health

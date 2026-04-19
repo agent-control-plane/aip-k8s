@@ -6,6 +6,7 @@ controller:
     tag: latest
     pullPolicy: IfNotPresent
   replicaCount: 1
+  extraArgs: []
 
 gateway:
   image:

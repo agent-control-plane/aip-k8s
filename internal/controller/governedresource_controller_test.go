@@ -64,6 +64,7 @@ func TestGovernedResourceRef_DeletedGR_DeniesRequest(t *testing.T) {
 	reconciler := &AgentRequestReconciler{
 		Client:               fc,
 		Scheme:               scheme,
+		OpsLockDuration:      5 * time.Minute,
 		Evaluator:            eval,
 		TargetContextFetcher: &evaluation.KubernetesTargetContextFetcher{Client: fc},
 	}
@@ -106,6 +107,7 @@ func TestGovernedResourceRef_ExistingGR_NoEffect(t *testing.T) {
 	reconciler := &AgentRequestReconciler{
 		Client:               fc,
 		Scheme:               scheme,
+		OpsLockDuration:      5 * time.Minute,
 		Evaluator:            eval,
 		TargetContextFetcher: &evaluation.KubernetesTargetContextFetcher{Client: fc},
 	}

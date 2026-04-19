@@ -65,6 +65,7 @@ type AgentRequestReconciler struct {
 	APIReader            client.Reader
 	Scheme               *runtime.Scheme
 	Clock                func() time.Time // injectable for testing; defaults to time.Now
+	OpsLockDuration      time.Duration
 	Evaluator            evaluation.Evaluator
 	TargetContextFetcher evaluation.TargetContextFetcher
 }
@@ -74,6 +75,15 @@ func (r *AgentRequestReconciler) now() time.Time {
 		return r.Clock()
 	}
 	return time.Now()
+}
+
+const defaultOpsLockDuration = 5 * time.Minute
+
+func (r *AgentRequestReconciler) opsLockDurationOrDefault() time.Duration {
+	if r.OpsLockDuration <= 0 {
+		return defaultOpsLockDuration
+	}
+	return r.OpsLockDuration
 }
 
 // +kubebuilder:rbac:groups=governance.aip.io,resources=agentrequests,verbs=get;list;watch;create;update;patch;delete
@@ -613,7 +623,7 @@ func (r *AgentRequestReconciler) handleLockAcquisition(ctx context.Context, agen
 		},
 		Spec: coordinationv1.LeaseSpec{
 			HolderIdentity:       ptr.To(holderIdentity),
-			LeaseDurationSeconds: ptr.To(int32(300)), // Default 5 minutes
+			LeaseDurationSeconds: ptr.To(int32(r.opsLockDurationOrDefault().Seconds())),
 			AcquireTime:          &metav1.MicroTime{Time: r.now()},
 			RenewTime:            &metav1.MicroTime{Time: r.now()},
 		},

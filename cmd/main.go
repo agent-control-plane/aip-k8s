@@ -85,6 +85,7 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	opsLockDuration := flag.Duration("ops-lock-duration", 5*time.Minute, "TTL for OpsLock leases")
 
 	const otlpShutdownTimeout = 5 * time.Second
 
@@ -252,6 +253,7 @@ func main() {
 		Client:               mgr.GetClient(),
 		APIReader:            mgr.GetAPIReader(),
 		Scheme:               mgr.GetScheme(),
+		OpsLockDuration:      *opsLockDuration,
 		Evaluator:            eval,
 		TargetContextFetcher: &evaluation.KubernetesTargetContextFetcher{Client: mgr.GetAPIReader()},
 	}).SetupWithManager(mgr); err != nil {
