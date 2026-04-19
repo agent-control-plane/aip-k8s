@@ -32,7 +32,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	governancev1alpha1 "github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 	"github.com/agent-control-plane/aip-k8s/test/utils"
 )
 
@@ -122,6 +121,7 @@ var _ = Describe("OpsLock Renewal", Ordered, func() {
 				}
 			}
 			g.Expect(found).To(BeTrue(), "Lease not found for request %s", reqName)
+			g.Expect(lease.Spec.RenewTime).NotTo(BeNil(), "Lease RenewTime should be set")
 		}, 30*time.Second).Should(Succeed())
 
 		initialRenewTime := lease.Spec.RenewTime.DeepCopy()

@@ -613,6 +613,7 @@ func (r *AgentRequestReconciler) handleLockAcquisition(ctx context.Context, agen
 	leaseName := generateLeaseName(agentReq.Spec.Target.URI)
 	holderIdentity := fmt.Sprintf("%s/%s", agentReq.Spec.AgentIdentity, agentReq.Name)
 
+	duration := r.opsLockDurationOrDefault()
 	lease := &coordinationv1.Lease{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      leaseName,
@@ -623,7 +624,7 @@ func (r *AgentRequestReconciler) handleLockAcquisition(ctx context.Context, agen
 		},
 		Spec: coordinationv1.LeaseSpec{
 			HolderIdentity:       ptr.To(holderIdentity),
-			LeaseDurationSeconds: ptr.To(int32(r.opsLockDurationOrDefault().Seconds())),
+			LeaseDurationSeconds: ptr.To(int32(duration / time.Second)),
 			AcquireTime:          &metav1.MicroTime{Time: r.now()},
 			RenewTime:            &metav1.MicroTime{Time: r.now()},
 		},
