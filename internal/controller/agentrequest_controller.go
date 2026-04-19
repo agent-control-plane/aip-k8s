@@ -62,9 +62,15 @@ type AgentRequestReconciler struct {
 	// APIReader is a direct (non-cached) API server reader used for the initial
 	// Get in Reconcile. This ensures we always work with the latest resourceVersion
 	// and avoids 409 conflicts caused by stale informer cache reads.
-	APIReader            client.Reader
-	Scheme               *runtime.Scheme
-	Clock                func() time.Time // injectable for testing; defaults to time.Now
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	Clock     func() time.Time // injectable for testing; defaults to time.Now
+	// OpsLockDuration controls how long an OpsLock Lease remains valid before the
+	// controller declares heartbeat timeout and fails the AgentRequest. Zero or
+	// negative values fall back to defaultOpsLockDuration (5 minutes). The controller
+	// renews the lease at half this interval, so agents have up to OpsLockDuration
+	// to complete execution before the lock expires.
+	OpsLockDuration      time.Duration
 	Evaluator            evaluation.Evaluator
 	TargetContextFetcher evaluation.TargetContextFetcher
 }
@@ -74,6 +80,15 @@ func (r *AgentRequestReconciler) now() time.Time {
 		return r.Clock()
 	}
 	return time.Now()
+}
+
+const defaultOpsLockDuration = 5 * time.Minute
+
+func (r *AgentRequestReconciler) opsLockDurationOrDefault() time.Duration {
+	if r.OpsLockDuration <= 0 {
+		return defaultOpsLockDuration
+	}
+	return r.OpsLockDuration
 }
 
 // +kubebuilder:rbac:groups=governance.aip.io,resources=agentrequests,verbs=get;list;watch;create;update;patch;delete
@@ -291,6 +306,7 @@ func (r *AgentRequestReconciler) checkAgentTransitions(ctx context.Context, agen
 	// Agent signals it started executing
 	if meta.IsStatusConditionTrue(agentReq.Status.Conditions, governancev1alpha1.ConditionExecuting) && agentReq.Status.Phase == governancev1alpha1.PhaseApproved {
 		fromPhase := agentReq.Status.Phase
+		log.FromContext(ctx).Info("Agent signaled Executing, transitioning phase", "from", fromPhase, "to", governancev1alpha1.PhaseExecuting)
 		base := agentReq.DeepCopy()
 		agentReq.Status.Phase = governancev1alpha1.PhaseExecuting
 		agentRequestTotal.WithLabelValues(governancev1alpha1.PhaseExecuting).Inc()
@@ -603,6 +619,7 @@ func (r *AgentRequestReconciler) handleLockAcquisition(ctx context.Context, agen
 	leaseName := generateLeaseName(agentReq.Spec.Target.URI)
 	holderIdentity := fmt.Sprintf("%s/%s", agentReq.Spec.AgentIdentity, agentReq.Name)
 
+	duration := r.opsLockDurationOrDefault()
 	lease := &coordinationv1.Lease{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      leaseName,
@@ -613,7 +630,7 @@ func (r *AgentRequestReconciler) handleLockAcquisition(ctx context.Context, agen
 		},
 		Spec: coordinationv1.LeaseSpec{
 			HolderIdentity:       ptr.To(holderIdentity),
-			LeaseDurationSeconds: ptr.To(int32(300)), // Default 5 minutes
+			LeaseDurationSeconds: ptr.To(int32(duration / time.Second)),
 			AcquireTime:          &metav1.MicroTime{Time: r.now()},
 			RenewTime:            &metav1.MicroTime{Time: r.now()},
 		},
@@ -845,6 +862,7 @@ func (r *AgentRequestReconciler) reconcileExecuting(ctx context.Context, agentRe
 		}
 
 		// Patch RenewTime to heartbeat the lease
+		log.FromContext(ctx).Info("Heartbeating lease", "lease", leaseName, "duration", *lease.Spec.LeaseDurationSeconds)
 		base := lease.DeepCopy()
 		lease.Spec.RenewTime = ptr.To(metav1.NewMicroTime(r.now()))
 		if err := r.Patch(ctx, lease, client.MergeFrom(base)); err != nil {
@@ -853,6 +871,7 @@ func (r *AgentRequestReconciler) reconcileExecuting(ctx context.Context, agentRe
 
 		// Requeue at half the lease duration
 		requeueAfter := time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second / 2
+		log.FromContext(ctx).Info("Requeueing after heartbeat", "requeueAfter", requeueAfter)
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 

@@ -43,9 +43,12 @@ import (
 	"github.com/agent-control-plane/aip-k8s/internal/evaluation/fetchers"
 )
 
+const (
+	resourceName = "test-agent-request"
+)
+
 var _ = Describe("AgentRequest Controller", func() {
 	Context("When reconciling a resource", func() {
-		const resourceName = "test-agent-request"
 
 		ctx := context.Background()
 
@@ -128,10 +131,11 @@ var _ = Describe("AgentRequest Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			controllerReconciler := &AgentRequestReconciler{
-				Client:    k8sClient,
-				APIReader: k8sClient,
-				Scheme:    k8sClient.Scheme(),
-				Evaluator: eval,
+				Client:          k8sClient,
+				APIReader:       k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				OpsLockDuration: testOpsLockDuration,
+				Evaluator:       eval,
 			}
 
 			req := reconcile.Request{NamespacedName: typeNamespacedName}
@@ -209,11 +213,12 @@ var _ = Describe("AgentRequest Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			controllerReconciler := &AgentRequestReconciler{
-				Client:    k8sClient,
-				APIReader: k8sClient,
-				Scheme:    k8sClient.Scheme(),
-				Evaluator: eval,
-				Clock:     func() time.Time { return frozenFuture },
+				Client:          k8sClient,
+				APIReader:       k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				OpsLockDuration: testOpsLockDuration,
+				Evaluator:       eval,
+				Clock:           func() time.Time { return frozenFuture },
 			}
 
 			// Force the AgentRequest into Executing phase
@@ -311,10 +316,11 @@ var _ = Describe("AgentRequest Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			controllerReconciler := &AgentRequestReconciler{
-				Client:    k8sClient,
-				APIReader: k8sClient,
-				Scheme:    k8sClient.Scheme(),
-				Evaluator: eval,
+				Client:          k8sClient,
+				APIReader:       k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				OpsLockDuration: testOpsLockDuration,
+				Evaluator:       eval,
 			}
 
 			// Reconcile step 1 -> sets phase to pending and emits request.submitted
@@ -381,10 +387,11 @@ var _ = Describe("AgentRequest Controller", func() {
 
 			eval, _ := evaluation.NewEvaluator()
 			controllerReconciler := &AgentRequestReconciler{
-				Client:    k8sClient,
-				APIReader: k8sClient,
-				Scheme:    k8sClient.Scheme(),
-				Evaluator: eval,
+				Client:          k8sClient,
+				APIReader:       k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				OpsLockDuration: testOpsLockDuration,
+				Evaluator:       eval,
 			}
 
 			// Process Request 1 (Acquires Lock)
@@ -474,10 +481,11 @@ var _ = Describe("AgentRequest Controller", func() {
 
 			eval, _ := evaluation.NewEvaluator()
 			controllerReconciler := &AgentRequestReconciler{
-				Client:    k8sClient,
-				APIReader: k8sClient, // Use direct client to avoid cache latency
-				Scheme:    k8sClient.Scheme(),
-				Evaluator: eval,
+				Client:          k8sClient,
+				APIReader:       k8sClient, // Use direct client to avoid cache latency
+				Scheme:          k8sClient.Scheme(),
+				OpsLockDuration: testOpsLockDuration,
+				Evaluator:       eval,
 			}
 
 			// Reconcile 1: Init -> Pending

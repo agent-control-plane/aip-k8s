@@ -34,6 +34,9 @@ import (
 	"github.com/agent-control-plane/aip-k8s/internal/evaluation"
 )
 
+// testOpsLockDuration is the OpsLockDuration used in tests that exercise lock acquisition.
+const testOpsLockDuration = 5 * time.Minute
+
 func setupScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
@@ -64,6 +67,7 @@ func TestGovernedResourceRef_DeletedGR_DeniesRequest(t *testing.T) {
 	reconciler := &AgentRequestReconciler{
 		Client:               fc,
 		Scheme:               scheme,
+		OpsLockDuration:      testOpsLockDuration,
 		Evaluator:            eval,
 		TargetContextFetcher: &evaluation.KubernetesTargetContextFetcher{Client: fc},
 	}
@@ -106,6 +110,7 @@ func TestGovernedResourceRef_ExistingGR_NoEffect(t *testing.T) {
 	reconciler := &AgentRequestReconciler{
 		Client:               fc,
 		Scheme:               scheme,
+		OpsLockDuration:      testOpsLockDuration,
 		Evaluator:            eval,
 		TargetContextFetcher: &evaluation.KubernetesTargetContextFetcher{Client: fc},
 	}
