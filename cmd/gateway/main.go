@@ -9,15 +9,16 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/gobwas/glob"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -351,28 +352,40 @@ func buildReasoningTrace(body *createAgentRequestBody) *v1alpha1.ReasoningTrace 
 	return rt
 }
 
-// checkDuplicate returns a non-nil error and writes a 409 if an active request
-// for the same (agentIdentity, action, targetURI) exists within the dedup window.
-// Returns nil (and writes nothing) when no duplicate is found or dedup is disabled.
-//
-// Note: the List→Create sequence is not atomic. Concurrent requests with the
-// same key can both pass this check and both be created. This is intentional:
-// dedup provides best-effort protection against reconciliation-loop floods, not
+var (
+	globCache = make(map[string]glob.Glob)
+	globMu    sync.RWMutex
+)
+
 // matchGovernedResource returns the most specific GovernedResource whose URIPattern
-// matches targetURI using path.Match semantics. Most specific = longest pattern;
-// ties broken alphabetically by name. Returns nil if no pattern matches.
+// matches targetURI using gobwas/glob semantics (** crosses separators, * does not).
+// Most specific = longest pattern; ties broken alphabetically by name.
+// Returns nil if no pattern matches.
 func matchGovernedResource(items []v1alpha1.GovernedResource, targetURI string) *v1alpha1.GovernedResource {
 	var best *v1alpha1.GovernedResource
 	for i := range items {
 		gr := &items[i]
-		matched, err := path.Match(gr.Spec.URIPattern, targetURI)
-		if err != nil {
-			log.Printf("invalid URIPattern %q in GovernedResource %s: %v", gr.Spec.URIPattern, gr.Name, err)
+
+		globMu.RLock()
+		g, ok := globCache[gr.Spec.URIPattern]
+		globMu.RUnlock()
+
+		if !ok {
+			var err error
+			g, err = glob.Compile(gr.Spec.URIPattern, '/')
+			if err != nil {
+				log.Printf("invalid URIPattern %q in GovernedResource %s: %v", gr.Spec.URIPattern, gr.Name, err)
+				continue
+			}
+			globMu.Lock()
+			globCache[gr.Spec.URIPattern] = g
+			globMu.Unlock()
+		}
+
+		if !g.Match(targetURI) {
 			continue
 		}
-		if !matched {
-			continue
-		}
+
 		if best == nil ||
 			len(gr.Spec.URIPattern) > len(best.Spec.URIPattern) ||
 			(len(gr.Spec.URIPattern) == len(best.Spec.URIPattern) && gr.Name < best.Name) {
@@ -382,6 +395,13 @@ func matchGovernedResource(items []v1alpha1.GovernedResource, targetURI string) 
 	return best
 }
 
+// checkDuplicate returns a non-nil error and writes a 409 if an active request
+// for the same (agentIdentity, action, targetURI) exists within the dedup window.
+// Returns nil (and writes nothing) when no duplicate is found or dedup is disabled.
+//
+// Note: the List→Create sequence is not atomic. Concurrent requests with the
+// same key can both pass this check and both be created. This is intentional:
+// dedup provides best-effort protection against reconciliation-loop floods, not
 // a hard mutual-exclusion guarantee. A strict guarantee would require a
 // ValidatingAdmissionWebhook or a unique server-side constraint.
 func (s *Server) checkDuplicate(

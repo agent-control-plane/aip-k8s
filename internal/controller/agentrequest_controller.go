@@ -758,11 +758,15 @@ func (r *AgentRequestReconciler) reconcileApproved(ctx context.Context, agentReq
 }
 
 func (r *AgentRequestReconciler) reconcileExecuting(ctx context.Context, agentReq *governancev1alpha1.AgentRequest) (ctrl.Result, error) {
-	// Fetch the Lease
+	// Fetch the Lease fresh from APIReader to avoid stale cache before patching.
+	// APIReader is always set by SetupWithManager; fall back to cached client defensively.
 	leaseName := generateLeaseName(agentReq.Spec.Target.URI)
 	lease := &coordinationv1.Lease{}
-
-	err := r.Get(ctx, types.NamespacedName{Name: leaseName, Namespace: agentReq.Namespace}, lease)
+	leaseReader := client.Reader(r.Client)
+	if r.APIReader != nil {
+		leaseReader = r.APIReader
+	}
+	err := leaseReader.Get(ctx, types.NamespacedName{Name: leaseName, Namespace: agentReq.Namespace}, lease)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Lease is missing! This shouldn't happen during execution unless deleted manually
@@ -808,10 +812,21 @@ func (r *AgentRequestReconciler) reconcileExecuting(ctx context.Context, agentRe
 
 			return ctrl.Result{}, nil
 		}
+
+		// Patch RenewTime to heartbeat the lease
+		base := lease.DeepCopy()
+		lease.Spec.RenewTime = ptr.To(metav1.NewMicroTime(r.now()))
+		if err := r.Patch(ctx, lease, client.MergeFrom(base)); err != nil {
+			return ctrl.Result{}, fmt.Errorf("heartbeating lease %s: %w", leaseName, err)
+		}
+
+		// Requeue at half the lease duration
+		requeueAfter := time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second / 2
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
-	// Re-queue slowly to monitor the executing state
-	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	// Fallback to slow re-queue if duration missing
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
 // releaseLock deletes the Kubernetes Lease backing the OpsLock for this request's target.

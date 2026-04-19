@@ -1335,6 +1335,8 @@ Examples of reasonable URI schemes include:
   - *Example*: `aws://123456789012/us-west-2/ec2/instance/i-0abcd1234efgh5678`
 - **Azure**: Valid Azure Resource Manager (ARM) IDs.
   - *Example*: `/subscriptions/<subId>/resourceGroups/<rgName>/providers/Microsoft.Compute/virtualMachines/<vmName>`
+- **GitHub**: `github://{org}/{repo}/files/{branch}/{path}`
+  - *Example*: `github://myorg/infra/files/main/nodepools/us-east-1.yaml`
 
 ### A.3 Reference Bindings
 This specification is accompanied by platform-specific reference bindings that demonstrate how AIP abstractions map to concrete infrastructure platforms. These bindings are informational and not normative:

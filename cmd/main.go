@@ -250,6 +250,7 @@ func main() {
 
 	if err := (&controller.AgentRequestReconciler{
 		Client:               mgr.GetClient(),
+		APIReader:            mgr.GetAPIReader(),
 		Scheme:               mgr.GetScheme(),
 		Evaluator:            eval,
 		TargetContextFetcher: &evaluation.KubernetesTargetContextFetcher{Client: mgr.GetAPIReader()},
