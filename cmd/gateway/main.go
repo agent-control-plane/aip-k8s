@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -358,30 +357,6 @@ func buildReasoningTrace(body *createAgentRequestBody) *v1alpha1.ReasoningTrace 
 // Note: the List→Create sequence is not atomic. Concurrent requests with the
 // same key can both pass this check and both be created. This is intentional:
 // dedup provides best-effort protection against reconciliation-loop floods, not
-// matchGovernedResource returns the most specific GovernedResource whose URIPattern
-// matches targetURI using path.Match semantics. Most specific = longest pattern;
-// ties broken alphabetically by name. Returns nil if no pattern matches.
-func matchGovernedResource(items []v1alpha1.GovernedResource, targetURI string) *v1alpha1.GovernedResource {
-	var best *v1alpha1.GovernedResource
-	for i := range items {
-		gr := &items[i]
-		matched, err := path.Match(gr.Spec.URIPattern, targetURI)
-		if err != nil {
-			log.Printf("invalid URIPattern %q in GovernedResource %s: %v", gr.Spec.URIPattern, gr.Name, err)
-			continue
-		}
-		if !matched {
-			continue
-		}
-		if best == nil ||
-			len(gr.Spec.URIPattern) > len(best.Spec.URIPattern) ||
-			(len(gr.Spec.URIPattern) == len(best.Spec.URIPattern) && gr.Name < best.Name) {
-			best = gr
-		}
-	}
-	return best
-}
-
 // a hard mutual-exclusion guarantee. A strict guarantee would require a
 // ValidatingAdmissionWebhook or a unique server-side constraint.
 func (s *Server) checkDuplicate(

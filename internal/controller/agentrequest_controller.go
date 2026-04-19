@@ -758,11 +758,15 @@ func (r *AgentRequestReconciler) reconcileApproved(ctx context.Context, agentReq
 }
 
 func (r *AgentRequestReconciler) reconcileExecuting(ctx context.Context, agentReq *governancev1alpha1.AgentRequest) (ctrl.Result, error) {
-	// Fetch the Lease
+	// Fetch the Lease fresh from APIReader to avoid stale cache before patching.
+	// APIReader is always set by SetupWithManager; fall back to cached client defensively.
 	leaseName := generateLeaseName(agentReq.Spec.Target.URI)
 	lease := &coordinationv1.Lease{}
-
-	err := r.Get(ctx, types.NamespacedName{Name: leaseName, Namespace: agentReq.Namespace}, lease)
+	leaseReader := client.Reader(r.Client)
+	if r.APIReader != nil {
+		leaseReader = r.APIReader
+	}
+	err := leaseReader.Get(ctx, types.NamespacedName{Name: leaseName, Namespace: agentReq.Namespace}, lease)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Lease is missing! This shouldn't happen during execution unless deleted manually
@@ -771,6 +775,37 @@ func (r *AgentRequestReconciler) reconcileExecuting(ctx context.Context, agentRe
 			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Verify ownership before doing anything with the lease.
+	// releaseLock uses the same holderIdentity format.
+	expectedHolder := fmt.Sprintf("%s/%s", agentReq.Spec.AgentIdentity, agentReq.Name)
+	if lease.Spec.HolderIdentity == nil || *lease.Spec.HolderIdentity != expectedHolder {
+		actualHolder := ptr.Deref(lease.Spec.HolderIdentity, "unknown")
+		log.FromContext(ctx).Error(nil, "Lease holder mismatch — treating as lost",
+			"lease", leaseName, "expected", expectedHolder, "actual", actualHolder)
+		opsLockExpiredTotal.Inc()
+		agentRequestActive.Dec()
+		agentRequestTotal.WithLabelValues(governancev1alpha1.PhaseFailed).Inc()
+		fromPhase := agentReq.Status.Phase
+		base := agentReq.DeepCopy()
+		meta.SetStatusCondition(&agentReq.Status.Conditions, metav1.Condition{
+			Type:    governancev1alpha1.ConditionFailed,
+			Status:  metav1.ConditionTrue,
+			Reason:  governancev1alpha1.DenialCodeLockTimeout,
+			Message: fmt.Sprintf("OpsLock lost: lease held by %q, not this request", actualHolder),
+		})
+		agentReq.Status.Phase = governancev1alpha1.PhaseFailed
+		if err := r.Status().Patch(ctx, agentReq, client.MergeFrom(base)); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventLockExpired, fromPhase, governancev1alpha1.PhaseFailed); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventRequestFailed, fromPhase, governancev1alpha1.PhaseFailed); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
 	}
 
 	// Check Lease expiration
@@ -808,10 +843,21 @@ func (r *AgentRequestReconciler) reconcileExecuting(ctx context.Context, agentRe
 
 			return ctrl.Result{}, nil
 		}
+
+		// Patch RenewTime to heartbeat the lease
+		base := lease.DeepCopy()
+		lease.Spec.RenewTime = ptr.To(metav1.NewMicroTime(r.now()))
+		if err := r.Patch(ctx, lease, client.MergeFrom(base)); err != nil {
+			return ctrl.Result{}, fmt.Errorf("heartbeating lease %s: %w", leaseName, err)
+		}
+
+		// Requeue at half the lease duration
+		requeueAfter := time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second / 2
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
-	// Re-queue slowly to monitor the executing state
-	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	// Fallback to slow re-queue if duration missing
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
 // releaseLock deletes the Kubernetes Lease backing the OpsLock for this request's target.

@@ -68,10 +68,33 @@ func TestMatchGovernedResource_AlphabeticalTiebreak(t *testing.T) {
 }
 
 func TestMatchGovernedResource_StarDoesNotCrossSlash(t *testing.T) {
-	// path.Match: * does not match /
+	// * does not match /
 	items := []v1alpha1.GovernedResource{makeGRItem("a", "k8s://prod/nodepool/*")}
 	if matchGovernedResource(items, "k8s://prod/nodepool/team-a/extra") != nil {
 		t.Fatal("* should not match across a slash")
+	}
+}
+
+func TestMatchGovernedResource_DoubleStarCrossesSlash(t *testing.T) {
+	// ** must cross path separators — this was the blocker (path.Match silently matched nothing).
+	items := []v1alpha1.GovernedResource{makeGRItem("a", "github://myorg/infra/files/main/nodepools/**")}
+	cases := []struct {
+		uri   string
+		match bool
+	}{
+		{"github://myorg/infra/files/main/nodepools/us-east-1.yaml", true},
+		{"github://myorg/infra/files/main/nodepools/nested/dir/file.yaml", true},
+		{"github://myorg/infra/files/main/other/file.yaml", false},
+		{"github://otherorg/infra/files/main/nodepools/file.yaml", false},
+	}
+	for _, tc := range cases {
+		got := matchGovernedResource(items, tc.uri)
+		if tc.match && got == nil {
+			t.Errorf("expected match for %q, got nil", tc.uri)
+		}
+		if !tc.match && got != nil {
+			t.Errorf("expected no match for %q, got %q", tc.uri, got.Name)
+		}
 	}
 }
 

@@ -5,6 +5,7 @@ go 1.25.3
 require (
 	github.com/coreos/go-oidc/v3 v3.17.0
 	github.com/go-jose/go-jose/v4 v4.1.4
+	github.com/gobwas/glob v0.2.3
 	github.com/google/cel-go v0.27.0
 	github.com/onsi/ginkgo/v2 v2.27.2
 	github.com/onsi/gomega v1.38.2

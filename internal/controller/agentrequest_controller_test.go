@@ -129,6 +129,7 @@ var _ = Describe("AgentRequest Controller", func() {
 
 			controllerReconciler := &AgentRequestReconciler{
 				Client:    k8sClient,
+				APIReader: k8sClient,
 				Scheme:    k8sClient.Scheme(),
 				Evaluator: eval,
 			}
@@ -209,6 +210,7 @@ var _ = Describe("AgentRequest Controller", func() {
 
 			controllerReconciler := &AgentRequestReconciler{
 				Client:    k8sClient,
+				APIReader: k8sClient,
 				Scheme:    k8sClient.Scheme(),
 				Evaluator: eval,
 				Clock:     func() time.Time { return frozenFuture },
@@ -310,6 +312,7 @@ var _ = Describe("AgentRequest Controller", func() {
 
 			controllerReconciler := &AgentRequestReconciler{
 				Client:    k8sClient,
+				APIReader: k8sClient,
 				Scheme:    k8sClient.Scheme(),
 				Evaluator: eval,
 			}
@@ -379,6 +382,7 @@ var _ = Describe("AgentRequest Controller", func() {
 			eval, _ := evaluation.NewEvaluator()
 			controllerReconciler := &AgentRequestReconciler{
 				Client:    k8sClient,
+				APIReader: k8sClient,
 				Scheme:    k8sClient.Scheme(),
 				Evaluator: eval,
 			}

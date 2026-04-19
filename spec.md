@@ -1335,6 +1335,10 @@ Examples of reasonable URI schemes include:
   - *Example*: `aws://123456789012/us-west-2/ec2/instance/i-0abcd1234efgh5678`
 - **Azure**: Valid Azure Resource Manager (ARM) IDs.
   - *Example*: `/subscriptions/<subId>/resourceGroups/<rgName>/providers/Microsoft.Compute/virtualMachines/<vmName>`
+- **GitHub**: `github://{org}/{repo}/files/{branch}/{path}`
+  - `{branch}` must be percent-encoded if it contains `/` (e.g., `feature/foo` → `feature%2Ffoo`). Parsers split on the first unencoded `/` after `files/` to separate branch from path, then decode `%2F` in the branch segment.
+  - *Example (simple branch)*: `github://myorg/infra/files/main/nodepools/us-east-1.yaml`
+  - *Example (slash branch)*: `github://myorg/infra/files/feature%2Ffoo/nodepools/us-east-1.yaml`
 
 ### A.3 Reference Bindings
 This specification is accompanied by platform-specific reference bindings that demonstrate how AIP abstractions map to concrete infrastructure platforms. These bindings are informational and not normative:

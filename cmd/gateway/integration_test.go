@@ -87,6 +87,7 @@ func startTestManager(t *testing.T, cfg *rest.Config) client.Client {
 
 	err = (&controller.AgentRequestReconciler{
 		Client:               mgr.GetClient(),
+		APIReader:            mgr.GetAPIReader(),
 		Scheme:               mgr.GetScheme(),
 		Evaluator:            eval,
 		TargetContextFetcher: &evaluation.KubernetesTargetContextFetcher{Client: mgr.GetAPIReader()},
