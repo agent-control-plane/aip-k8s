@@ -18,3 +18,4 @@ spec:
         - --gc-export-type=none
         - --gc-dry-run=false
         - --gc-safety-min-count=1
+        - --ops-lock-duration=15s
