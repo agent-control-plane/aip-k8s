@@ -62,9 +62,14 @@ type AgentRequestReconciler struct {
 	// APIReader is a direct (non-cached) API server reader used for the initial
 	// Get in Reconcile. This ensures we always work with the latest resourceVersion
 	// and avoids 409 conflicts caused by stale informer cache reads.
-	APIReader            client.Reader
-	Scheme               *runtime.Scheme
-	Clock                func() time.Time // injectable for testing; defaults to time.Now
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	Clock     func() time.Time // injectable for testing; defaults to time.Now
+	// OpsLockDuration controls how long an OpsLock Lease remains valid before the
+	// controller declares heartbeat timeout and fails the AgentRequest. Zero or
+	// negative values fall back to defaultOpsLockDuration (5 minutes). The controller
+	// renews the lease at half this interval, so agents have up to OpsLockDuration
+	// to complete execution before the lock expires.
 	OpsLockDuration      time.Duration
 	Evaluator            evaluation.Evaluator
 	TargetContextFetcher evaluation.TargetContextFetcher
