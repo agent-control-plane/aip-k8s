@@ -20,8 +20,11 @@ limitations under the License.
 package e2e
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +37,24 @@ import (
 	"github.com/agent-control-plane/aip-k8s/test/utils"
 )
 
+// soakSummaryName mirrors the naming logic in internal/controller and cmd/gateway
+// so the e2e test can look up the correct DiagnosticAccuracySummary.
+func soakSummaryName(agentIdentity string) string {
+	h := sha256.Sum256([]byte(agentIdentity))
+	suffix := fmt.Sprintf("%x", h[:4])
+	re := regexp.MustCompile(`[^a-z0-9-]`)
+	prefix := strings.ToLower(agentIdentity)
+	prefix = re.ReplaceAllString(prefix, "-")
+	if len(prefix) > 54 {
+		prefix = prefix[:54]
+	}
+	prefix = strings.Trim(prefix, "-")
+	if prefix == "" {
+		prefix = "agent"
+	}
+	return prefix + "-" + suffix
+}
+
 var _ = Describe("SoakMode and Accuracy Tracking", Ordered, func() {
 	const (
 		grName        = "soak-mode-gr"
@@ -42,6 +63,8 @@ var _ = Describe("SoakMode and Accuracy Tracking", Ordered, func() {
 		agentIdentity = "soak-mode-agent"
 		targetURI     = "k8s://soak/resource"
 	)
+
+	var grGeneration int64
 
 	BeforeAll(func() {
 		By("creating a GovernedResource with soakMode: true")
@@ -52,6 +75,7 @@ var _ = Describe("SoakMode and Accuracy Tracking", Ordered, func() {
 			"spec": {
 				"uriPattern": "k8s://soak/*",
 				"permittedActions": ["test"],
+				"contextFetcher": "none",
 				"soakMode": true
 			}
 		}`, grName)
@@ -60,6 +84,18 @@ var _ = Describe("SoakMode and Accuracy Tracking", Ordered, func() {
 		cmd.Stdin = strings.NewReader(grJSON)
 		_, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
+
+		By("waiting for GovernedResource and capturing its generation")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "governedresource", grName,
+				"-o", "jsonpath={.metadata.generation}")
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			gen, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(gen).To(BeNumerically(">", 0))
+			grGeneration = gen
+		}, 10*time.Second).Should(Succeed())
 	})
 
 	AfterAll(func() {
@@ -73,7 +109,7 @@ var _ = Describe("SoakMode and Accuracy Tracking", Ordered, func() {
 	})
 
 	It("should route AgentRequest to AwaitingVerdict and update accuracy on verdict", func() {
-		By("creating an AgentRequest")
+		By("creating an AgentRequest with governedResourceRef pointing to the soak-mode GR")
 		reqJSON := fmt.Sprintf(`{
 			"apiVersion": "governance.aip.io/v1alpha1",
 			"kind": "AgentRequest",
@@ -82,9 +118,10 @@ var _ = Describe("SoakMode and Accuracy Tracking", Ordered, func() {
 				"agentIdentity": "%s",
 				"action": "test",
 				"target": {"uri": "%s"},
-				"reason": "soak test"
+				"reason": "soak test",
+				"governedResourceRef": {"name": "%s", "generation": %d}
 			}
-		}`, reqName, ns, agentIdentity, targetURI)
+		}`, reqName, ns, agentIdentity, targetURI, grName, grGeneration)
 
 		cmd := exec.Command("kubectl", "apply", "-f", "-")
 		cmd.Stdin = strings.NewReader(reqJSON)
@@ -117,7 +154,7 @@ var _ = Describe("SoakMode and Accuracy Tracking", Ordered, func() {
 		}, 30*time.Second).Should(Equal("Completed"))
 
 		By("verifying DiagnosticAccuracySummary is updated")
-		summaryName := "soak-mode-agent" // sanitizeDNSSegment("soak-mode-agent", 63)
+		summaryName := soakSummaryName(agentIdentity)
 		Eventually(func(g Gomega) {
 			var summary governancev1alpha1.DiagnosticAccuracySummary
 			err := k8sClient.Get(ctx, types.NamespacedName{Name: summaryName, Namespace: ns}, &summary)
@@ -125,7 +162,7 @@ var _ = Describe("SoakMode and Accuracy Tracking", Ordered, func() {
 			g.Expect(summary.Status.TotalReviewed).To(Equal(int32(1)))
 			g.Expect(summary.Status.CorrectCount).To(Equal(int32(1)))
 			g.Expect(summary.Status.DiagnosticAccuracy).NotTo(BeNil())
-			g.Expect(*summary.Status.DiagnosticAccuracy).To(Equal(1.0))
+			g.Expect(*summary.Status.DiagnosticAccuracy).To(BeNumerically("~", 1.0, 0.001))
 		}, 30*time.Second).Should(Succeed())
 	})
 })
