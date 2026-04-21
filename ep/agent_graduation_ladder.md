@@ -86,7 +86,33 @@ someone writes it. The graduation ladder works out of the box.
 `SafetyPolicy` CEL evaluation runs after the trust gate and can only add restrictions —
 it cannot grant permissions that the trust gate has blocked.
 
-### 4. Cluster admin owns the thresholds and per-resource ceilings
+### 4. `spec.classification` on `AgentRequest` — optional, self-declared
+
+Agents may declare the problem classification they believe applies to their request:
+
+```yaml
+spec:
+  agentIdentity: karpenter-nodepool-agent
+  classification: "nodepool/at-capacity"   # optional, format: category/subcategory
+  action: update
+  target:
+    uri: github://myorg/infra/files/main/clusters/prod/karpenter/gpu-pool.yaml
+```
+
+The gateway validates format (`[a-z][a-z0-9-]*/[a-z][a-z0-9-]*`) but does not validate
+the value. Classification is self-declared by the agent — the same way `agentIdentity`
+is. If an agent consistently mislabels, verdicts for that classification degrade, which
+is self-correcting.
+
+For v1alpha1, classification is recorded on verdicts and `DiagnosticAccuracySummary`
+but not used for per-classification accuracy enforcement. Per-classification trust levels
+are deferred. Adding the field now ensures historical verdict data is available for
+backfill when per-classification accuracy is implemented.
+
+If absent, the dashboard warns: "This agent does not provide classification. Accuracy is
+aggregate and may hide variance across problem types."
+
+### 5. Cluster admin owns the thresholds and per-resource ceilings
 
 Graduation thresholds are set once per cluster by the cluster admin via
 `AgentGraduationPolicy`. Individual platform teams cannot lower the bar.
@@ -100,8 +126,8 @@ configured. Only the cluster admin can raise it.
 
 ### `AgentGraduationPolicy` (new CRD, cluster-scoped)
 
-One per cluster. Set by cluster admin. Defines what it takes to reach each trust level
-and what behavior is permitted at each level.
+One per cluster. Set by cluster admin. Defines the accuracy and execution bands for each
+trust level, the evaluation window, and the TTL for ungraded requests.
 
 ```yaml
 apiVersion: governance.aip.io/v1alpha1
@@ -109,43 +135,62 @@ kind: AgentGraduationPolicy
 metadata:
   name: cluster-default
 spec:
+  # evaluationWindow controls which verdicts drive the trust level.
+  # count: use the last N verdicts (rolling window).
+  # maxAge is reserved for future time-based decay — additive, no schema change needed.
+  evaluationWindow:
+    count: 50
+
+  # awaitingVerdictTTL: how long an ungraded Observer request waits before
+  # transitioning to Expired. Expired requests are excluded from accuracy counts.
+  awaitingVerdictTTL: 168h   # 7 days default
+
   levels:
     - name: Observer
-      # Action is NOT taken. Request is graded.
-      minObserveVerdicts: 0
-      minDiagnosticAccuracy: 0.0
+      # Action is NOT taken. Request is graded only.
+      accuracy: { max: 0.70 }
       canExecute: false
 
     - name: Advisor
       # Action is taken. Human approval required on every request.
-      minObserveVerdicts: 10
-      minDiagnosticAccuracy: 0.70
-      minExecutions: 0
+      # demotionBuffer: accuracy must drop this far below band.min to trigger demotion,
+      # preventing flapping at the boundary.
+      accuracy: { min: 0.70, max: 0.85, demotionBuffer: 0.02 }
+      executions: { min: 0, max: 20 }
       requiresHumanApproval: true
 
     - name: Supervised
-      minObserveVerdicts: 20
-      minDiagnosticAccuracy: 0.85
-      minExecutions: 20
+      accuracy: { min: 0.85, max: 0.92, demotionBuffer: 0.02 }
+      executions: { min: 20, max: 50 }
       requiresHumanApproval: true
 
     - name: Trusted
       # Auto-approved if SafetyPolicy passes. No human in the loop.
-      minObserveVerdicts: 50
-      minDiagnosticAccuracy: 0.92
-      minExecutions: 50
+      accuracy: { min: 0.92, max: 0.97, demotionBuffer: 0.02 }
+      executions: { min: 50, max: 100 }
       requiresHumanApproval: false
 
     - name: Autonomous
-      minObserveVerdicts: 100
-      minDiagnosticAccuracy: 0.97
-      minExecutions: 100
+      accuracy: { min: 0.97 }
+      executions: { min: 100 }
       requiresHumanApproval: false
 ```
 
-The thresholds above are defaults shipped with the Helm chart. Cluster admins override
-them for their risk tolerance. A conservative production cluster raises the bars. A
-fast-moving internal platform lowers them.
+**Promotion rule**: the agent reaches the highest level where BOTH
+`recentAccuracy >= band.accuracy.min` AND `totalExecutions >= band.executions.min`.
+Both dimensions must be satisfied to promote.
+
+**Demotion rule**: triggers on accuracy only —
+`recentAccuracy < (currentBand.accuracy.min - demotionBuffer)`.
+Execution count is monotonically increasing and can never trigger demotion.
+
+**Level resolution when dimensions disagree**: if `recentAccuracy` is in the Trusted
+band (0.95) but `totalExecutions` is 10, the effective level is Advisor — the highest
+level where both dimensions are satisfied simultaneously. The controller always resolves
+to the highest fully-satisfied level.
+
+The bands above are defaults shipped with the Helm chart. Cluster admins override them
+for their risk tolerance.
 
 ### `GovernedResource.spec.trustRequirements` (new field on existing CRD)
 
@@ -185,7 +230,8 @@ metadata:
   namespace: production
 status:
   trustLevel: Advisor
-  diagnosticAccuracy: 0.81       # from graded Observer-level requests
+  diagnosticAccuracy: 0.81       # all-time accuracy — for audit and trend visibility
+  recentAccuracy: 0.79           # rolling window accuracy — drives trustLevel computation
   totalObserveVerdicts: 14
   successRate: 0.0               # from Advisor+ terminal transitions
   totalExecutions: 0
@@ -193,13 +239,18 @@ status:
   nextLevelRequirements:
     level: Supervised
     remaining:
-      minObserveVerdicts: 6      # needs 6 more graded requests
-      minDiagnosticAccuracy: 0.04 # needs 0.85 - 0.81 = 0.04 improvement
-      minExecutions: 20          # needs first 20 supervised executions
+      verdicts: 6        # needs 6 more graded requests in window
+      accuracy: 0.06     # recentAccuracy needs to reach 0.85
+      executions: 20     # needs first 20 supervised executions
 ```
 
-`nextLevelRequirements` is the UX that makes graduation legible. An SRE can read this
-and know exactly what the agent needs to advance — no policy YAML spelunking required.
+`diagnosticAccuracy` is the all-time average — preserved for audit and trend analysis.
+`recentAccuracy` is the rolling window value (last N verdicts per `evaluationWindow.count`)
+that the controller uses to compute `trustLevel`. An agent cannot coast on historical
+performance — recent behavior drives the level.
+
+`nextLevelRequirements` makes graduation legible. An SRE can see exactly what the agent
+needs to advance without reading policy YAML.
 
 ## Gateway Enforcement Order
 
@@ -242,16 +293,62 @@ When a request routes to `AwaitingVerdict`:
      `wrong_diagnosis | bad_timing | scope_too_broad | precautionary | policy_block`
    - `note`: optional free-text annotation
 
-   Only `wrong_diagnosis` counts against `diagnosticAccuracy`. The other reason codes
-   are recorded for audit but do not affect the graduation ladder — denying an agent
-   because of bad timing or scope says nothing about its diagnostic quality.
+   Only `wrong_diagnosis` counts against accuracy. The other reason codes are recorded
+   for audit but do not affect the graduation ladder — bad timing or scope says nothing
+   about diagnostic quality.
 
-4. Gateway persists verdict on `AgentRequest` status, upserts `DiagnosticAccuracySummary`
-   for the agent. Only verdicts with `reasonCode: wrong_diagnosis` (or `correct`) update
-   the accuracy counters.
-5. `AgentTrustProfile` controller reconciles: recomputes `diagnosticAccuracy`,
-   `trustLevel`, `nextLevelRequirements`.
-6. Request transitions to `Completed` (graded). Agent is notified via status.
+4. **Gateway** writes the verdict to `AgentRequest.status.verdict` and stops. No
+   accuracy computation in the gateway.
+5. **Controller** watches `AgentRequest` verdict changes → upserts
+   `DiagnosticAccuracySummary`. Only `correct` and `wrong_diagnosis` verdicts update
+   accuracy counters.
+6. **Controller** watches `DiagnosticAccuracySummary` changes → reconciles
+   `AgentTrustProfile`: recomputes `recentAccuracy`, `diagnosticAccuracy`, `trustLevel`,
+   `nextLevelRequirements`.
+7. Request transitions to `Completed` (graded). Agent is notified via status.
+
+**If nobody grades (TTL expires)**: request transitions to `Expired`. Expired requests
+are excluded from accuracy counts — they are neither correct nor incorrect.
+
+## Demotion Behavior
+
+When the controller reconciles `AgentTrustProfile` and finds
+`recentAccuracy < currentBand.accuracy.min - demotionBuffer`, it downgrades `trustLevel`
+to the highest level where both dimensions are still fully satisfied.
+
+**In-flight requests are not revoked on demotion.** A request that was auto-approved
+while the agent was `Trusted` and is currently in `Executing` phase continues to
+completion under the original approval. The demotion applies to the next request, not
+the current one. This matches K8s semantics — revoking a ServiceAccount token does not
+kill running pods. The blast radius of any single auto-approved action is bounded by
+the OpsLock duration.
+
+**Trust level is re-evaluated on every controller reconcile.** There is no hysteresis
+on the time dimension — if accuracy recovers, the agent can be re-promoted on the next
+reconcile cycle. The `demotionBuffer` prevents accuracy-boundary flapping between two
+adjacent reconciles, not time-based oscillation.
+
+## State Machine
+
+```text
+Observer path (grading):
+  Submitted → AwaitingVerdict → Completed (graded, verdict recorded)
+                              → Expired   (awaitingVerdictTTL exceeded, not graded,
+                                           excluded from accuracy counts)
+
+Advisor / Supervised path (human approval):
+  Submitted → Pending → Approved → Executing → Completed
+                      → Denied   (human rejected)
+
+Trusted / Autonomous path (auto-approval):
+  Submitted → Approved (synchronous, gateway returns immediately)
+            → Denied   (SafetyPolicy blocked)
+  Approved  → Executing → Completed
+```
+
+Each request is evaluated at submission time. If an agent promotes between request N
+and request N+1, request N completes under its original Observer/Advisor treatment.
+Request N+1 gets the new level. There is no retroactive re-evaluation.
 
 ## Bootstrap Path for New Agents
 

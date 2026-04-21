@@ -39,6 +39,7 @@ The agent does not declare its trust level or choose a mode. It always expresses
 aip.request(
     target="github://myorg/infra/files/main/clusters/prod/karpenter/gpu-pool.yaml",
     action="update",
+    classification="nodepool/at-capacity",   # optional — enables future per-classification accuracy
     reason="""
         15 pods in gpu-workloads pending for 8 minutes. All 10 nodes in gpu-pool occupied.
         Autoscaler cannot provision: maxNodes cap reached.
@@ -94,39 +95,55 @@ kind: AgentGraduationPolicy
 metadata:
   name: cluster-default
 spec:
+  # Rolling window: last 50 verdicts drive the trust level, not all-time average.
+  # maxAge reserved for future time-based decay — additive, no schema change needed.
+  evaluationWindow:
+    count: 50
+
+  # Ungraded Observer requests expire after 7 days. Expired requests are excluded
+  # from accuracy counts — neither correct nor incorrect.
+  awaitingVerdictTTL: 168h
+
   levels:
     - name: Observer
       # No execution. Request is graded only.
-      minObserveVerdicts: 0
-      minDiagnosticAccuracy: 0.0
+      accuracy: { max: 0.70 }
       canExecute: false
 
     - name: Advisor
       # Execution allowed. Human approval required on every request.
-      minObserveVerdicts: 10
-      minDiagnosticAccuracy: 0.70
-      minExecutions: 0
+      # demotionBuffer: accuracy must drop this far below min to trigger demotion,
+      # preventing flapping at the boundary.
+      accuracy: { min: 0.70, max: 0.85, demotionBuffer: 0.02 }
+      executions: { min: 0, max: 20 }
       requiresHumanApproval: true
 
     - name: Supervised
-      minObserveVerdicts: 20
-      minDiagnosticAccuracy: 0.85
-      minExecutions: 20
+      accuracy: { min: 0.85, max: 0.92, demotionBuffer: 0.02 }
+      executions: { min: 20, max: 50 }
       requiresHumanApproval: true
 
     - name: Trusted
       # Auto-approved if SafetyPolicy passes.
-      minObserveVerdicts: 50
-      minDiagnosticAccuracy: 0.92
-      minExecutions: 50
+      accuracy: { min: 0.92, max: 0.97, demotionBuffer: 0.02 }
+      executions: { min: 50, max: 100 }
       requiresHumanApproval: false
 
     - name: Autonomous
-      minObserveVerdicts: 100
-      minDiagnosticAccuracy: 0.97
-      minExecutions: 100
+      accuracy: { min: 0.97 }
+      executions: { min: 100 }
       requiresHumanApproval: false
 ```
+
+**Promotion**: requires BOTH `recentAccuracy >= band.accuracy.min` AND
+`totalExecutions >= band.executions.min`. Both dimensions must be satisfied.
+
+**Demotion**: triggers on accuracy only — `recentAccuracy < band.accuracy.min - demotionBuffer`.
+Execution count is monotonically increasing and never triggers demotion.
+
+**Level when dimensions disagree**: highest level where both dimensions are simultaneously
+satisfied. Example: accuracy 0.95 (Trusted band) + 10 executions (below Supervised min
+of 20) → effective level is Advisor (highest level where both conditions hold).
 
 These thresholds are the defaults shipped with the Helm chart. The cluster admin overrides
 them. A conservative production cluster raises the bars. An internal platform with a small
@@ -169,6 +186,7 @@ metadata:
   namespace: production
 spec:
   agentIdentity: karpenter-nodepool-agent
+  classification: "nodepool/at-capacity"
   action: update
   target:
     uri: github://myorg/infra/files/main/clusters/prod/karpenter/gpu-pool.yaml
@@ -447,41 +465,96 @@ autonomous changes regardless of trust level. The SafetyPolicy enforces this.
 
 ---
 
+## Unhappy paths
+
+### Expired verdicts — SRE goes on vacation
+
+The agent files 5 requests during week 3. The on-call SRE is on vacation. Nobody grades
+them within 7 days (`awaitingVerdictTTL: 168h`).
+
+The controller transitions all 5 to `Expired`. They are excluded from accuracy counts —
+neither correct nor incorrect. The agent's `totalObserveVerdicts` does not increase.
+`recentAccuracy` is unchanged.
+
+When the SRE returns, the agent files new requests. Those are gradeable normally.
+
+**The agent cannot be stuck permanently by ungraded requests.** Expired requests fall
+out of the rolling window naturally. The only cost is time — the agent's graduation
+slows, it does not stop.
+
+---
+
+### Demotion — model update degrades accuracy
+
+The agent reaches `Trusted` in month 6. The cluster admin raises `maxAutonomyLevel` to
+`Trusted`. The agent starts auto-approving nodepool PRs.
+
+In month 8 the agent's underlying model is updated. New model has higher false positive
+rate on scaling decisions. Recent accuracy over the last 50 verdicts drops from 0.93 to
+0.82 — below the Supervised floor of 0.85 minus the demotion buffer of 0.02 (= 0.83).
+
+The controller detects this on the next reconcile:
+
+```yaml
+status:
+  trustLevel: Supervised    # demoted from Trusted
+  diagnosticAccuracy: 0.91  # all-time still looks good
+  recentAccuracy: 0.82      # rolling window reveals the degradation
+  totalObserveVerdicts: 89
+```
+
+The next `AgentRequest` from the agent routes to `Pending` (human approval required)
+instead of auto-approved. The SRE investigates, identifies the model regression, rolls
+back or retrains. Accuracy recovers. The controller promotes back to `Trusted` on the
+next reconcile.
+
+**In-flight requests are not revoked.** Any request already in `Executing` phase at the
+time of demotion completes normally — it was approved under the old trust level. The
+blast radius is bounded by the OpsLock duration (15s in e2e, configurable in production).
+
+---
+
 ## How DiagnosticAccuracySummary feeds AgentTrustProfile
 
-The `AgentTrustProfile` controller watches two sources:
+The gateway and controller have a clean separation of responsibilities:
 
-**Source 1 — graded Observer requests** → `DiagnosticAccuracySummary`
+| Operation | Gateway | Controller |
+|---|---|---|
+| Accept verdict | Write to `AgentRequest.status.verdict` | — |
+| Update accuracy summary | — | Watch verdict changes → upsert `DiagnosticAccuracySummary` |
+| Recompute trust level | — | Watch `DiagnosticAccuracySummary` + terminal requests → reconcile `AgentTrustProfile` |
+| Enforce trust gate | Read `AgentTrustProfile` | — |
 
-Every time a verdict is submitted, the gateway:
-1. Persists the verdict on the `AgentRequest` status
-2. Upserts the `DiagnosticAccuracySummary` CR for that `agentIdentity`:
-   - First verdict: increment `totalReviewed` and the verdict counter
-   - Changed verdict: decrement old counter, increment new counter, `totalReviewed` unchanged
-3. Recomputes `diagnosticAccuracy = (correct + 0.5 × partial) / totalReviewed`
+The gateway is a translation layer. It writes facts (verdicts, requests). The controller
+computes derived state (accuracy, trust level). This is the standard K8s pattern.
 
-**Source 2 — terminal AgentRequest transitions** → `successRate`
+**The controller reconcile loop:**
 
-Every time an Advisor+ request reaches a terminal phase (`Completed`, `Failed`, `Denied`),
-the controller increments the execution counters and recomputes `successRate`.
+```text
+AgentRequest verdict written (gateway)
+        ↓
+DiagnosticAccuracySummary controller:
+  - Reads last N AgentRequest verdicts (evaluationWindow.count)
+  - Excludes Expired requests
+  - Only correct and wrong_diagnosis reasonCodes affect accuracy
+  - Recomputes recentAccuracy = (correct + 0.5×partial) / reviewed
+  - Patches DiagnosticAccuracySummary status
 
-**The controller reconciles `AgentTrustProfile` whenever either source changes:**
-
-```
 DiagnosticAccuracySummary updated
         OR
-AgentRequest reaches terminal phase
+AgentRequest reaches terminal phase (Advisor+)
         ↓
-AgentTrustProfile controller reconciles:
-  1. Read DiagnosticAccuracySummary for this agentIdentity
-  2. Count terminal AgentRequests for this agentIdentity
-  3. Evaluate against AgentGraduationPolicy thresholds
-  4. Compute trustLevel, nextLevelRequirements
-  5. Patch AgentTrustProfile status
+AgentTrustProfile controller:
+  - Reads DiagnosticAccuracySummary.recentAccuracy
+  - Counts terminal AgentRequests for successRate
+  - Resolves trustLevel: highest level where BOTH
+      recentAccuracy >= band.accuracy.min
+      AND totalExecutions >= band.executions.min
+  - Checks demotion: recentAccuracy < currentBand.min - demotionBuffer
+  - Patches AgentTrustProfile status
 ```
 
-The join key is `agentIdentity` — the same string in `AgentRequest.spec.agentIdentity`,
-`DiagnosticAccuracySummary.spec.agentIdentity`, and `AgentTrustProfile.metadata.name`.
+The join key is `agentIdentity` across all three resources.
 
 ---
 
@@ -493,7 +566,7 @@ The join key is `agentIdentity` — the same string in `AgentRequest.spec.agentI
 | `cluster-default` | `AgentGraduationPolicy` | Cluster admin (once at setup) |
 | `nodepool-guardrails` | `SafetyPolicy` | Platform engineer |
 | `karpenter-nodepool-agent` | `AgentTrustProfile` | Controller (automatic) |
-| `karpenter-nodepool-agent` | `DiagnosticAccuracySummary` | Gateway (automatic on first verdict) |
+| `karpenter-nodepool-agent` | `DiagnosticAccuracySummary` | Controller (automatic on first graded verdict) |
 | `nodepool-req-*` | `AgentRequest` | Agent |
 
 The agent creates nothing except `AgentRequest`. Everything else is either admin
