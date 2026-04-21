@@ -519,24 +519,14 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 	}
 
 admissionPassed:
-	var soakMode bool
 	if matchedGR != nil {
 		agentReq.Spec.GovernedResourceRef = &v1alpha1.GovernedResourceRef{
 			Name:       matchedGR.Name,
 			Generation: matchedGR.Generation,
 		}
-		if matchedGR.Spec.SoakMode {
-			soakMode = true
-			agentReq.Status.Phase = v1alpha1.PhaseAwaitingVerdict
-			// Set RequestSubmitted condition to prevent AgentRequest controller from
-			// initializing this to Pending.
-			meta.SetStatusCondition(&agentReq.Status.Conditions, metav1.Condition{
-				Type:    "RequestSubmitted",
-				Status:  metav1.ConditionTrue,
-				Reason:  "SoakModeAdmission",
-				Message: "Initial phase set to AwaitingVerdict due to GovernedResource SoakMode",
-			})
-		}
+		// SoakMode phase initialization is handled exclusively by the controller.
+		// The gateway sets GovernedResourceRef so the controller can detect SoakMode
+		// on its first reconcile and route to PhaseAwaitingVerdict.
 	}
 
 	existing, err := s.checkDuplicate(r.Context(), body.AgentIdentity, body.Action, body.TargetURI, ns)
@@ -559,10 +549,6 @@ admissionPassed:
 		return
 	}
 
-	// Capture target status before Create() strips it
-	targetPhase := agentReq.Status.Phase
-	targetConditions := agentReq.Status.Conditions
-
 	if err := s.client.Create(r.Context(), agentReq); err != nil {
 		if apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) || apierrors.IsAlreadyExists(err) {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid AgentRequest: %v", err))
@@ -570,24 +556,6 @@ admissionPassed:
 		}
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to create AgentRequest: %v", err))
 		return
-	}
-
-	// If SoakMode is enabled, we must patch the status because Create() ignores it.
-	if soakMode {
-		log.Printf("DEBUG: SoakMode patch starting for %s", agentReq.Name)
-		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			var current v1alpha1.AgentRequest
-			if err := s.client.Get(r.Context(), types.NamespacedName{Name: agentReq.Name, Namespace: ns}, &current); err != nil {
-				return err
-			}
-			base := current.DeepCopy()
-			current.Status.Phase = targetPhase
-			current.Status.Conditions = targetConditions
-			log.Printf("DEBUG: Patching %s to phase %s", agentReq.Name, targetPhase)
-			return s.client.Status().Patch(r.Context(), &current, client.MergeFrom(base))
-		}); err != nil {
-			log.Printf("ERROR: failed to set initial SoakMode status for %s: %v", agentReq.Name, err)
-		}
 	}
 
 	s.pollAgentRequestPhase(w, r, agentReq.Name, ns, reqLabels)
@@ -866,6 +834,13 @@ func (s *Server) handleVerdictAgentRequest(w http.ResponseWriter, r *http.Reques
 
 	if body.Verdict != verdictCorrect && body.ReasonCode == "" {
 		writeError(w, http.StatusBadRequest, "reasonCode is required when verdict is not 'correct'")
+		return
+	}
+
+	validReasonCodes := []string{"wrong_diagnosis", "bad_timing", "scope_too_broad", "precautionary", "policy_block"}
+	if body.ReasonCode != "" && !slices.Contains(validReasonCodes, body.ReasonCode) {
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("invalid reasonCode %q; must be one of: %s", body.ReasonCode, strings.Join(validReasonCodes, ", ")))
 		return
 	}
 

@@ -143,6 +143,10 @@ func (r *DiagnosticAccuracyReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 
 		// Track this request to avoid double counting. Keep last 100 for safety.
+		// Known limitation: if the controller is restarted and re-reconciles more than
+		// 100 verdicted AgentRequests, older names will be evicted from RecentVerdicts
+		// and may be double-counted. A full recompute endpoint (see EP for GC/accuracy)
+		// would correct this; not addressed in v1alpha1.
 		summary.Status.RecentVerdicts = append(summary.Status.RecentVerdicts, agentReq.Name)
 		if len(summary.Status.RecentVerdicts) > 100 {
 			summary.Status.RecentVerdicts = summary.Status.RecentVerdicts[len(summary.Status.RecentVerdicts)-100:]
@@ -160,20 +164,19 @@ func (r *DiagnosticAccuracyReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *DiagnosticAccuracyReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Only process events where a verdict has been recorded. GenerationChanged and
+	// LabelChanged predicates are intentionally omitted: verdict writes are status
+	// updates and do not bump generation or change labels.
+	verdictSet := predicate.NewPredicateFuncs(func(object client.Object) bool {
+		req, ok := object.(*governancev1alpha1.AgentRequest)
+		if !ok {
+			return false
+		}
+		return req.Status.Verdict != ""
+	})
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&governancev1alpha1.AgentRequest{}).
-		WithEventFilter(predicate.Or(
-			predicate.GenerationChangedPredicate{},
-			predicate.LabelChangedPredicate{},
-			// Custom predicate to watch for verdict changes
-			predicate.NewPredicateFuncs(func(object client.Object) bool {
-				req, ok := object.(*governancev1alpha1.AgentRequest)
-				if !ok {
-					return false
-				}
-				return req.Status.Verdict != ""
-			}),
-		)).
+		WithEventFilter(verdictSet).
 		Named("diagnosticaccuracy").
 		Complete(r)
 }

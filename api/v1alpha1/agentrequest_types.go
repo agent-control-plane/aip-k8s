@@ -33,7 +33,9 @@ type AgentRequestSpec struct {
 
 	// Classification is the optional problem category declared by the agent.
 	// Format: "category/subcategory" (e.g. "nodepool/at-capacity").
-	// Recorded for future per-classification accuracy tracking. Not enforced.
+	// Schema forward-port: stored but not yet consumed by the controller or accuracy
+	// reconciler. Agents may begin populating this field; per-classification accuracy
+	// tracking will be added in a future release.
 	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9-]*/[a-z][a-z0-9-]*$`
 	// +optional
 	Classification string `json:"classification,omitempty"`
