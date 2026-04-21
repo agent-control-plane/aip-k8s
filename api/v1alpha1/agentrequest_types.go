@@ -31,6 +31,15 @@ type AgentRequestSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Reason string `json:"reason"`
 
+	// Classification is the optional problem category declared by the agent.
+	// Format: "category/subcategory" (e.g. "nodepool/at-capacity").
+	// Schema forward-port: stored but not yet consumed by the controller or accuracy
+	// reconciler. Agents may begin populating this field; per-classification accuracy
+	// tracking will be added in a future release.
+	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9-]*/[a-z][a-z0-9-]*$`
+	// +optional
+	Classification string `json:"classification,omitempty"`
+
 	// Optional fields
 	IntentPlanRef *string `json:"intentPlanRef,omitempty"` // Reference to parent IntentPlan
 	// +kubebuilder:validation:Minimum=0
@@ -133,12 +142,14 @@ type ScopeBounds struct {
 
 // Phases (computed from Conditions)
 const (
-	PhasePending   = "Pending"
-	PhaseApproved  = "Approved"
-	PhaseDenied    = "Denied"
-	PhaseExecuting = "Executing"
-	PhaseCompleted = "Completed"
-	PhaseFailed    = "Failed"
+	PhasePending         = "Pending"
+	PhaseApproved        = "Approved"
+	PhaseDenied          = "Denied"
+	PhaseExecuting       = "Executing"
+	PhaseCompleted       = "Completed"
+	PhaseFailed          = "Failed"
+	PhaseAwaitingVerdict = "AwaitingVerdict"
+	PhaseExpired         = "Expired"
 )
 
 // Condition types
@@ -190,6 +201,31 @@ type AgentRequestStatus struct {
 	// named in the matching GovernedResource. Schema is fetcher-specific.
 	// +optional
 	ProviderContext *apiextensionsv1.JSON `json:"providerContext,omitempty"`
+
+	// Verdict is set by a human reviewer on AwaitingVerdict requests.
+	// +kubebuilder:validation:Enum=correct;partial;incorrect
+	// +optional
+	Verdict string `json:"verdict,omitempty"`
+
+	// VerdictReasonCode qualifies the verdict. Required when Verdict is
+	// "incorrect" or "partial". Only "wrong_diagnosis" affects accuracy counts.
+	// +kubebuilder:validation:Enum=wrong_diagnosis;bad_timing;scope_too_broad;precautionary;policy_block
+	// +optional
+	VerdictReasonCode string `json:"verdictReasonCode,omitempty"`
+
+	// VerdictNote is an optional free-text annotation from the reviewer.
+	// +kubebuilder:validation:MaxLength=512
+	// +optional
+	VerdictNote string `json:"verdictNote,omitempty"`
+
+	// VerdictBy is the reviewer identity. Set server-side from the authenticated
+	// caller. Never accepted from the request body.
+	// +optional
+	VerdictBy string `json:"verdictBy,omitempty"`
+
+	// VerdictAt is the timestamp of the review.
+	// +optional
+	VerdictAt *metav1.Time `json:"verdictAt,omitempty"`
 }
 
 // ControlPlaneVerification captures live cluster state that the AIP control

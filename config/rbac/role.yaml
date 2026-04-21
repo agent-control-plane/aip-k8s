@@ -83,12 +83,24 @@ rules:
   resources:
   - agentrequests/status
   - auditrecords/status
+  - diagnosticaccuracysummaries/status
   - governedresources/status
   - safetypolicies/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - governance.aip.io
+  resources:
+  - diagnosticaccuracysummaries
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - karpenter.sh
   resources:

@@ -213,8 +213,9 @@ async function fetchRequests() {
         showBanner('Not authenticated — paste a Bearer token to continue.', 'warn');
         return;
     }
+    const ns = document.getElementById('req-ns-input')?.value?.trim() || 'default';
     try {
-        const response = await apiFetch('/api/agent-requests');
+        const response = await apiFetch(`/api/agent-requests?namespace=${encodeURIComponent(ns)}`);
         if (!response.ok) {
             if (response.status !== 401) {
                 showBanner('Failed to load requests (HTTP ' + response.status + ').', 'error');
@@ -253,8 +254,11 @@ async function fetchAuditRecords(name) {
     // previously selected request while the new fetch is in flight.
     state.auditRecords = [];
     renderDetails();
+    const req = state.requests.find(r => r.metadata.name === name);
+    const ns = req?.metadata?.namespace || 'default';
     try {
-        const response = await apiFetch(`/api/audit-records?agentRequest=${encodeURIComponent(name)}`);
+        const response = await apiFetch(
+            `/api/audit-records?agentRequest=${encodeURIComponent(name)}&namespace=${encodeURIComponent(ns)}`);
         if (!response.ok) return;
         state.auditRecords = await response.json();
         renderDetails();
@@ -264,13 +268,16 @@ async function fetchAuditRecords(name) {
 }
 
 async function performAction(name, action, reason) {
+    const req = state.requests.find(r => r.metadata.name === name);
+    const ns = req?.metadata?.namespace || 'default';
     try {
         const opts = { method: 'POST' };
         if (reason !== undefined) {
             opts.headers = { 'Content-Type': 'application/json' };
             opts.body = JSON.stringify({ reason });
         }
-        const response = await apiFetch(`/api/agent-requests/${encodeURIComponent(name)}/${encodeURIComponent(action)}`, opts);
+        const response = await apiFetch(
+            `/api/agent-requests/${encodeURIComponent(name)}/${encodeURIComponent(action)}?namespace=${encodeURIComponent(ns)}`, opts);
         if (response.ok) {
             await fetchRequests();
         } else {
@@ -520,7 +527,13 @@ function renderProviderContext(ctx) {
 }
 
 function renderGovernanceTimeline(phase, needsApproval) {
-    const steps = [
+    const isSoak = phase === 'AwaitingVerdict' || (phase === 'Completed' && state.selectedRequest?.status?.verdict);
+    
+    const steps = isSoak ? [
+        { label: 'Intent declared',  done: true },
+        { label: 'Policy evaluated', done: true },
+        { label: 'Human grade',      done: phase === 'Completed', active: phase === 'AwaitingVerdict' },
+    ] : [
         { label: 'Intent declared',  done: true },
         { label: 'Policy evaluated', done: true },
         { label: 'Human gate',       done: ['Approved','Denied','Executing','Completed'].includes(phase), active: needsApproval, denied: phase === 'Denied' },
@@ -578,6 +591,26 @@ function renderDetails() {
     const isReviewer = state.role === 'reviewer' || state.role === 'admin';
     const reason = req.spec.reason || 'No reason provided.';
     const name = req.metadata.name;
+
+    let verdictInfo = '';
+    if (req.status?.verdict) {
+        const v = req.status.verdict;
+        let vclass = 'badge-executing';
+        if (v === 'correct') vclass = 'badge-completed';
+        else if (v === 'incorrect') vclass = 'badge-failed';
+        else if (v === 'partial') vclass = 'badge-warning';
+
+        verdictInfo = `
+            <div style="margin-top:1.25rem;padding:1rem;background:rgba(255,255,255,0.02);border:1px solid var(--border-color);border-radius:8px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+                    <span style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-secondary);">Human Verdict</span>
+                    <span class="badge ${vclass}">${escapeHtml(v)}</span>
+                </div>
+                ${req.status.verdictReasonCode ? `<div style="font-size:0.85rem;margin-bottom:0.5rem;"><span style="color:var(--text-secondary);">Reason:</span> ${escapeHtml(req.status.verdictReasonCode)}</div>` : ''}
+                ${req.status.verdictNote ? `<div style="font-size:0.85rem;margin-bottom:0.5rem;font-style:italic;">&ldquo;${escapeHtml(req.status.verdictNote)}&rdquo;</div>` : ''}
+                <div style="font-size:0.72rem;color:var(--text-secondary);text-align:right;">Graded by ${escapeHtml(req.status.verdictBy || 'unknown')} at ${req.status.verdictAt ? new Date(req.status.verdictAt).toLocaleString() : ''}</div>
+            </div>`;
+    }
 
     // G-10: GOVERNED_RESOURCE_DELETED banner
     const grDeletedBanner = req.status?.denial?.code === 'GOVERNED_RESOURCE_DELETED'
@@ -662,6 +695,7 @@ function renderDetails() {
                 </div>
                 ${renderControlPlaneVerification(req.status?.controlPlaneVerification)}
                 ${renderProviderContext(req.status?.providerContext)}
+                ${verdictInfo}
                 <div style="margin-top:1.25rem;">
                     <div style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-secondary);margin-bottom:0.5rem;">Policy Conditions</div>
                     ${req.status?.conditions?.filter(c => c.type !== 'FetcherSchemaViolation').map(c => `
@@ -674,13 +708,16 @@ function renderDetails() {
                         </div>
                     `).join('') || '<div style="color:var(--text-secondary);font-size:0.85rem;">No conditions yet</div>'}
                 </div>
-                ${needsApproval && isReviewer ? `
+                ${(needsApproval || phase === 'AwaitingVerdict') && isReviewer ? `
                     <div class="actions">
-                        <button class="primary" data-name="${escapeHtml(name)}" data-endpoints="${!!req.status?.controlPlaneVerification?.hasActiveEndpoints}" onclick="promptApproval(this.dataset.name, this.dataset.endpoints === 'true')">Approve Override</button>
-                        <button class="danger" data-name="${escapeHtml(name)}" onclick="confirmDenial(this.dataset.name)">Deny</button>
+                        ${phase === 'AwaitingVerdict' ? 
+                            `<button class="primary" onclick="gradeAgentRequest('${escapeHtml(name)}')">Grade Diagnosis</button>` :
+                            `<button class="primary" data-name="${escapeHtml(name)}" data-endpoints="${!!req.status?.controlPlaneVerification?.hasActiveEndpoints}" onclick="promptApproval(this.dataset.name, this.dataset.endpoints === 'true')">Approve Override</button>
+                             <button class="danger" data-name="${escapeHtml(name)}" onclick="confirmDenial(this.dataset.name)">Deny</button>`
+                        }
                     </div>
-                ` : needsApproval ? `
-                    <div style="margin-top:1rem;font-size:0.82rem;color:var(--text-secondary);font-style:italic;">Awaiting reviewer approval.</div>
+                ` : needsApproval || phase === 'AwaitingVerdict' ? `
+                    <div style="margin-top:1rem;font-size:0.82rem;color:var(--text-secondary);font-style:italic;">Awaiting reviewer ${phase === 'AwaitingVerdict' ? 'grade' : 'approval'}.</div>
                 ` : ''}
             </div>
         </div>
@@ -967,6 +1004,12 @@ window.openGRForm = async function(name) {
                 <input id="gr-desc" type="text" value="${escapeHtml(spec.description || '')}"
                     style="display:block;width:100%;box-sizing:border-box;margin-top:0.2rem;padding:0.35rem 0.5rem;background:var(--surface-color);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);font-size:0.82rem;"/>
             </label>
+            <div style="margin-bottom:0.75rem;">
+                <label style="font-size:0.82rem;color:var(--text-secondary);display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+                    <input id="gr-soak" type="checkbox" ${spec.soakMode ? 'checked' : ''} style="width:auto;margin:0;"/>
+                    Soak Mode (routes requests to AwaitingVerdict phase)
+                </label>
+            </div>
             <div style="display:flex;gap:0.5rem;">
                 <button data-name="${escapeHtml(name || '')}" onclick="submitGRForm(this.dataset.name || null)" style="padding:0.4rem 0.9rem;background:var(--accent-color);border:none;border-radius:4px;color:white;font-size:0.82rem;cursor:pointer;">${name ? 'Save' : 'Create'}</button>
                 <button onclick="document.getElementById('gr-form-container').style.display='none'" style="padding:0.4rem 0.9rem;background:transparent;border:1px solid var(--border-color);border-radius:4px;color:var(--text-secondary);font-size:0.82rem;cursor:pointer;">Cancel</button>
@@ -983,6 +1026,7 @@ window.submitGRForm = async function(name) {
         permittedAgents: split(document.getElementById('gr-agents').value),
         contextFetcher: document.getElementById('gr-fetcher').value,
         description: document.getElementById('gr-desc').value.trim(),
+        soakMode: document.getElementById('gr-soak').checked,
     };
 
     const method = name ? 'PUT' : 'POST';
@@ -1230,6 +1274,95 @@ window.viewDiagnosticDetails = function(name) {
     `;
 
     openModal('Diagnostic Details', body, footer);
+};
+
+window.gradeAgentRequest = function(name) {
+    const req = state.requests.find(r => r.metadata.name === name);
+    if (!req) return;
+
+    const body = `
+        <div style="margin-bottom: 1.5rem; padding: 1rem; background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); border-radius: 8px;">
+            <div style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 0.25rem;">Intent Reasoning</div>
+            <div style="font-size: 0.9rem; color: #cbd5e1; font-family: monospace;">${escapeHtml(req.spec.reason)}</div>
+        </div>
+
+        <div style="margin-bottom: 1rem;">
+            <label style="display: block; font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Verdict</label>
+            <select id="modal-verdict" onchange="toggleReasonCode(this.value)" style="width: 100%; padding: 0.6rem; background: var(--surface-color); border: 1px solid var(--border-color); color: var(--text-primary); border-radius: 4px;">
+                <option value="">— select verdict —</option>
+                <option value="correct">Correct</option>
+                <option value="partial">Partial</option>
+                <option value="incorrect">Incorrect</option>
+            </select>
+        </div>
+
+        <div id="reason-code-container" style="margin-bottom: 1rem; display: none;">
+            <label style="display: block; font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Reason Code</label>
+            <select id="modal-reason-code" style="width: 100%; padding: 0.6rem; background: var(--surface-color); border: 1px solid var(--border-color); color: var(--text-primary); border-radius: 4px;">
+                <option value="wrong_diagnosis">Wrong Diagnosis (affects accuracy)</option>
+                <option value="bad_timing">Bad Timing</option>
+                <option value="scope_too_broad">Scope Too Broad</option>
+                <option value="precautionary">Precautionary</option>
+                <option value="policy_block">Policy Block</option>
+            </select>
+        </div>
+
+        <div>
+            <label style="display: block; font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Reviewer Note (optional)</label>
+            <textarea id="modal-note" rows="4" maxlength="512" style="width: 100%; box-sizing: border-box; padding: 0.6rem; background: var(--surface-color); border: 1px solid var(--border-color); color: var(--text-primary); border-radius: 4px; resize: vertical;"></textarea>
+        </div>
+    `;
+
+    const footer = `
+        <button onclick="closeModal()" style="padding: 0.5rem 1.25rem; background: transparent; border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-secondary); cursor: pointer;">Cancel</button>
+        <button onclick="submitAgentRequestVerdict('${escapeHtml(name)}')" style="padding: 0.5rem 1.25rem; background: var(--accent-color); border: none; border-radius: 4px; color: white; font-weight: 600; cursor: pointer;">Submit Grade</button>
+    `;
+
+    openModal('Grade Agent Request', body, footer);
+};
+
+window.toggleReasonCode = function(verdict) {
+    const container = document.getElementById('reason-code-container');
+    if (verdict === 'partial' || verdict === 'incorrect') {
+        container.style.display = 'block';
+    } else {
+        container.style.display = 'none';
+    }
+};
+
+window.submitAgentRequestVerdict = async function(name) {
+    const verdict = document.getElementById('modal-verdict').value;
+    const reasonCode = document.getElementById('modal-reason-code').value;
+    const note = document.getElementById('modal-note').value.trim();
+    
+    if (!verdict) {
+        document.getElementById('modal-verdict').style.borderColor = 'var(--error)';
+        return;
+    }
+
+    closeModal();
+    const req = state.requests.find(r => r.metadata.name === name);
+    if (!req) {
+        alert('Request not found: ' + name);
+        return;
+    }
+    const ns = req.metadata.namespace || 'default';
+
+    try {
+        const response = await apiFetch(`/api/agent-requests/${encodeURIComponent(name)}/verdict?namespace=${encodeURIComponent(ns)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ verdict, reasonCode: (verdict === 'correct' ? '' : reasonCode), note })
+        });
+        if (!response.ok) {
+            const errText = await response.text();
+            alert('Failed to submit verdict: ' + errText);
+            return;
+        }
+        await fetchRequests();
+    } catch (e) {
+        alert('Failed to submit verdict: ' + e.message);
+    }
 };
 
 window.gradeDiagnostic = function(name) {

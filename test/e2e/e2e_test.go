@@ -613,15 +613,15 @@ var _ = Describe("Manager", Ordered, func() {
 		)
 
 		BeforeAll(func() {
-			By("cleaning up any stale AgentDiagnostic from previous runs")
-			cmd := exec.Command("kubectl", "delete", "agentdiagnostic", "e2e-diag-test",
+			By("cleaning up any stale AgentDiagnostics from previous runs")
+			cmd := exec.Command("kubectl", "delete", "agentdiagnostic", "--all",
 				"-n", diagNS, "--ignore-not-found")
 			_, _ = utils.Run(cmd)
 		})
 
 		AfterAll(func() {
-			By("cleaning up AgentDiagnostic")
-			cmd := exec.Command("kubectl", "delete", "agentdiagnostic", "e2e-diag-test", "-n", diagNS, "--ignore-not-found")
+			By("cleaning up AgentDiagnostics")
+			cmd := exec.Command("kubectl", "delete", "agentdiagnostic", "--all", "-n", diagNS, "--ignore-not-found")
 			_, _ = utils.Run(cmd)
 		})
 

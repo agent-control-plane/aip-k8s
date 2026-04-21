@@ -94,6 +94,15 @@ spec:
                 required:
                 - affectedTargets
                 type: object
+              classification:
+                description: |-
+                  Classification is the optional problem category declared by the agent.
+                  Format: "category/subcategory" (e.g. "nodepool/at-capacity").
+                  Schema forward-port: stored but not yet consumed by the controller or accuracy
+                  reconciler. Agents may begin populating this field; per-classification accuracy
+                  tracking will be added in a future release.
+                pattern: ^[a-z][a-z0-9-]*/[a-z][a-z0-9-]*$
+                type: string
               executionMode:
                 default: single
                 description: |-
@@ -390,6 +399,39 @@ spec:
                   ProviderContext holds live resource state fetched by the context fetcher
                   named in the matching GovernedResource. Schema is fetcher-specific.
                 x-kubernetes-preserve-unknown-fields: true
+              verdict:
+                description: Verdict is set by a human reviewer on AwaitingVerdict
+                  requests.
+                enum:
+                - correct
+                - partial
+                - incorrect
+                type: string
+              verdictAt:
+                description: VerdictAt is the timestamp of the review.
+                format: date-time
+                type: string
+              verdictBy:
+                description: |-
+                  VerdictBy is the reviewer identity. Set server-side from the authenticated
+                  caller. Never accepted from the request body.
+                type: string
+              verdictNote:
+                description: VerdictNote is an optional free-text annotation from
+                  the reviewer.
+                maxLength: 512
+                type: string
+              verdictReasonCode:
+                description: |-
+                  VerdictReasonCode qualifies the verdict. Required when Verdict is
+                  "incorrect" or "partial". Only "wrong_diagnosis" affects accuracy counts.
+                enum:
+                - wrong_diagnosis
+                - bad_timing
+                - scope_too_broad
+                - precautionary
+                - policy_block
+                type: string
             type: object
         required:
         - spec

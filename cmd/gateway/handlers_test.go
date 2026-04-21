@@ -330,16 +330,12 @@ func TestCreateAgentDiagnostic_Idempotent(t *testing.T) {
 	req1 = req1.WithContext(withCallerSub(req1.Context(), "agent-sub"))
 	w1 := httptest.NewRecorder()
 	s.handleCreateAgentDiagnostic(w1, req1)
-	g.Expect(w1.Code).To(gomega.Equal(http.StatusCreated))
+	g.Expect(w1.Code).To(gomega.Equal(http.StatusGone))
 
 	// Duplicate creation
 	req2 := httptest.NewRequest(http.MethodPost, "/agent-diagnostics", strings.NewReader(body))
 	req2 = req2.WithContext(withCallerSub(req2.Context(), "agent-sub"))
 	w2 := httptest.NewRecorder()
 	s.handleCreateAgentDiagnostic(w2, req2)
-	g.Expect(w2.Code).To(gomega.Equal(http.StatusOK))
-
-	var list v1alpha1.AgentDiagnosticList
-	g.Expect(s.client.List(context.Background(), &list)).To(gomega.Succeed())
-	g.Expect(list.Items).To(gomega.HaveLen(1))
+	g.Expect(w2.Code).To(gomega.Equal(http.StatusGone))
 }

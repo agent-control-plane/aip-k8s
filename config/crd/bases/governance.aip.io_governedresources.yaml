@@ -95,6 +95,13 @@ spec:
                 items:
                   type: string
                 type: array
+              soakMode:
+                description: |-
+                  SoakMode routes all incoming AgentRequests to AwaitingVerdict phase
+                  instead of Pending. Use during initial agent validation to grade
+                  diagnostic quality before allowing real execution.
+                  Flip to false when the admin has confidence in the agent.
+                type: boolean
               uriPattern:
                 description: |-
                   URIPattern is a glob pattern matched against AgentRequest.spec.target.uri.

@@ -36,19 +36,23 @@ type DiagnosticAccuracySummaryStatus struct {
 	// TotalReviewed is the total number of AgentDiagnostic records
 	// with a non-empty verdict for this agentIdentity.
 	// +kubebuilder:validation:Minimum=0
-	TotalReviewed int64 `json:"totalReviewed"`
+	// +optional
+	TotalReviewed int64 `json:"totalReviewed,omitempty"`
 
 	// CorrectCount is the number of verdicts set to "correct".
 	// +kubebuilder:validation:Minimum=0
-	CorrectCount int64 `json:"correctCount"`
+	// +optional
+	CorrectCount int64 `json:"correctCount,omitempty"`
 
 	// PartialCount is the number of verdicts set to "partial".
 	// +kubebuilder:validation:Minimum=0
-	PartialCount int64 `json:"partialCount"`
+	// +optional
+	PartialCount int64 `json:"partialCount,omitempty"`
 
 	// IncorrectCount is the number of verdicts set to "incorrect".
 	// +kubebuilder:validation:Minimum=0
-	IncorrectCount int64 `json:"incorrectCount"`
+	// +optional
+	IncorrectCount int64 `json:"incorrectCount,omitempty"`
 
 	// DiagnosticAccuracy is the computed accuracy ratio:
 	//   (correctCount + 0.5 * partialCount) / totalReviewed
@@ -60,6 +64,12 @@ type DiagnosticAccuracySummaryStatus struct {
 	// contributed to this summary.
 	// +optional
 	LastUpdatedAt *metav1.Time `json:"lastUpdatedAt,omitempty"`
+
+	// RecentVerdicts stores the names of the most recent AgentRequests
+	// that have been counted in this summary, to prevent double-counting.
+	// +optional
+	// +kubebuilder:validation:MaxItems=100
+	RecentVerdicts []string `json:"recentVerdicts,omitempty"`
 }
 
 // +kubebuilder:object:root=true

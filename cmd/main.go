@@ -280,6 +280,13 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "GovernedResource")
 		os.Exit(1)
 	}
+	if err := (&controller.DiagnosticAccuracyReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "DiagnosticAccuracy")
+		os.Exit(1)
+	}
 
 	gcMgr := &gc.GCManager{
 		APIReader: mgr.GetAPIReader(),

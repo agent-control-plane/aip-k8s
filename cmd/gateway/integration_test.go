@@ -67,8 +67,9 @@ func TestGatewayIntegration(t *testing.T) {
 		return mgrClient.List(ctx, &list)
 	}, serverStartupTimeout, eventuallyInterval).Should(gomega.Succeed())
 
-	runBasicTests(t, mgrClient, directClient, ctx)
+	runRequestLifecycleTests(t, mgrClient, directClient, ctx)
 	runAuthAndApprovalTests(t, mgrClient, directClient, ctx)
+	runSoakModeAndVerdictTests(t, mgrClient, directClient, ctx)
 }
 
 func startTestManager(t *testing.T, cfg *rest.Config) client.Client {
@@ -97,12 +98,20 @@ func startTestManager(t *testing.T, cfg *rest.Config) client.Client {
 		t.Fatalf("Failed to setup AgentRequestReconciler: %v", err)
 	}
 
-	err = (&controller.SafetyPolicyReconciler{
+	err = (&controller.GovernedResourceReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr)
 	if err != nil {
-		t.Fatalf("Failed to setup SafetyPolicyReconciler: %v", err)
+		t.Fatalf("Failed to setup GovernedResourceReconciler: %v", err)
+	}
+
+	err = (&controller.DiagnosticAccuracyReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr)
+	if err != nil {
+		t.Fatalf("Failed to setup DiagnosticAccuracyReconciler: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -69,6 +69,13 @@ type GovernedResourceSpec struct {
 	// shown to reviewers during the approval decision.
 	// +optional
 	Description string `json:"description,omitempty"`
+
+	// SoakMode routes all incoming AgentRequests to AwaitingVerdict phase
+	// instead of Pending. Use during initial agent validation to grade
+	// diagnostic quality before allowing real execution.
+	// Flip to false when the admin has confidence in the agent.
+	// +optional
+	SoakMode bool `json:"soakMode,omitempty"`
 }
 
 // +kubebuilder:object:root=true

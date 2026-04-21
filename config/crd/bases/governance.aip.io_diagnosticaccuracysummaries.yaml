@@ -77,6 +77,14 @@ spec:
                 format: int64
                 minimum: 0
                 type: integer
+              recentVerdicts:
+                description: |-
+                  RecentVerdicts stores the names of the most recent AgentRequests
+                  that have been counted in this summary, to prevent double-counting.
+                items:
+                  type: string
+                maxItems: 100
+                type: array
               totalReviewed:
                 description: |-
                   TotalReviewed is the total number of AgentDiagnostic records
@@ -84,11 +92,6 @@ spec:
                 format: int64
                 minimum: 0
                 type: integer
-            required:
-            - correctCount
-            - incorrectCount
-            - partialCount
-            - totalReviewed
             type: object
         required:
         - spec

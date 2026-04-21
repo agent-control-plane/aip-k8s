@@ -65,6 +65,8 @@ h1 {
 .badge-executing { background-color: rgba(59, 130, 246, 0.2); color: var(--accent-color); }
 .badge-completed { background-color: rgba(16, 185, 129, 0.1); color: var(--success); }
 .badge-failed { background-color: rgba(239, 68, 68, 0.1); color: var(--error); border: 1px solid rgba(239, 68, 68, 0.3); }
+.badge-awaitingverdict { background-color: rgba(139, 92, 246, 0.2); color: #a78bfa; border: 1px solid rgba(139, 92, 246, 0.3); }
+.badge-expired { background-color: rgba(107, 114, 128, 0.2); color: #9ca3af; border: 1px solid rgba(107, 114, 128, 0.3); }
 .badge-warning { background-color: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); }
 
 .dashboard-grid {

@@ -154,27 +154,48 @@ func (r *AgentRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// 3. Initialize Phase if empty
 	if agentReq.Status.Phase == "" && !meta.IsStatusConditionTrue(agentReq.Status.Conditions, "RequestSubmitted") {
-		log.FromContext(ctx).Info("Initializing AgentRequest phase to Pending", "name", agentReq.Name)
+		phase := governancev1alpha1.PhasePending
+		reason := "Initialization"
+		message := "Initial phase set to Pending"
+
+		// Check for SoakMode on the GovernedResource
+		if agentReq.Spec.GovernedResourceRef != nil {
+			var gr governancev1alpha1.GovernedResource
+			if err := reader.Get(ctx, types.NamespacedName{Name: agentReq.Spec.GovernedResourceRef.Name}, &gr); err == nil {
+				if gr.Spec.SoakMode {
+					phase = governancev1alpha1.PhaseAwaitingVerdict
+					reason = "SoakModeAdmission"
+					message = "Initial phase set to AwaitingVerdict due to GovernedResource SoakMode"
+				}
+			} else if !errors.IsNotFound(err) {
+				return ctrl.Result{}, fmt.Errorf("fetching GovernedResource %s: %w",
+					agentReq.Spec.GovernedResourceRef.Name, err)
+			}
+		}
+
+		log.FromContext(ctx).Info("Initializing AgentRequest phase", "name", agentReq.Name, "phase", phase)
 		base := agentReq.DeepCopy()
-		agentReq.Status.Phase = governancev1alpha1.PhasePending
-		agentRequestActive.Inc()
-		agentRequestTotal.WithLabelValues(governancev1alpha1.PhasePending).Inc()
+		agentReq.Status.Phase = phase
+		if phase == governancev1alpha1.PhasePending || phase == governancev1alpha1.PhaseAwaitingVerdict {
+			agentRequestActive.Inc()
+		}
+		agentRequestTotal.WithLabelValues(phase).Inc()
 
 		// Mark as submitted to avoid double auditing if the reconcile is re-triggered
 		// before the phase update is fully visible.
 		meta.SetStatusCondition(&agentReq.Status.Conditions, metav1.Condition{
 			Type:    "RequestSubmitted",
 			Status:  metav1.ConditionTrue,
-			Reason:  "Initialization",
-			Message: "Initial phase set to Pending",
+			Reason:  reason,
+			Message: message,
 		})
 
 		if err := r.Status().Patch(ctx, &agentReq, client.MergeFrom(base)); err != nil {
 			return ctrl.Result{}, err
 		}
 		// Emit initial AuditRecord. We return here so subsequent Reconcile will
-		// enter the state machine with Phase=Pending.
-		if err := r.emitAuditRecord(ctx, &agentReq, governancev1alpha1.AuditEventRequestSubmitted, "", governancev1alpha1.PhasePending); err != nil {
+		// enter the state machine with Phase=Pending or Phase=AwaitingVerdict.
+		if err := r.emitAuditRecord(ctx, &agentReq, governancev1alpha1.AuditEventRequestSubmitted, "", phase); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil

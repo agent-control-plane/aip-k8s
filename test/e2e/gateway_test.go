@@ -333,64 +333,20 @@ var _ = Describe("Phase 6: Gateway API", Ordered, func() {
 		})
 	})
 
-	Context("AgentDiagnostic", func() {
-		const (
-			diagCorrID = "gw-e2e-diag-corr-001"
-			diagAgent  = "gw-e2e-diag-agent"
-			diagType   = "observation"
-		)
-
-		It("creates an AgentDiagnostic via POST /agent-diagnostics and returns 201", func() {
-			resp, err := gwPost("/agent-diagnostics", fmt.Sprintf(`{
-				"agentIdentity":  %q,
-				"diagnosticType": %q,
-				"correlationID":  %q,
-				"summary":        "gateway e2e: scheduler pressure detected"
-			}`, diagAgent, diagType, diagCorrID))
+	Context("AgentDiagnostic deprecation", func() {
+		It("POST /agent-diagnostics returns 410 Gone with deprecation message", func() {
+			resp, err := gwPost("/agent-diagnostics", `{
+				"agentIdentity":  "any-agent",
+				"diagnosticType": "observation",
+				"correlationID":  "any-corr-id",
+				"summary":        "test"
+			}`)
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close() //nolint:errcheck
-			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
-		})
-
-		It("GET /agent-diagnostics lists the created diagnostic", func() {
-			Eventually(func(g Gomega) {
-				resp, err := http.Get(gwBaseURL + "/agent-diagnostics") //nolint:noctx
-				g.Expect(err).NotTo(HaveOccurred())
-				body, _ := io.ReadAll(resp.Body)
-				_ = resp.Body.Close()
-				g.Expect(resp.StatusCode).To(Equal(http.StatusOK),
-					"gateway returned non-200; body: %s", string(body))
-				var items []interface{}
-				g.Expect(json.Unmarshal(body, &items)).To(Succeed(),
-					"failed to decode response as JSON array; body: %s", string(body))
-				g.Expect(len(items)).To(BeNumerically(">=", 1),
-					"expected at least 1 item; body: %s", string(body))
-			}, 15*time.Second, time.Second).Should(Succeed())
-		})
-
-		It("GET /agent-diagnostics?correlationID filters correctly", func() {
-			Eventually(func(g Gomega) {
-				resp, err := http.Get(gwBaseURL + "/agent-diagnostics?correlationID=" + diagCorrID) //nolint:noctx
-				g.Expect(err).NotTo(HaveOccurred())
-				defer resp.Body.Close() //nolint:errcheck
-				var items []map[string]interface{}
-				g.Expect(json.NewDecoder(resp.Body).Decode(&items)).To(Succeed())
-				g.Expect(items).To(HaveLen(1))
-				spec, _ := items[0]["spec"].(map[string]interface{})
-				g.Expect(spec["correlationID"]).To(Equal(diagCorrID))
-			}, 15*time.Second, time.Second).Should(Succeed())
-		})
-
-		It("returns 200 OK on a duplicate POST /agent-diagnostics (idempotent)", func() {
-			resp, err := gwPost("/agent-diagnostics", fmt.Sprintf(`{
-				"agentIdentity":  %q,
-				"diagnosticType": %q,
-				"correlationID":  %q,
-				"summary":        "duplicate diagnostic"
-			}`, diagAgent, diagType, diagCorrID))
-			Expect(err).NotTo(HaveOccurred())
-			defer resp.Body.Close() //nolint:errcheck
-			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+			Expect(resp.StatusCode).To(Equal(http.StatusGone))
+			var body map[string]string
+			Expect(json.NewDecoder(resp.Body).Decode(&body)).To(Succeed())
+			Expect(body["error"]).To(ContainSubstring("deprecated"))
 		})
 	})
 })
