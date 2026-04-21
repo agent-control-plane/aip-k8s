@@ -21,6 +21,7 @@ package e2e
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -50,6 +51,44 @@ var _ = Describe("OpsLock Renewal", Ordered, func() {
 	)
 
 	BeforeAll(func() {
+		projDir, err := utils.GetProjectDir()
+		Expect(err).NotTo(HaveOccurred(), "failed to get project dir")
+
+		By("ensuring governance CRDs are installed")
+		if os.Getenv("HELM_DEPLOYED") != "true" {
+			cmd := exec.Command("make", "install")
+			cmd.Dir = projDir
+			out, err := cmd.CombinedOutput()
+			Expect(err).NotTo(HaveOccurred(), "failed to install CRDs: %s", string(out))
+		} else {
+			By("skipping make install; HELM_DEPLOYED=true")
+		}
+
+		By("ensuring controller is deployed (skips if already running)")
+		if os.Getenv("HELM_DEPLOYED") != "true" {
+			checkCmd := exec.Command("kubectl", "get", "deployment",
+				controllerDeploymentName, "-n", "aip-k8s-system")
+			if _, checkErr := utils.Run(checkCmd); checkErr != nil {
+				cmd := exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
+				cmd.Dir = projDir
+				out, err := cmd.CombinedOutput()
+				Expect(err).NotTo(HaveOccurred(), "failed to deploy controller: %s", string(out))
+			}
+		} else {
+			By("skipping make deploy; HELM_DEPLOYED=true")
+		}
+
+		By("waiting for controller-manager to be ready")
+		Eventually(func(g Gomega) {
+			readyCmd := exec.Command("kubectl", "get", "pods",
+				"-l", "control-plane=controller-manager",
+				"-n", "aip-k8s-system",
+				"-o", `jsonpath={.items[0].status.conditions[?(@.type=="Ready")].status}`)
+			status, err := utils.Run(readyCmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(status).To(Equal("True"), "controller-manager pod not yet ready")
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
 		By("creating a GovernedResource")
 		grJSON := fmt.Sprintf(`{
 			"apiVersion": "governance.aip.io/v1alpha1",
@@ -57,13 +96,14 @@ var _ = Describe("OpsLock Renewal", Ordered, func() {
 			"metadata": {"name": "%s"},
 			"spec": {
 				"uriPattern": "github://testorg/testrepo/files/main/**",
-				"permittedActions": ["update"]
+				"permittedActions": ["update"],
+				"contextFetcher": "none"
 			}
 		}`, grName)
 
 		cmd := exec.Command("kubectl", "apply", "-f", "-")
 		cmd.Stdin = strings.NewReader(grJSON)
-		_, err := utils.Run(cmd)
+		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
 	})
 
