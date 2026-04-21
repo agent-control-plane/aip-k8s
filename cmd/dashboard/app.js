@@ -213,8 +213,9 @@ async function fetchRequests() {
         showBanner('Not authenticated — paste a Bearer token to continue.', 'warn');
         return;
     }
+    const ns = document.getElementById('req-ns-input')?.value?.trim() || 'default';
     try {
-        const response = await apiFetch('/api/agent-requests');
+        const response = await apiFetch(`/api/agent-requests?namespace=${encodeURIComponent(ns)}`);
         if (!response.ok) {
             if (response.status !== 401) {
                 showBanner('Failed to load requests (HTTP ' + response.status + ').', 'error');
@@ -253,8 +254,11 @@ async function fetchAuditRecords(name) {
     // previously selected request while the new fetch is in flight.
     state.auditRecords = [];
     renderDetails();
+    const req = state.requests.find(r => r.metadata.name === name);
+    const ns = req?.metadata?.namespace || 'default';
     try {
-        const response = await apiFetch(`/api/audit-records?agentRequest=${encodeURIComponent(name)}`);
+        const response = await apiFetch(
+            `/api/audit-records?agentRequest=${encodeURIComponent(name)}&namespace=${encodeURIComponent(ns)}`);
         if (!response.ok) return;
         state.auditRecords = await response.json();
         renderDetails();
@@ -264,13 +268,16 @@ async function fetchAuditRecords(name) {
 }
 
 async function performAction(name, action, reason) {
+    const req = state.requests.find(r => r.metadata.name === name);
+    const ns = req?.metadata?.namespace || 'default';
     try {
         const opts = { method: 'POST' };
         if (reason !== undefined) {
             opts.headers = { 'Content-Type': 'application/json' };
             opts.body = JSON.stringify({ reason });
         }
-        const response = await apiFetch(`/api/agent-requests/${encodeURIComponent(name)}/${encodeURIComponent(action)}`, opts);
+        const response = await apiFetch(
+            `/api/agent-requests/${encodeURIComponent(name)}/${encodeURIComponent(action)}?namespace=${encodeURIComponent(ns)}`, opts);
         if (response.ok) {
             await fetchRequests();
         } else {
