@@ -16,6 +16,12 @@ type GCConfig struct {
 	SafetyMinCount   int // skip GC if terminal AgentRequest count is below this threshold
 }
 
+// AgentRequestGCEnabled reports whether AgentRequest GC is active.
+// GC is disabled when HardTTL is zero regardless of the Enabled flag.
+func (c GCConfig) AgentRequestGCEnabled() bool {
+	return c.Enabled && c.HardTTL > 0
+}
+
 // DefaultGCConfig returns safe production defaults.
 // DryRun defaults to true — operators must explicitly set --gc-dry-run=false.
 func DefaultGCConfig() GCConfig {

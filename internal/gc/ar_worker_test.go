@@ -43,12 +43,12 @@ func TestARGCWorker_Run(t *testing.T) {
 	now := time.Date(2026, 4, 12, 12, 0, 0, 0, time.UTC)
 	arHardTTL := 1 * time.Hour
 	config := GCConfig{
-		Enabled:                    true,
-		DryRun:                     false,
-		HardTTL:        arHardTTL,
-		SafetyMinCount: 1,
-		PageSize:                   10,
-		DeleteRatePerSec:           100,
+		Enabled:          true,
+		DryRun:           false,
+		HardTTL:          arHardTTL,
+		SafetyMinCount:   1,
+		PageSize:         10,
+		DeleteRatePerSec: 100,
 	}
 
 	t.Run("Terminal AR past hard TTL is deleted with its AuditRecord", func(g *testing.T) {
@@ -236,7 +236,7 @@ func TestARGCWorker_Run(t *testing.T) {
 		pagingConfig.SafetyMinCount = 1
 
 		var objects []runtime.Object
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			objects = append(objects, &governancev1alpha1.AgentRequest{
 				ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("expired-%d", i), Namespace: "default", CreationTimestamp: metav1.NewTime(now.Add(-arHardTTL))},
 				Status:     governancev1alpha1.AgentRequestStatus{Phase: governancev1alpha1.PhaseCompleted},

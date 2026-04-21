@@ -132,18 +132,29 @@ func (w *ARGCWorker) processRequest(ctx context.Context, ar *governancev1alpha1.
 		return resultNone, fmt.Errorf("ar gc rate limiter: %w", err)
 	}
 
-	// Delete associated AuditRecords first
-	var auditList governancev1alpha1.AuditRecordList
-	if err := w.APIReader.List(ctx, &auditList, client.InNamespace(ar.Namespace)); err != nil {
-		logger.Error(err, "Failed to list AuditRecords for AgentRequest")
-	} else {
-		for i := range auditList.Items {
-			audit := &auditList.Items[i]
+	// Delete associated AuditRecords first (paginated).
+	// If listing fails, skip this AR so GC retries on the next cycle.
+	var auditContinue string
+	for {
+		var auditPage governancev1alpha1.AuditRecordList
+		listOpts := []client.ListOption{client.InNamespace(ar.Namespace), client.Limit(w.Config.PageSize)}
+		if auditContinue != "" {
+			listOpts = append(listOpts, client.Continue(auditContinue))
+		}
+		if err := w.APIReader.List(ctx, &auditPage, listOpts...); err != nil {
+			return resultNone, fmt.Errorf("ar gc list auditrecords for %s/%s: %w", ar.Namespace, ar.Name, err)
+		}
+		for i := range auditPage.Items {
+			audit := &auditPage.Items[i]
 			if audit.Spec.AgentRequestRef == ar.Name {
 				if err := w.Client.Delete(ctx, audit); client.IgnoreNotFound(err) != nil {
 					logger.Error(err, "Failed to delete AuditRecord", "auditName", audit.Name)
 				}
 			}
+		}
+		auditContinue = auditPage.Continue
+		if auditContinue == "" {
+			break
 		}
 	}
 

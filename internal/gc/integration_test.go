@@ -51,7 +51,7 @@ func TestGCIntegration(t *testing.T) {
 		defer cancel()
 
 		mgr, err := manager.New(cfg, manager.Options{
-			Scheme: scheme.Scheme,
+			Scheme:  scheme.Scheme,
 			Metrics: metricsserver.Options{BindAddress: "0"},
 		})
 		gm.Expect(err).NotTo(gomega.HaveOccurred())
@@ -132,7 +132,7 @@ func TestGCIntegration(t *testing.T) {
 		defer cancel()
 
 		mgr, err := manager.New(cfg, manager.Options{
-			Scheme: scheme.Scheme,
+			Scheme:  scheme.Scheme,
 			Metrics: metricsserver.Options{BindAddress: "0"},
 		})
 		gm.Expect(err).NotTo(gomega.HaveOccurred())

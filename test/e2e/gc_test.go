@@ -116,14 +116,12 @@ var _ = Describe("AgentRequest GC", Ordered, func() {
 		}, 6*time.Minute, 10*time.Second).Should(BeEmpty())
 
 		By("asserting AuditRecords for this AR are also gone")
-		Eventually(func() bool {
+		Eventually(func(g Gomega) {
 			out, err := utils.Run(exec.Command("kubectl", "get", "auditrecord",
 				"-n", ns, "-o", "jsonpath={.items[*].spec.agentRequestRef}", "--ignore-not-found"))
-			if err != nil {
-				return true
-			}
-			return !strings.Contains(out, arName)
-		}, 30*time.Second, 2*time.Second).Should(BeTrue())
+			g.Expect(err).NotTo(HaveOccurred(), "kubectl get auditrecord failed")
+			g.Expect(out).NotTo(ContainSubstring(arName))
+		}, 30*time.Second, 2*time.Second).Should(Succeed())
 	})
 
 	It("should NOT delete an active AgentRequest", func() {
