@@ -405,10 +405,10 @@ Hard enforcement requires either a `WebhookPlugin` (platform pushes events to AI
 
 ## 8. Implementation Phases
 
-### Phase 1 — Cooperative GitHub PR Governance
+### Phase 1 — Cooperative GitHub PR Governance ✓ DONE
 **Goal**: first real agent submits `AgentRequest` before opening a GitHub PR. Humans review via dashboard. OpsLock prevents duplicates. No webhooks, no plugins, no credential minting.
 
-- Replace `path.Match` with a `**`-aware glob matcher (e.g. `gobwas/glob`) — `path.Match` does not cross `/` boundaries, so `github://myorg/infra/files/main/nodepools/**` silently matches nothing
+- Replace `path.Match` with a `**`-aware glob matcher (`gobwas/glob`) — `path.Match` does not cross `/` boundaries, so `github://myorg/infra/files/main/nodepools/**` silently matches nothing
 - Fix OpsLock renewal: `reconcileExecuting` detects lease expiry but never renews — patch `RenewTime` on each requeue, requeue at half lease duration; without this, any PR review longer than 5 minutes fails the request
 - Remove K8s-only URI scheme restrictions from gateway admission — accept any URI scheme
 - Document and enforce `github://{org}/{repo}/files/{branch}/{path}` URI convention in `spec.md §3.6`
@@ -418,15 +418,102 @@ Hard enforcement requires either a `WebhookPlugin` (platform pushes events to AI
 
 ---
 
-### Phase 2 — AccuracySummary by Classification (Agent Graduation)
-**Goal**: track accuracy per `(agent, rootCauseCategory, rootCauseSubCategory)`. Foundation for agents earning autonomy per action type.
+### Phase 2 — Verdict Grading + DiagnosticAccuracySummary
+**Goal**: humans grade `AgentRequest` reasoning as correct/partial/incorrect. Aggregate into per-agent accuracy scores. Foundation for agents earning autonomy.
 
-_Note: this phase is owned by `ep/diagnostic_verdict_and_accuracy.md`. Referenced here because it is the primary differentiator that justifies the Phase 1 investment — agents earning per-classification autonomy is what separates AIP from every other agent framework._
+**Key design decision**: `AgentDiagnostic` is an internal CRD — never exposed to agent developers. The agent SDK has one method: `requestAction(target, action, reason)`. No mode flag. The control plane decides the outcome based on trust level:
+
+- `Observer` level → request is evaluated and graded, action is NOT taken. Agent is told the verdict.
+- `Advisor/Supervised` level → request queued for human approval, executed if approved.
+- `Trusted/Autonomous` level → auto-approved if `SafetyPolicy` passes, executed.
+
+The agent does not need to know its own trust level or declare intent. The cluster admin configures the graduation policy once. The control plane enforces it on every request.
+
+**Why this comes before trust profiles**: grading accuracy is the primary signal. We need scored data before we can compute a meaningful trust level. The accuracy score accumulated here feeds directly into `AgentTrustProfile` in Phase 3.
+
+- `PATCH /agent-requests/{name}/verdict` — human grader sets `correct / partial / incorrect`; only valid on requests in `AwaitingVerdict` phase (Observer-level requests)
+- `POST /agent-requests/recompute-accuracy` — reconstruct `DiagnosticAccuracySummary` from all graded requests for an agent
+- `DiagnosticAccuracySummary` CR: running accuracy ratio per `agentIdentity` — `(correct + 0.5*partial) / total`
+- No enforcement yet — accuracy is visible but not gating until Phase 3
 
 ---
 
-### Phase 3 — GitHub Webhook Verification
+### Phase 3 — AgentTrustProfile + AgentGraduationPolicy (Prescriptive Enforcement)
+**Goal**: cluster admin defines graduation thresholds once. Control plane enforces them on every request. No CEL expression required to get baseline trust enforcement.
+
+**Why prescriptive, not descriptive**: a `SafetyPolicy` that checks `agent.trustLevel` only works if someone writes the policy. Prescriptive enforcement means the gateway rejects requests that don't meet the trust floor regardless of whether a `SafetyPolicy` exists. `SafetyPolicy` CEL adds restrictions on top — it cannot bypass the trust gate.
+
+**Two new CRDs**:
+
+`AgentGraduationPolicy` (cluster-scoped, one per cluster, owned by cluster admin):
+```yaml
+spec:
+  levels:
+    - name: Observer      # action NOT taken, request graded
+      minObserveVerdicts: 0
+      minDiagnosticAccuracy: 0.0
+      canExecute: false
+    - name: Advisor       # action taken, human approval required every time
+      minObserveVerdicts: 10
+      minDiagnosticAccuracy: 0.70
+      minExecutions: 0
+      requiresHumanApproval: true
+    - name: Supervised
+      minObserveVerdicts: 20
+      minDiagnosticAccuracy: 0.85
+      minExecutions: 20
+      requiresHumanApproval: true
+    - name: Trusted       # auto-approved if SafetyPolicy passes
+      minObserveVerdicts: 50
+      minDiagnosticAccuracy: 0.92
+      minExecutions: 50
+      requiresHumanApproval: false
+    - name: Autonomous
+      minObserveVerdicts: 100
+      minDiagnosticAccuracy: 0.97
+      minExecutions: 100
+      requiresHumanApproval: false
+```
+
+`GovernedResource.spec.trustRequirements` (per-resource trust floor and ceiling, only cluster admin can modify):
+```yaml
+trustRequirements:
+  minTrustLevel: Trusted      # hard floor — lower levels blocked entirely
+  maxAutonomyLevel: Supervised # hard ceiling — even Trusted/Autonomous require human approval
+```
+
+`AgentTrustProfile` (controller-owned, nobody writes it directly):
+```yaml
+status:
+  trustLevel: Advisor
+  diagnosticAccuracy: 0.81
+  totalObserveVerdicts: 14
+  successRate: 0.0
+  totalExecutions: 0
+  nextLevelRequirements:
+    level: Supervised
+    remaining:
+      minObserveVerdicts: 6
+      minDiagnosticAccuracy: 0.04
+      minExecutions: 20
+```
+
+**Gateway enforcement on every execute request**:
+1. Find matching `GovernedResource` for `spec.target.uri`
+2. Fetch agent's `AgentTrustProfile.trustLevel`
+3. Check `GovernedResource.trustRequirements.minTrustLevel` — reject with 403 if below floor
+4. Apply `GovernedResource.trustRequirements.maxAutonomyLevel` as ceiling on behavior
+5. Check `AgentGraduationPolicy` for whether this level requires human approval
+6. Run `SafetyPolicy` CEL evaluation (additional restrictions, cannot override steps 1–5)
+
+**`nextLevelRequirements` in status** makes the graduation ladder legible — operators see exactly what the agent needs to advance without reading policy YAML.
+
+---
+
+### Phase 4 — GitHub Webhook Verification
 **Goal**: defense-in-depth. AIP verifies the actual PR matches what was approved. Catches intent drift and state drift.
+
+**Why this comes after trust profiles**: webhook verification is a per-integration hardening step. It cannot substitute for a cross-agent trust signal. An agent that earns trust through accurate diagnosis and correct execution across many requests is safer than an agent that simply passes webhook verification once.
 
 - GitHub context fetcher: fetch file blob SHA via `GET /repos/{owner}/{repo}/contents/{path}` → `status.evaluatedStateFingerprint`
 - `POST /hooks/github` endpoint: validate `X-GitHub-Signature-256` HMAC; deduplicate on `X-GitHub-Delivery`
@@ -439,19 +526,19 @@ _Note: this phase is owned by `ep/diagnostic_verdict_and_accuracy.md`. Reference
 
 ---
 
-### Phase 4 — Plugin SDK Extraction
+### Phase 5 — Plugin SDK Extraction
 **Goal**: extract common interfaces when the Terraform integration forces the abstraction.
+
+**Why not earlier**: interfaces designed before two real implementations exist are almost always wrong. Extract after Phase 4 (GitHub) and a second platform (Terraform) are both working. The interface will be obvious at that point; it is not obvious now.
 
 - Extract `ContextFetcher` interface from GitHub + K8s fetcher implementations
 - Extract `WebhookVerifier` interface from the hardcoded GitHub webhook handler
 - `PluginRegistry` with scheme-based dispatch; explicit registration in `main.go`, not `init()` blank imports
 - Terraform Cloud plugin as the second implementation that validates the interfaces
 
-**Do not build this before Phase 3 ships. Premature abstraction produces the wrong interface.**
-
 ---
 
-### Phase 5 — Credential Gating
+### Phase 6 — Credential Gating
 **Goal**: agents with zero baseline write access. Opt-in per `GovernedResource`.
 
 - `POST /agent-requests/{name}/token` subresource: idempotent within TTL (return cached credential if not expired, mint fresh within 60s of expiry); `409` on revoked request
@@ -461,7 +548,21 @@ _Note: this phase is owned by `ep/diagnostic_verdict_and_accuracy.md`. Reference
 
 ---
 
-### Phase 6 — Scoped Mode and Multi-GR
+### Phase 7 — GitHub Outcome Signal → AgentTrustProfile (LAST)
+**Goal**: automatically update `AgentTrustProfile` from GitHub PR outcomes: merged = correct, merged with significant reviewer changes = partial, closed without merge = incorrect.
+
+**Why this is last**: the diagnosis grading path (Phase 2) covers ~95% of the trust signal problem. An agent that accurately diagnoses issues and is calibrated against human judgment is already well-characterized. Wrong PR content — the agent writes the wrong change — is a deterministic agent code issue: it is repeatable, debuggable, and fixable by improving the agent independently of the AIP governance layer. Investing heavily in automatic outcome extraction before the diagnosis grading foundation is solid would optimize the wrong signal first. Build this only after `AgentTrustProfile` is consuming Phase 2 accuracy data and the graduation ladder is operational.
+
+**Why not a substitute for diagnosis grading**: GitHub merge outcome is a lagging, coarse-grained signal — it takes days to weeks to accumulate, it conflates agent error with reviewer taste, and it provides no per-category breakdown. Diagnosis grading is immediate, fine-grained, and human-interpretable. The GitHub signal is additive, not foundational.
+
+- Webhook handler (from Phase 4) extended: on `pull_request.closed` with `merged=true`, classify outcome from PR diff size vs agent's original diff
+- PR label convention (optional): `aip:correct`, `aip:partial`, `aip:incorrect` labels allow reviewers to override automated classification
+- `AgentTrustProfile` controller: consume GitHub outcome events alongside Phase 2 verdict data
+- Decay function: recent outcomes weighted more heavily than historical ones (configurable half-life)
+
+---
+
+### Phase 8 — Scoped Mode and Multi-GR
 - `executionMode: scoped` pattern containment check at admission
 - OpsLock acquisition per matching resource pattern
 - Union-of-policies evaluation for multi-GR overlap
