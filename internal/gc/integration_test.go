@@ -25,7 +25,6 @@ func TestGCIntegration(t *testing.T) {
 	logf.SetLogger(zap.New(zap.WriteTo(os.Stderr), zap.UseDevMode(true)))
 	gm := gomega.NewWithT(t)
 
-	// 1. Setup envtest
 	testEnv := &envtest.Environment{
 		CRDDirectoryPaths: []string{filepath.Join("..", "..", "config", "crd", "bases")},
 	}
@@ -46,37 +45,29 @@ func TestGCIntegration(t *testing.T) {
 	k8sClient, err := client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	gm.Expect(err).NotTo(gomega.HaveOccurred())
 
-	t.Run("Manager runs GC cycle and deletes expired objects", func(g *testing.T) {
+	t.Run("AR GC deletes terminal AgentRequest and its AuditRecords", func(g *testing.T) {
 		gm := gomega.NewWithT(g)
 		ctx, cancel := context.WithCancel(g.Context())
 		defer cancel()
 
-		// 2. Create a manager
 		mgr, err := manager.New(cfg, manager.Options{
-			Scheme: scheme.Scheme,
-			Metrics: metricsserver.Options{
-				BindAddress: "0",
-			},
+			Scheme:  scheme.Scheme,
+			Metrics: metricsserver.Options{BindAddress: "0"},
 		})
 		gm.Expect(err).NotTo(gomega.HaveOccurred())
 
-		// 3. Configure GC with a very short interval for testing
 		config := GCConfig{
-			Enabled:           true,
-			DryRun:            false,
-			Interval:          100 * time.Millisecond,
-			DiagnosticHardTTL: 1 * time.Hour,
-			PageSize:          10,
-			DeleteRatePerSec:  100,
-			SafetyMinCount:    1, // Allow testing with just one object
+			Enabled:          true,
+			DryRun:           false,
+			Interval:         100 * time.Millisecond,
+			HardTTL:          1 * time.Hour,
+			SafetyMinCount:   1,
+			PageSize:         10,
+			DeleteRatePerSec: 100,
 		}
 
-		// Mock time: Always return 2 hours in the future from current real time.
-		// This ensures that any object created NOW with a standard timestamp
-		// looks 2 hours old to the GC worker (since TTL is 1 hour).
 		getFutureNow := func() time.Time { return time.Now().Add(2 * time.Hour) }
 
-		// 4. Register GC Manager
 		err = mgr.Add(&GCManager{
 			APIReader: mgr.GetAPIReader(),
 			Client:    mgr.GetClient(),
@@ -85,81 +76,84 @@ func TestGCIntegration(t *testing.T) {
 		})
 		gm.Expect(err).NotTo(gomega.HaveOccurred())
 
-		// 5. Start manager in background
 		startErrCh := make(chan error, 1)
 		mgrCtx, mgrCancel := context.WithCancel(g.Context())
 		go func() {
 			startErrCh <- mgr.Start(mgrCtx)
 		}()
 
-		// Wait for manager to start by checking if we can get the client
 		gm.Eventually(func() bool {
 			return mgr.GetCache().WaitForCacheSync(ctx)
 		}, 5*time.Second, 100*time.Millisecond).Should(gomega.BeTrue())
 
-		// 6. Create an AgentDiagnostic
-		diag := &governancev1alpha1.AgentDiagnostic{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "integration-test-diag",
-				Namespace: "default",
-			},
-			Spec: governancev1alpha1.AgentDiagnosticSpec{
-				AgentIdentity:  "test-agent",
-				DiagnosticType: "test",
-				CorrelationID:  "test-correlation-id",
-				Summary:        "test summary",
+		ar := &governancev1alpha1.AgentRequest{
+			ObjectMeta: metav1.ObjectMeta{Name: "terminal-ar", Namespace: "default"},
+			Spec: governancev1alpha1.AgentRequestSpec{
+				AgentIdentity: "test-agent",
+				Action:        "scale",
+				Target:        governancev1alpha1.Target{URI: "k8s://default/deployment/test"},
+				Reason:        "test",
 			},
 		}
-		gm.Expect(k8sClient.Create(ctx, diag)).To(gomega.Succeed())
-		t.Cleanup(func() {
-			_ = k8sClient.Delete(context.Background(), diag)
-		})
+		gm.Expect(k8sClient.Create(ctx, ar)).To(gomega.Succeed())
+		ar.Status.Phase = governancev1alpha1.PhaseCompleted
+		gm.Expect(k8sClient.Status().Update(ctx, ar)).To(gomega.Succeed())
 
-		// 7. Verify deletion. Eventually it should be gone.
+		audit := &governancev1alpha1.AuditRecord{
+			ObjectMeta: metav1.ObjectMeta{Name: "audit-for-ar", Namespace: "default"},
+			Spec: governancev1alpha1.AuditRecordSpec{
+				Timestamp:       metav1.Now(),
+				AgentRequestRef: "terminal-ar",
+				AgentIdentity:   "test-agent",
+				Event:           governancev1alpha1.AuditEventRequestCompleted,
+				Action:          "scale",
+				TargetURI:       "k8s://default/deployment/test",
+			},
+		}
+		gm.Expect(k8sClient.Create(ctx, audit)).To(gomega.Succeed())
+
 		gm.Eventually(func() error {
-			var fetched governancev1alpha1.AgentDiagnostic
-			return k8sClient.Get(ctx, client.ObjectKey{Name: "integration-test-diag", Namespace: "default"}, &fetched)
+			var fetched governancev1alpha1.AgentRequest
+			return k8sClient.Get(ctx, client.ObjectKey{Name: "terminal-ar", Namespace: "default"}, &fetched)
+		}, 10*time.Second, 500*time.Millisecond).Should(gomega.Satisfy(apierrors.IsNotFound))
+
+		gm.Eventually(func() error {
+			var fetched governancev1alpha1.AuditRecord
+			return k8sClient.Get(ctx, client.ObjectKey{Name: "audit-for-ar", Namespace: "default"}, &fetched)
 		}, 10*time.Second, 500*time.Millisecond).Should(gomega.Satisfy(apierrors.IsNotFound))
 
 		mgrCancel()
-		// Capture the error from mgr.Start(mgrCtx). At the end of each subtest, cancel the manager context,
-		// and assert that the only permitted non-nil error is context.Canceled (or nil).
-		// Ignoring other errors is not allowed per guidelines.
 		gm.Eventually(startErrCh, 5*time.Second).Should(gomega.Receive(gomega.Or(gomega.BeNil(), gomega.Equal(context.Canceled))))
 	})
 
-	t.Run("Manager does NOT delete non-expired objects", func(g *testing.T) {
+	t.Run("AR GC does NOT delete active AgentRequest", func(g *testing.T) {
 		gm := gomega.NewWithT(g)
 		ctx, cancel := context.WithCancel(g.Context())
 		defer cancel()
 
 		mgr, err := manager.New(cfg, manager.Options{
-			Scheme: scheme.Scheme,
-			Metrics: metricsserver.Options{
-				BindAddress: "0",
-			},
+			Scheme:  scheme.Scheme,
+			Metrics: metricsserver.Options{BindAddress: "0"},
 		})
 		gm.Expect(err).NotTo(gomega.HaveOccurred())
 
 		config := GCConfig{
-			Enabled:           true,
-			DryRun:            false,
-			Interval:          100 * time.Millisecond,
-			DiagnosticHardTTL: 1 * time.Hour,
-			PageSize:          10,
-			DeleteRatePerSec:  100,
-			SafetyMinCount:    1,
+			Enabled:          true,
+			DryRun:           false,
+			Interval:         100 * time.Millisecond,
+			HardTTL:          1 * time.Hour,
+			SafetyMinCount:   1,
+			PageSize:         10,
+			DeleteRatePerSec: 100,
 		}
 
-		// Mock time: current time is exactly now, so newly created objects
-		// are definitely NOT expired.
-		currentNow := func() time.Time { return time.Now() }
+		getFutureNow := func() time.Time { return time.Now().Add(2 * time.Hour) }
 
 		err = mgr.Add(&GCManager{
 			APIReader: mgr.GetAPIReader(),
 			Client:    mgr.GetClient(),
 			Config:    config,
-			Now:       currentNow,
+			Now:       getFutureNow,
 		})
 		gm.Expect(err).NotTo(gomega.HaveOccurred())
 
@@ -173,109 +167,25 @@ func TestGCIntegration(t *testing.T) {
 			return mgr.GetCache().WaitForCacheSync(ctx)
 		}, 5*time.Second, 100*time.Millisecond).Should(gomega.BeTrue())
 
-		diag := &governancev1alpha1.AgentDiagnostic{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "keep-me",
-				Namespace: "default",
-			},
-			Spec: governancev1alpha1.AgentDiagnosticSpec{
-				AgentIdentity:  "test-agent",
-				DiagnosticType: "test",
-				CorrelationID:  "test-correlation-id",
-				Summary:        "test summary",
+		ar := &governancev1alpha1.AgentRequest{
+			ObjectMeta: metav1.ObjectMeta{Name: "active-ar", Namespace: "default"},
+			Spec: governancev1alpha1.AgentRequestSpec{
+				AgentIdentity: "test-agent",
+				Action:        "scale",
+				Target:        governancev1alpha1.Target{URI: "k8s://default/deployment/test"},
+				Reason:        "test",
 			},
 		}
-		gm.Expect(k8sClient.Create(ctx, diag)).To(gomega.Succeed())
-		t.Cleanup(func() {
-			_ = k8sClient.Delete(context.Background(), diag)
-		})
+		gm.Expect(k8sClient.Create(ctx, ar)).To(gomega.Succeed())
+		ar.Status.Phase = governancev1alpha1.PhaseExecuting
+		gm.Expect(k8sClient.Status().Update(ctx, ar)).To(gomega.Succeed())
 
-		// Wait for a few GC cycles to pass and verify it still exists.
 		gm.Consistently(func() error {
-			var fetched governancev1alpha1.AgentDiagnostic
-			return k8sClient.Get(ctx, client.ObjectKey{Name: "keep-me", Namespace: "default"}, &fetched)
-		}, 500*time.Millisecond, 100*time.Millisecond).Should(gomega.Succeed())
+			var fetched governancev1alpha1.AgentRequest
+			return k8sClient.Get(ctx, client.ObjectKey{Name: "active-ar", Namespace: "default"}, &fetched)
+		}, 1*time.Second, 200*time.Millisecond).Should(gomega.Succeed())
 
 		mgrCancel()
-		// Capture the error from mgr.Start(mgrCtx). At the end of each subtest, cancel the manager context,
-		// and assert that the only permitted non-nil error is context.Canceled (or nil).
-		// Ignoring other errors is not allowed per guidelines.
-		gm.Eventually(startErrCh, 5*time.Second).Should(gomega.Receive(gomega.Or(gomega.BeNil(), gomega.Equal(context.Canceled))))
-	})
-
-	t.Run("Export pool with noop exporter deletes soft-retention expired objects", func(g *testing.T) {
-		gm := gomega.NewWithT(g)
-		ctx, cancel := context.WithCancel(g.Context())
-		defer cancel()
-
-		mgr, err := manager.New(cfg, manager.Options{
-			Scheme: scheme.Scheme,
-			Metrics: metricsserver.Options{
-				BindAddress: "0",
-			},
-		})
-		gm.Expect(err).NotTo(gomega.HaveOccurred())
-
-		config := GCConfig{
-			Enabled:                true,
-			DryRun:                 false,
-			Interval:               100 * time.Millisecond,
-			DiagnosticRetentionTTL: 1 * time.Hour,
-			DiagnosticHardTTL:      24 * time.Hour,
-			ExportType:             "otlp",
-			Concurrency:            2,
-			PageSize:               10,
-			DeleteRatePerSec:       100,
-			SafetyMinCount:         1,
-		}
-
-		getFutureNow := func() time.Time { return time.Now().Add(2 * time.Hour) }
-
-		err = mgr.Add(&GCManager{
-			APIReader: mgr.GetAPIReader(),
-			Client:    mgr.GetClient(),
-			Config:    config,
-			Now:       getFutureNow,
-			Exporter:  NoopExporter{},
-		})
-		gm.Expect(err).NotTo(gomega.HaveOccurred())
-
-		startErrCh := make(chan error, 1)
-		mgrCtx, mgrCancel := context.WithCancel(g.Context())
-		go func() {
-			startErrCh <- mgr.Start(mgrCtx)
-		}()
-
-		gm.Eventually(func() bool {
-			return mgr.GetCache().WaitForCacheSync(ctx)
-		}, 5*time.Second, 100*time.Millisecond).Should(gomega.BeTrue())
-
-		diag := &governancev1alpha1.AgentDiagnostic{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "soft-delete",
-				Namespace: "default",
-			},
-			Spec: governancev1alpha1.AgentDiagnosticSpec{
-				AgentIdentity:  "test-agent",
-				DiagnosticType: "test",
-				CorrelationID:  "test-correlation-id",
-				Summary:        "test summary",
-			},
-		}
-		gm.Expect(k8sClient.Create(ctx, diag)).To(gomega.Succeed())
-		t.Cleanup(func() {
-			_ = k8sClient.Delete(context.Background(), diag)
-		})
-
-		gm.Eventually(func() error {
-			var fetched governancev1alpha1.AgentDiagnostic
-			return k8sClient.Get(ctx, client.ObjectKey{Name: "soft-delete", Namespace: "default"}, &fetched)
-		}, 10*time.Second, 500*time.Millisecond).Should(gomega.Satisfy(apierrors.IsNotFound))
-
-		mgrCancel()
-		// Capture the error from mgr.Start(mgrCtx). At the end of each subtest, cancel the manager context,
-		// and assert that the only permitted non-nil error is context.Canceled (or nil).
-		// Ignoring other errors is not allowed per guidelines.
 		gm.Eventually(startErrCh, 5*time.Second).Should(gomega.Receive(gomega.Or(gomega.BeNil(), gomega.Equal(context.Canceled))))
 	})
 }

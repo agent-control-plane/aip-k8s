@@ -12,7 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// GCManager is a controller-runtime Runnable that runs all GC workers on a fixed interval.
+// GCManager is a controller-runtime Runnable that runs GC on a fixed interval.
 // It relies on controller-manager leader election — mgr.Add(gcManager) ensures only
 // the leader replica runs GC. No additional coordination is needed.
 type GCManager struct {
@@ -20,8 +20,7 @@ type GCManager struct {
 	Client    client.Client
 	Config    GCConfig
 	// Now is the clock function. Set to time.Now in production; injectable in tests.
-	Now      func() time.Time
-	Exporter Exporter // nil means no-op (NoopExporter used)
+	Now func() time.Time
 
 	mu          sync.RWMutex
 	lastCheckIn time.Time
@@ -45,7 +44,6 @@ func (m *GCManager) Check(_ *http.Request) error {
 }
 
 // Start implements manager.Runnable. Blocks until ctx is cancelled.
-// Logs a startup warning if dry-run is disabled (data will be permanently deleted).
 func (m *GCManager) Start(ctx context.Context) error {
 	logger := log.FromContext(ctx).WithName("gc-manager")
 
@@ -60,36 +58,24 @@ func (m *GCManager) Start(ctx context.Context) error {
 	m.mu.Unlock()
 
 	if !m.Config.DryRun {
-		logger.Info("WARNING: GC dry-run is disabled — AgentDiagnostics will be permanently deleted after hard TTL",
-			"hardTTL", m.Config.DiagnosticHardTTL)
+		logger.Info("WARNING: GC dry-run is disabled — terminal AgentRequests will be permanently deleted",
+			"hardTTL", m.Config.HardTTL)
 	} else {
 		logger.Info("GC engine starting in dry-run mode — no objects will be deleted",
-			"interval", m.Config.Interval, "hardTTL", m.Config.DiagnosticHardTTL)
-	}
-
-	exporter := m.Exporter
-	if exporter == nil {
-		exporter = NoopExporter{}
-	}
-
-	var pool *ExportPool
-	if m.Config.ExportType == "otlp" && m.Config.DiagnosticRetentionTTL > 0 {
-		pool = NewExportPool(ctx, m.Config.Concurrency, exporter)
-		defer pool.Stop()
-		logger.Info("GC export pool started", "concurrency", m.Config.Concurrency,
-			"exportType", m.Config.ExportType)
-	}
-
-	if m.Config.DiagnosticRetentionTTL > 0 {
-		logger.Info("GC soft retention enabled",
-			"retentionTTL", m.Config.DiagnosticRetentionTTL,
-			"exportType", m.Config.ExportType)
+			"interval", m.Config.Interval, "hardTTL", m.Config.HardTTL)
 	}
 
 	// Burst must be >= 1; int() truncates so 0.5 → 0 which deadlocks every Wait.
 	burst := max(1, int(m.Config.DeleteRatePerSec))
-	worker := NewGCWorker(m.APIReader, m.Client, m.Config, m.Now,
-		rate.NewLimiter(rate.Limit(m.Config.DeleteRatePerSec), burst), pool)
+	limiter := rate.NewLimiter(rate.Limit(m.Config.DeleteRatePerSec), burst)
+
+	worker := &ARGCWorker{
+		APIReader: m.APIReader,
+		Client:    m.Client,
+		Config:    m.Config,
+		Now:       m.Now,
+		Limiter:   limiter,
+	}
 
 	ticker := time.NewTicker(m.Config.Interval)
 	defer ticker.Stop()

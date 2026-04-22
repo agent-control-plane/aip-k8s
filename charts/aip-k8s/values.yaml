@@ -73,11 +73,7 @@ gc:
   enabled: false
   dryRun: true
   interval: "1h"
-  diagnosticHardTTL: "336h"   # 14 days
-  diagnosticRetentionTTL: "0" # 0 disables soft retention; use e.g. "7d" to enable
-  exportType: "none"          # "none" or "otlp"
-  otlpEndpoint: ""            # required when exportType=otlp
-  exportConcurrency: 5
+  hardTTL: "0"          # 0 disables GC; set e.g. "720h" (30 days) to enable
   deleteRatePerSec: 100
   pageSize: 500
   safetyMinCount: 10

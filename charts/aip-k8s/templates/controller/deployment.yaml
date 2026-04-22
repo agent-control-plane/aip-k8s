@@ -33,13 +33,7 @@ spec:
             {{- if .Values.gc.enabled }}
             - --gc-dry-run={{ .Values.gc.dryRun }}
             - --gc-interval={{ .Values.gc.interval }}
-            - --gc-diagnostic-hard-ttl={{ .Values.gc.diagnosticHardTTL }}
-            - --gc-diagnostic-retention-ttl={{ .Values.gc.diagnosticRetentionTTL }}
-            - --gc-export-type={{ .Values.gc.exportType }}
-            {{- if eq .Values.gc.exportType "otlp" }}
-            - --gc-otlp-endpoint={{ .Values.gc.otlpEndpoint | quote }}
-            {{- end }}
-            - --gc-export-concurrency={{ .Values.gc.exportConcurrency }}
+            - --gc-hard-ttl={{ .Values.gc.hardTTL }}
             - --gc-delete-rate-per-sec={{ .Values.gc.deleteRatePerSec }}
             - --gc-page-size={{ .Values.gc.pageSize }}
             - --gc-safety-min-count={{ .Values.gc.safetyMinCount }}

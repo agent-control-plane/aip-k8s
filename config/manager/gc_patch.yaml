@@ -13,9 +13,7 @@ spec:
         - --health-probe-bind-address=:8081
         - --gc-enabled=true
         - --gc-interval=1m
-        - --gc-diagnostic-hard-ttl=1m
-        - --gc-diagnostic-retention-ttl=1m
-        - --gc-export-type=none
+        - --gc-hard-ttl=1m
         - --gc-dry-run=false
         - --gc-safety-min-count=1
         - --ops-lock-duration=15s

@@ -13,20 +13,25 @@ func TestDefaultGCConfig(t *testing.T) {
 		cfg := DefaultGCConfig()
 		gm.Expect(cfg.Enabled).To(gomega.BeFalse())
 		gm.Expect(cfg.DryRun).To(gomega.BeTrue())
-		gm.Expect(cfg.DiagnosticHardTTL).To(gomega.Equal(14 * 24 * time.Hour))
-		gm.Expect(cfg.DiagnosticRetentionTTL).To(gomega.Equal(time.Duration(0)))
-		gm.Expect(cfg.ExportType).To(gomega.Equal("none"))
-		gm.Expect(cfg.Concurrency).To(gomega.Equal(5))
+		gm.Expect(cfg.HardTTL).To(gomega.Equal(time.Duration(0)))
 		gm.Expect(cfg.SafetyMinCount).To(gomega.Equal(10))
 	})
 
-	t.Run("Zero DiagnosticRetentionTTL means soft retention disabled", func(t *testing.T) {
+	t.Run("Zero HardTTL disables AgentRequest GC", func(t *testing.T) {
 		gm := gomega.NewWithT(t)
-		cfg := GCConfig{
-			DiagnosticRetentionTTL: 0,
-			DiagnosticHardTTL:      14 * 24 * time.Hour,
-		}
-		gm.Expect(cfg.DiagnosticRetentionTTL).To(gomega.Equal(time.Duration(0)))
-		gm.Expect(cfg.DiagnosticHardTTL).To(gomega.Equal(14 * 24 * time.Hour))
+		cfg := GCConfig{Enabled: true, HardTTL: 0}
+		gm.Expect(cfg.AgentRequestGCEnabled()).To(gomega.BeFalse())
+	})
+
+	t.Run("Positive HardTTL with Enabled=true enables AgentRequest GC", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
+		cfg := GCConfig{Enabled: true, HardTTL: time.Hour}
+		gm.Expect(cfg.AgentRequestGCEnabled()).To(gomega.BeTrue())
+	})
+
+	t.Run("Enabled=false disables AgentRequest GC even with positive HardTTL", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
+		cfg := GCConfig{Enabled: false, HardTTL: time.Hour}
+		gm.Expect(cfg.AgentRequestGCEnabled()).To(gomega.BeFalse())
 	})
 }

@@ -31,7 +31,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -670,13 +669,6 @@ var _ = Describe("Manager", Ordered, func() {
 
 	// Phase 6: Garbage Collection
 	Context("Phase 6: Garbage Collection", Ordered, func() {
-		AfterEach(func() {
-			By("cleaning up AgentDiagnostics in default namespace")
-			// Use kubectl delete --all per project convention.
-			cmd := exec.Command("kubectl", "delete", "agentdiagnostic", "--all", "-n", "default", "--ignore-not-found")
-			_, _ = utils.Run(cmd)
-		})
-
 		It("should verify the controller has GC flags in the deployment", func() {
 			By("fetching the controller deployment container args")
 			cmd := exec.Command("kubectl", "get", "deployment",
@@ -688,10 +680,9 @@ var _ = Describe("Manager", Ordered, func() {
 			By("checking for GC-related flags")
 			Expect(out).To(ContainSubstring("--gc-enabled=true"))
 			Expect(out).To(ContainSubstring("--gc-interval=1m"))
-			Expect(out).To(ContainSubstring("--gc-diagnostic-retention-ttl"))
-			Expect(out).To(ContainSubstring("--gc-export-type"))
-			// --gc-health-probe-bind-address was removed
-			Expect(out).NotTo(ContainSubstring("--gc-health-probe-bind-address"))
+			Expect(out).To(ContainSubstring("--gc-hard-ttl=1m"))
+			Expect(out).NotTo(ContainSubstring("--gc-diagnostic"))
+			Expect(out).NotTo(ContainSubstring("--gc-export-type"))
 		})
 
 		It("should verify the gc-healthz check is registered at /healthz/gc-healthz", func() {
@@ -770,92 +761,24 @@ var _ = Describe("Manager", Ordered, func() {
 			}, 90*time.Second, 2*time.Second).Should(Succeed())
 		})
 
-		It("should verify RBAC permissions for GC (agentdiagnostics delete)", func() {
-			By("checking if the controller service account can delete agentdiagnostics")
-			cmd := exec.Command("kubectl", "auth", "can-i", "delete", "agentdiagnostics",
+		It("should verify RBAC permissions for GC (agentrequests and auditrecords delete)", func() {
+			By("checking if the controller service account can delete agentrequests")
+			cmd := exec.Command("kubectl", "auth", "can-i", "delete", "agentrequests",
 				"--as", fmt.Sprintf("system:serviceaccount:%s:%s", namespace, serviceAccountName),
 				"-n", "default")
 			out, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(strings.TrimSpace(out)).To(Equal("yes"), "Controller SA should have permission to delete agentdiagnostics")
-		})
+			Expect(strings.TrimSpace(out)).To(Equal("yes"), "Controller SA should have permission to delete agentrequests")
 
-		It("should verify GC deletes an expired AgentDiagnostic", func() {
-			By("creating an AgentDiagnostic")
-			diagName := "gc-test-diag"
-			diagManifest := fmt.Sprintf(`
-apiVersion: governance.aip.io/v1alpha1
-kind: AgentDiagnostic
-metadata:
-  name: %s
-  namespace: default
-spec:
-  agentIdentity: e2e-agent
-  diagnosticType: e2e-test
-  correlationID: e2e-corr
-  summary: e2e-summary
-`, diagName)
-			cmd := exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(diagManifest)
-			_, err := utils.Run(cmd)
+			By("checking if the controller service account can delete auditrecords")
+			cmd = exec.Command("kubectl", "auth", "can-i", "delete", "auditrecords",
+				"--as", fmt.Sprintf("system:serviceaccount:%s:%s", namespace, serviceAccountName),
+				"-n", "default")
+			out, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-
-			By("waiting for it to exist")
-			Eventually(func() error {
-				cmd := exec.Command("kubectl", "get", "agentdiagnostic", diagName, "-n", "default")
-				_, err := utils.Run(cmd)
-				return err
-			}, 30*time.Second, 5*time.Second).Should(Succeed())
-
-			By("verifying it eventually gets deleted")
-			// GC interval is 1m, hard TTL is 1m. Worst case: object created just
-			// after a tick → waits up to 2 cycles (2m) plus slow-CI overhead.
-			// 6 minutes gives comfortable headroom without masking real failures.
-			Eventually(func() bool {
-				var diag governancev1alpha1.AgentDiagnostic
-				err := k8sClient.Get(ctx, types.NamespacedName{Name: diagName, Namespace: "default"}, &diag)
-				if apierrors.IsNotFound(err) {
-					return true
-				}
-				// Unexpected error: let Eventually surface it on the next tick.
-				return false
-			}, 6*time.Minute, 10*time.Second).Should(BeTrue())
+			Expect(strings.TrimSpace(out)).To(Equal("yes"), "Controller SA should have permission to delete auditrecords")
 		})
 
-		It("should verify GC deletes an AgentDiagnostic via soft retention (exportType=none)", func() {
-			By("creating an AgentDiagnostic")
-			diagName := "gc-soft-retention-diag"
-			diagManifest := fmt.Sprintf(`
-apiVersion: governance.aip.io/v1alpha1
-kind: AgentDiagnostic
-metadata:
-  name: %s
-  namespace: default
-spec:
-  agentIdentity: e2e-agent
-  diagnosticType: e2e-test
-  correlationID: e2e-corr
-  summary: e2e-soft-retention-summary
-`, diagName)
-			cmd := exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(diagManifest)
-			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("waiting for it to exist")
-			Eventually(func() error {
-				cmd := exec.Command("kubectl", "get", "agentdiagnostic", diagName, "-n", "default")
-				_, err := utils.Run(cmd)
-				return err
-			}, 30*time.Second, 5*time.Second).Should(Succeed())
-
-			By("waiting for soft-retention deletion (interval=1m, retentionTTL=1m in Kustomize; 30s in Helm — worst case 2 cycles + overhead = 6 minutes)")
-			Eventually(func() bool {
-				var diag governancev1alpha1.AgentDiagnostic
-				err := k8sClient.Get(ctx, types.NamespacedName{Name: diagName, Namespace: "default"}, &diag)
-				return apierrors.IsNotFound(err)
-			}, 6*time.Minute, 10*time.Second).Should(BeTrue())
-		})
 	})
 })
 

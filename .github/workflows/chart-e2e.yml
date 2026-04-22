@@ -72,9 +72,7 @@ jobs:
             --set dashboard.image.tag=${{ steps.tag.outputs.sha }} \
             --set gc.enabled=true \
             --set gc.interval=1m \
-            --set gc.diagnosticHardTTL=1m \
-            --set gc.diagnosticRetentionTTL=30s \
-            --set gc.exportType=none \
+            --set gc.hardTTL=1m \
             --set gc.dryRun=false \
             --set gc.safetyMinCount=1 \
             --set controller.extraArgs[0]="--ops-lock-duration=15s" \

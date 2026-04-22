@@ -50,14 +50,6 @@ rules:
 - apiGroups:
   - governance.aip.io
   resources:
-  - agentdiagnostics
-  verbs:
-  - delete
-  - get
-  - list
-- apiGroups:
-  - governance.aip.io
-  resources:
   - agentrequests
   - auditrecords
   - governedresources
