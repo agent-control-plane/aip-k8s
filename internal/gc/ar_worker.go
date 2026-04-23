@@ -132,12 +132,16 @@ func (w *ARGCWorker) processRequest(ctx context.Context, ar *governancev1alpha1.
 		return resultNone, fmt.Errorf("ar gc rate limiter: %w", err)
 	}
 
-	// Delete associated AuditRecords first (paginated).
-	// If listing fails, skip this AR so GC retries on the next cycle.
+	// Delete associated AuditRecords first (paginated) using the indexed label selector.
+	// This prevents an O(N*M) scan of the namespace for every AgentRequest deletion.
 	var auditContinue string
 	for {
 		var auditPage governancev1alpha1.AuditRecordList
-		listOpts := []client.ListOption{client.InNamespace(ar.Namespace), client.Limit(w.Config.PageSize)}
+		listOpts := []client.ListOption{
+			client.InNamespace(ar.Namespace),
+			client.MatchingLabels{"aip.io/agentRequestRef": ar.Name},
+			client.Limit(w.Config.PageSize),
+		}
 		if auditContinue != "" {
 			listOpts = append(listOpts, client.Continue(auditContinue))
 		}
@@ -145,11 +149,8 @@ func (w *ARGCWorker) processRequest(ctx context.Context, ar *governancev1alpha1.
 			return resultNone, fmt.Errorf("ar gc list auditrecords for %s/%s: %w", ar.Namespace, ar.Name, err)
 		}
 		for i := range auditPage.Items {
-			audit := &auditPage.Items[i]
-			if audit.Spec.AgentRequestRef == ar.Name {
-				if err := w.Client.Delete(ctx, audit); client.IgnoreNotFound(err) != nil {
-					logger.Error(err, "Failed to delete AuditRecord", "auditName", audit.Name)
-				}
+			if err := w.Client.Delete(ctx, &auditPage.Items[i]); client.IgnoreNotFound(err) != nil {
+				logger.Error(err, "Failed to delete AuditRecord", "auditName", auditPage.Items[i].Name)
 			}
 		}
 		auditContinue = auditPage.Continue

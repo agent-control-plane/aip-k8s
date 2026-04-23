@@ -70,12 +70,9 @@ jobs:
             --set controller.image.tag=${{ steps.tag.outputs.sha }} \
             --set gateway.image.tag=${{ steps.tag.outputs.sha }} \
             --set dashboard.image.tag=${{ steps.tag.outputs.sha }} \
-            --set gc.enabled=true \
-            --set gc.interval=1m \
-            --set gc.hardTTL=1m \
-            --set gc.dryRun=false \
-            --set gc.safetyMinCount=1 \
+            --set gc.enabled=false \
             --set controller.extraArgs[0]="--ops-lock-duration=15s" \
+            --set controller.extraArgs[1]="--ops-lock-wait-timeout=20s" \
             --wait --timeout 3m
 
       - name: Start port-forwards

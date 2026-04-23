@@ -11,9 +11,6 @@ spec:
         args:
         - --leader-elect
         - --health-probe-bind-address=:8081
-        - --gc-enabled=true
-        - --gc-interval=1m
-        - --gc-hard-ttl=1m
-        - --gc-dry-run=false
-        - --gc-safety-min-count=1
+        - --gc-enabled=false
         - --ops-lock-duration=15s
+        - --ops-lock-wait-timeout=20s

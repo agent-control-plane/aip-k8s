@@ -49,8 +49,9 @@ import (
 )
 
 const (
-	// LockWaitTimeout is the maximum time a request will wait in Pending to acquire the OpsLock Lease.
-	LockWaitTimeout = 60 * time.Second
+	// defaultLockWaitTimeout is the fallback maximum time a request will wait in
+	// Pending to acquire the OpsLock Lease when no LockWaitDuration is configured.
+	defaultLockWaitTimeout = 60 * time.Second
 	// ApprovedTimeout is the maximum time a request can stay in Approved phase before
 	// the controller times it out to PhaseFailed (agent never started execution).
 	ApprovedTimeout = 5 * time.Minute
@@ -70,9 +71,23 @@ type AgentRequestReconciler struct {
 	// negative values fall back to defaultOpsLockDuration (5 minutes). The controller
 	// renews the lease at half this interval, so agents have up to OpsLockDuration
 	// to complete execution before the lock expires.
-	OpsLockDuration      time.Duration
+	OpsLockDuration time.Duration
+	// LockWaitDuration is the maximum time a Pending request will wait to acquire the
+	// OpsLock Lease before being Denied with LOCK_TIMEOUT. Zero falls back to
+	// defaultLockWaitTimeout (60s). Configurable so e2e tests can use a shorter value
+	// (e.g. 20s) to ensure the test completes well before the GC hard-TTL window.
+	LockWaitDuration     time.Duration
 	Evaluator            evaluation.Evaluator
 	TargetContextFetcher evaluation.TargetContextFetcher
+}
+
+// lockWaitTimeout returns the configured LockWaitDuration, falling back to
+// defaultLockWaitTimeout if zero or negative.
+func (r *AgentRequestReconciler) lockWaitTimeout() time.Duration {
+	if r.LockWaitDuration > 0 {
+		return r.LockWaitDuration
+	}
+	return defaultLockWaitTimeout
 }
 
 func (r *AgentRequestReconciler) now() time.Time {
@@ -673,7 +688,8 @@ func (r *AgentRequestReconciler) handleLockAcquisition(ctx context.Context, agen
 				logger.Info("AgentRequest already holds the lease", "lease", leaseName)
 			} else {
 				// Check timeout
-				waitLimit := r.now().Add(-LockWaitTimeout)
+				lockTimeout := r.lockWaitTimeout()
+				waitLimit := r.now().Add(-lockTimeout)
 				if agentReq.CreationTimestamp.Time.Before(waitLimit) {
 					// Timeout exceeded
 					logger.Info("Lock wait timeout exceeded", "lease", leaseName)
@@ -682,7 +698,7 @@ func (r *AgentRequestReconciler) handleLockAcquisition(ctx context.Context, agen
 					agentReq.Status.Phase = governancev1alpha1.PhaseDenied
 					agentReq.Status.Denial = &governancev1alpha1.DenialResponse{
 						Code:    governancev1alpha1.DenialCodeLockTimeout,
-						Message: fmt.Sprintf("Failed to acquire lock for %s within %v timeout. Lock held by: %s", agentReq.Spec.Target.URI, LockWaitTimeout, ptr.Deref(existingLease.Spec.HolderIdentity, "unknown")),
+						Message: fmt.Sprintf("Failed to acquire lock for %s within %v timeout. Lock held by: %s", agentReq.Spec.Target.URI, lockTimeout, ptr.Deref(existingLease.Spec.HolderIdentity, "unknown")),
 					}
 					agentRequestDeniedTotal.WithLabelValues(governancev1alpha1.DenialCodeLockTimeout).Inc()
 					agentRequestActive.Dec()

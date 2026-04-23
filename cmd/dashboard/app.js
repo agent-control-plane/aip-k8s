@@ -157,6 +157,7 @@ const state = {
     diagnosticsJSON: '',
     namespace: 'default',
     diagnosticsGen: 0,
+    requestsGen: 0,
     role: '',          // 'agent' | 'reviewer' | 'admin' | ''
     identity: '',
     proxyAuth: false,  // true when auth proxy is injecting credentials
@@ -223,6 +224,9 @@ async function fetchRequests() {
             return;
         }
         hideBanner();
+        const reqGen = ++state.requestsGen;
+        fetchRequestSummaries(reqGen, ns);
+
         const data = await response.json();
         state.requests = data.sort((a, b) => new Date(b.metadata.creationTimestamp) - new Date(a.metadata.creationTimestamp));
         renderList();
@@ -844,6 +848,53 @@ window.fetchSummaries = async function(gen, ns) {
         if (container) { container.style.display = 'none'; container.innerHTML = ''; }
     }
 };
+
+async function fetchRequestSummaries(gen, ns) {
+    const container = document.getElementById('requests-accuracy-chip-container');
+    try {
+        const response = await apiFetch(`/api/diagnostic-accuracy-summaries?namespace=${encodeURIComponent(ns)}`);
+        if (gen !== state.requestsGen) return;
+        if (!response.ok) {
+            if (container) { container.style.display = 'none'; container.innerHTML = ''; }
+            return;
+        }
+        const summaries = await response.json();
+        if (!container) return;
+
+        if (!summaries || summaries.length === 0) {
+            container.style.display = 'none';
+            return;
+        }
+
+        container.style.display = 'block';
+        const rows = summaries.map(s => {
+            const acc = s.status?.diagnosticAccuracy;
+            if (acc == null) return '';
+            const pct = Math.round(acc * 100);
+            const color = pct >= 80 ? 'var(--success)' : pct >= 60 ? 'var(--warning)' : 'var(--error)';
+            const total = s.status?.totalReviewed ?? 0;
+            const correct = s.status?.correctCount ?? 0;
+            const partial = s.status?.partialCount ?? 0;
+            const incorrect = s.status?.incorrectCount ?? 0;
+            const barWidth = pct;
+            return `<tr>
+                <td style="font-family:'JetBrains Mono',monospace;font-size:0.82rem;white-space:nowrap;padding:0.35rem 0.75rem 0.35rem 0;">${escapeHtml(s.spec.agentIdentity)}</td>
+                <td style="padding:0.35rem 0.75rem;width:140px;">
+                    <div style="position:relative;height:6px;background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden;">
+                        <div style="position:absolute;left:0;top:0;height:100%;width:${barWidth}%;background:${color};border-radius:3px;"></div>
+                    </div>
+                </td>
+                <td style="padding:0.35rem 0.5rem;font-size:0.82rem;font-weight:600;color:${color};white-space:nowrap;">${pct}%</td>
+                <td style="padding:0.35rem 0.75rem;font-size:0.78rem;color:var(--text-secondary);white-space:nowrap;">${total} reviewed</td>
+                <td style="padding:0.35rem 0.75rem;font-size:0.78rem;color:var(--text-secondary);white-space:nowrap;">✓ ${correct} &nbsp; ~ ${partial} &nbsp; ✗ ${incorrect}</td>
+            </tr>`;
+        }).join('');
+        container.innerHTML = `<table style="border-collapse:collapse;font-size:0.82rem;margin-bottom:0.5rem;">${rows}</table>`;
+    } catch (e) {
+        console.error('Failed to fetch summaries', e);
+        if (container) { container.style.display = 'none'; container.innerHTML = ''; }
+    }
+}
 
 function renderDiagnostics() {
     const listEl = document.getElementById('diagnostics-list');

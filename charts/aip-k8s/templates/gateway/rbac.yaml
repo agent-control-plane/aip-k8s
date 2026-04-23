@@ -18,6 +18,7 @@ rules:
   - governance.aip.io
   resources:
   - agentrequests
+  - agentrequests/status
   - auditrecords
   - agentdiagnostics
   - agentdiagnostics/status

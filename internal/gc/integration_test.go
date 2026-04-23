@@ -100,7 +100,11 @@ func TestGCIntegration(t *testing.T) {
 		gm.Expect(k8sClient.Status().Update(ctx, ar)).To(gomega.Succeed())
 
 		audit := &governancev1alpha1.AuditRecord{
-			ObjectMeta: metav1.ObjectMeta{Name: "audit-for-ar", Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "audit-for-ar",
+				Namespace: "default",
+				Labels:    map[string]string{"aip.io/agentRequestRef": "terminal-ar"},
+			},
 			Spec: governancev1alpha1.AuditRecordSpec{
 				Timestamp:       metav1.Now(),
 				AgentRequestRef: "terminal-ar",

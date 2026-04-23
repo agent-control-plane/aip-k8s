@@ -79,3 +79,32 @@ if [ "$fail" -ne 0 ]; then
 fi
 
 echo "Helm chart RBAC is in sync with $KUSTOMIZE_ROLE."
+
+# ── Gateway RBAC invariants ──────────────────────────────────────────────────
+# The gateway ClusterRole is hand-maintained. Enforce known invariants:
+# if a resource is listed, its /status subresource must also be listed
+# (gateway patches status on all mutable resources).
+HELM_GW_RBAC="$REPO_ROOT/charts/aip-k8s/templates/gateway/rbac.yaml"
+
+if [ ! -f "$HELM_GW_RBAC" ]; then
+    echo "ERROR: $HELM_GW_RBAC does not exist." >&2
+    exit 1
+fi
+
+gw_fail=0
+for base_resource in agentrequests agentdiagnostics diagnosticaccuracysummaries governedresources; do
+    status_resource="${base_resource}/status"
+    if grep -qE "^[[:space:]]*- ${base_resource}$" "$HELM_GW_RBAC"; then
+        if ! grep -qE "^[[:space:]]*- ${status_resource}$" "$HELM_GW_RBAC"; then
+            echo "GATEWAY RBAC DRIFT: '${base_resource}' is present in $HELM_GW_RBAC"
+            echo "  but '${status_resource}' is missing."
+            gw_fail=1
+        fi
+    fi
+done
+
+if [ "$gw_fail" -ne 0 ]; then
+    exit 1
+fi
+
+echo "Gateway RBAC invariants satisfied."

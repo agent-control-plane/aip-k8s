@@ -60,7 +60,11 @@ func TestARGCWorker_Run(t *testing.T) {
 			Status:     governancev1alpha1.AgentRequestStatus{Phase: governancev1alpha1.PhaseCompleted},
 		}
 		audit := &governancev1alpha1.AuditRecord{
-			ObjectMeta: metav1.ObjectMeta{Name: "audit-1", Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "audit-1",
+				Namespace: "default",
+				Labels:    map[string]string{"aip.io/agentRequestRef": "expired"},
+			},
 			Spec: governancev1alpha1.AuditRecordSpec{
 				AgentRequestRef: "expired",
 				Timestamp:       metav1.NewTime(now),

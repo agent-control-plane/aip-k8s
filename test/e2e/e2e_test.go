@@ -535,7 +535,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 		AfterAll(func() {
 			By("cleaning up lock AgentRequests")
-			cmd := exec.Command("kubectl", "delete", "agentrequest", req1Name, req2Name, "-n", ns, "--ignore-not-found")
+			cmd := exec.Command("kubectl", "delete", "agentrequest", "--all", "-n", ns, "--ignore-not-found")
 			_, _ = utils.Run(cmd)
 		})
 
@@ -678,9 +678,10 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("checking for GC-related flags")
-			Expect(out).To(ContainSubstring("--gc-enabled=true"))
-			Expect(out).To(ContainSubstring("--gc-interval=1m"))
-			Expect(out).To(ContainSubstring("--gc-hard-ttl=1m"))
+			// GC is disabled by default in e2e to prevent interference with other tests.
+			// gc_test.go enables it dynamically around its own tests.
+			Expect(out).To(ContainSubstring("--gc-enabled=false"))
+			Expect(out).To(ContainSubstring("--ops-lock-wait-timeout=20s"))
 			Expect(out).NotTo(ContainSubstring("--gc-diagnostic"))
 			Expect(out).NotTo(ContainSubstring("--gc-export-type"))
 		})
