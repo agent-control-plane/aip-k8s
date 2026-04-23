@@ -34,6 +34,14 @@ var _ = Describe("AgentRequest GC", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), "failed to install CRDs: %s", string(out))
 		}
 
+		By("deploying the controller-manager")
+		if os.Getenv("HELM_DEPLOYED") != "true" {
+			cmd := exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
+			cmd.Dir = projDir
+			out, err := cmd.CombinedOutput()
+			Expect(err).NotTo(HaveOccurred(), "failed to deploy controller-manager: %s", string(out))
+		}
+
 		By("waiting for controller-manager to be ready")
 		Eventually(func(g Gomega) {
 			readyCmd := exec.Command("kubectl", "get", "pods",
