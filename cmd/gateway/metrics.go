@@ -44,6 +44,32 @@ var (
 		},
 		[]string{"verdict"},
 	)
+
+	agentRequestCreatedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "aip_agent_request_created_total",
+			Help: "Total number of AgentRequests created via v1alpha1 API.",
+		},
+		[]string{"agent_identity"},
+	)
+	agentRequestDedupTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "aip_agent_request_dedup_total",
+		Help: "Total number of v1alpha1 AgentRequest creations returned as duplicates.",
+	})
+	agentRequestPhaseTransitionTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "aip_agent_request_phase_transition_total",
+			Help: "Phase transitions via v1alpha1 /phase endpoint.",
+		},
+		[]string{"from_phase", "to_phase"},
+	)
+	agentRequestVerdictTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "aip_agent_request_verdict_total",
+			Help: "AgentRequest verdicts submitted via v1alpha1 API.",
+		},
+		[]string{"verdict"},
+	)
 )
 
 func init() {
@@ -53,6 +79,10 @@ func init() {
 		diagnosticCreatedTotal,
 		diagnosticDedupTotal,
 		diagnosticVerdictTotal,
+		agentRequestCreatedTotal,
+		agentRequestDedupTotal,
+		agentRequestPhaseTransitionTotal,
+		agentRequestVerdictTotal,
 	)
 }
 

@@ -1,0 +1,615 @@
+openapi: "3.0.3"
+info:
+  title: AIP Kubernetes Gateway API — Agent Requests
+  version: v1alpha1
+  description: >
+    AgentRequest endpoints for the AIP governance control plane. All paths are
+    prefixed with /v1alpha1/. Namespace is always a query parameter; it is never
+    part of the path or request body.
+
+servers:
+  - url: /v1alpha1
+
+paths:
+  /agent-requests:
+    get:
+      operationId: listAgentRequests
+      summary: List AgentRequest records
+      tags: [agent-requests]
+      parameters:
+        - $ref: "#/components/parameters/namespace"
+        - name: filter.agentIdentity
+          in: query
+          description: Filter by agent identity label
+          schema:
+            type: string
+        - name: filter.correlationID
+          in: query
+          description: Filter by correlation ID label
+          schema:
+            type: string
+        - name: filter.phase
+          in: query
+          description: Filter by current phase (in-memory; not a label selector)
+          schema:
+            type: string
+            enum:
+              - Pending
+              - Approved
+              - Denied
+              - Executing
+              - Completed
+              - Failed
+              - AwaitingVerdict
+              - Expired
+        - name: limit
+          in: query
+          description: Maximum number of items to return (pagination)
+          schema:
+            type: integer
+            minimum: 1
+        - name: nextPageToken
+          in: query
+          description: Opaque continuation token from a previous list response
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRequestList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      operationId: createAgentRequest
+      summary: Create an AgentRequest
+      description: >
+        Creates a new AgentRequest and returns 201 immediately with phase Pending.
+        The client should poll GET or use Watch to observe phase transitions.
+        Returns 200 with the existing record when a duplicate
+        (agentIdentity, action, targetURI) is found within the dedup window.
+        Namespace is supplied as a query parameter, not in the request body.
+      tags: [agent-requests]
+      parameters:
+        - $ref: "#/components/parameters/namespace"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAgentRequestRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRequestDTO"
+        "200":
+          description: Duplicate — existing record returned unchanged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRequestDTO"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /agent-requests/{name}:
+    get:
+      operationId: getAgentRequest
+      summary: Get a single AgentRequest by name
+      tags: [agent-requests]
+      parameters:
+        - $ref: "#/components/parameters/name"
+        - $ref: "#/components/parameters/namespace"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRequestDTO"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /agent-requests/{name}/phase:
+    post:
+      operationId: transitionAgentRequestPhase
+      summary: Transition an AgentRequest to a new phase
+      description: >
+        Unified phase transition endpoint replacing the legacy /executing,
+        /completed, /approve, and /deny endpoints. The gateway validates the
+        caller's role, the legality of the transition from the current phase,
+        and any required fields for the target phase.
+      tags: [agent-requests]
+      parameters:
+        - $ref: "#/components/parameters/name"
+        - $ref: "#/components/parameters/namespace"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransitionPhaseRequest"
+      responses:
+        "200":
+          description: Phase transition applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRequestDTO"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Invalid phase transition from current state
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /agent-requests/{name}/verdict:
+    patch:
+      operationId: submitAgentRequestVerdict
+      summary: Submit a reviewer verdict on an AwaitingVerdict AgentRequest
+      description: >
+        Records a reviewer's post-action assessment on an AgentRequest that was
+        auto-approved under soak mode. Only valid when phase is AwaitingVerdict.
+        Transitions the request to Completed. The verdictBy field is set
+        server-side from the authenticated caller identity.
+      tags: [agent-requests]
+      parameters:
+        - $ref: "#/components/parameters/name"
+        - $ref: "#/components/parameters/namespace"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitVerdictRequest"
+      responses:
+        "200":
+          description: Verdict submitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRequestDTO"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Request is not in AwaitingVerdict phase
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+components:
+  parameters:
+    name:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+
+    namespace:
+      name: namespace
+      in: query
+      description: 'Kubernetes namespace. Defaults to "default".'
+      schema:
+        type: string
+        default: default
+
+  schemas:
+    AgentRequestDTO:
+      type: object
+      required:
+        - name
+        - namespace
+        - createdAt
+        - agentIdentity
+        - action
+        - target
+        - reason
+        - phase
+      properties:
+        name:
+          type: string
+          description: Kubernetes object name (server-generated)
+        namespace:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        agentIdentity:
+          type: string
+        action:
+          type: string
+        target:
+          $ref: "#/components/schemas/Target"
+        reason:
+          type: string
+        correlationID:
+          type: string
+        classification:
+          type: string
+        intentPlanRef:
+          type: string
+        priority:
+          type: integer
+          format: int32
+        cascadeModel:
+          $ref: "#/components/schemas/CascadeModel"
+        reasoningTrace:
+          $ref: "#/components/schemas/ReasoningTrace"
+        interruptibility:
+          type: boolean
+        parameters:
+          description: Action-specific parameters (any JSON value)
+          x-go-type: json.RawMessage
+        executionMode:
+          type: string
+          enum: [single, scoped]
+        scopeBounds:
+          $ref: "#/components/schemas/ScopeBounds"
+        governedResourceRef:
+          $ref: "#/components/schemas/GovernedResourceRef"
+        phase:
+          type: string
+          enum:
+            - Pending
+            - Approved
+            - Denied
+            - Executing
+            - Completed
+            - Failed
+            - AwaitingVerdict
+            - Expired
+        conditions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Condition"
+        denial:
+          $ref: "#/components/schemas/DenialResponse"
+        controlPlaneVerification:
+          $ref: "#/components/schemas/ControlPlaneVerification"
+        verdict:
+          $ref: "#/components/schemas/VerdictInfo"
+
+    Target:
+      type: object
+      required: [uri]
+      properties:
+        uri:
+          type: string
+          minLength: 1
+        resourceType:
+          type: string
+        attributes:
+          type: object
+          additionalProperties:
+            type: string
+
+    CascadeModel:
+      type: object
+      properties:
+        affectedTargets:
+          type: array
+          items:
+            $ref: "#/components/schemas/AffectedTarget"
+        modelSourceTrust:
+          type: string
+          enum: [authoritative, derived, inferred]
+        modelSourceID:
+          type: string
+
+    AffectedTarget:
+      type: object
+      required: [uri, effectType]
+      properties:
+        uri:
+          type: string
+        effectType:
+          type: string
+          enum: [deleted, modified, disrupted, orphaned]
+
+    ReasoningTrace:
+      type: object
+      properties:
+        confidenceScore:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+        componentConfidence:
+          type: object
+          additionalProperties:
+            type: number
+            format: double
+        traceReference:
+          type: string
+        alternatives:
+          type: array
+          items:
+            type: string
+
+    ScopeBounds:
+      type: object
+      required: [permittedActions, permittedTargetPatterns, timeBoundSeconds]
+      properties:
+        permittedActions:
+          type: array
+          items:
+            type: string
+          minItems: 1
+        permittedTargetPatterns:
+          type: array
+          items:
+            type: string
+          minItems: 1
+        timeBoundSeconds:
+          type: integer
+          format: int32
+          minimum: 1
+
+    GovernedResourceRef:
+      type: object
+      properties:
+        name:
+          type: string
+        generation:
+          type: integer
+          format: int64
+
+    Condition:
+      type: object
+      required: [type, status, reason, message, lastTransitionTime]
+      properties:
+        type:
+          type: string
+        status:
+          type: string
+          enum: ["True", "False", "Unknown"]
+        reason:
+          type: string
+        message:
+          type: string
+        lastTransitionTime:
+          type: string
+          format: date-time
+
+    DenialResponse:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        policyResults:
+          type: array
+          items:
+            $ref: "#/components/schemas/PolicyResult"
+        retryAfterSeconds:
+          type: integer
+          format: int32
+
+    PolicyResult:
+      type: object
+      properties:
+        policyName:
+          type: string
+        ruleName:
+          type: string
+        result:
+          type: string
+        policyGeneration:
+          type: integer
+          format: int64
+
+    ControlPlaneVerification:
+      type: object
+      properties:
+        evaluatedStateFingerprint:
+          type: string
+        targetExists:
+          type: boolean
+        hasActiveEndpoints:
+          type: boolean
+        activeEndpointCount:
+          type: integer
+        readyReplicas:
+          type: integer
+        specReplicas:
+          type: integer
+        downstreamServices:
+          type: array
+          items:
+            type: string
+        fetchedAt:
+          type: string
+          format: date-time
+
+    VerdictInfo:
+      type: object
+      properties:
+        verdict:
+          type: string
+          enum: [correct, partial, incorrect]
+        reasonCode:
+          type: string
+          enum:
+            - wrong_diagnosis
+            - bad_timing
+            - scope_too_broad
+            - precautionary
+            - policy_block
+        note:
+          type: string
+          maxLength: 512
+        by:
+          type: string
+          description: Set server-side from the authenticated caller identity
+        at:
+          type: string
+          format: date-time
+
+    AgentRequestList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentRequestDTO"
+        nextPageToken:
+          type: string
+          description: Opaque pagination token; present only when more items exist
+
+    CreateAgentRequestRequest:
+      type: object
+      required: [agentIdentity, action, target, reason]
+      properties:
+        agentIdentity:
+          type: string
+          minLength: 1
+        action:
+          type: string
+          minLength: 1
+        target:
+          $ref: "#/components/schemas/Target"
+        reason:
+          type: string
+          minLength: 1
+        correlationID:
+          type: string
+        classification:
+          type: string
+        intentPlanRef:
+          type: string
+        priority:
+          type: integer
+          format: int32
+          minimum: 0
+        cascadeModel:
+          $ref: "#/components/schemas/CascadeModel"
+        reasoningTrace:
+          $ref: "#/components/schemas/ReasoningTrace"
+        interruptibility:
+          type: boolean
+        parameters:
+          description: Action-specific parameters (any JSON value)
+          x-go-type: json.RawMessage
+        executionMode:
+          type: string
+          enum: [single, scoped]
+        scopeBounds:
+          $ref: "#/components/schemas/ScopeBounds"
+
+    TransitionPhaseRequest:
+      type: object
+      required: [targetPhase]
+      properties:
+        targetPhase:
+          type: string
+          enum: [Executing, Completed, Approved, Denied]
+        reason:
+          type: string
+          maxLength: 512
+          description: Required for Approved (when CPV has active endpoints) and Denied
+
+    SubmitVerdictRequest:
+      type: object
+      required: [verdict]
+      properties:
+        verdict:
+          type: string
+          enum: [correct, partial, incorrect]
+        reasonCode:
+          type: string
+          enum:
+            - wrong_diagnosis
+            - bad_timing
+            - scope_too_broad
+            - precautionary
+            - policy_block
+          description: Required when verdict is not 'correct'
+        note:
+          type: string
+          maxLength: 512
+
+    Problem:
+      type: object
+      description: RFC 7807 problem detail
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+
+  responses:
+    BadRequest:
+      description: Bad request — invalid input or missing required fields
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Forbidden:
+      description: Caller does not have the required role
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: Resource not found
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"

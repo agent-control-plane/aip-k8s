@@ -288,6 +288,14 @@ func main() {
 	mux.HandleFunc("PATCH /v1alpha1/agent-diagnostics/{name}/status", server.v1alpha1SetAgentDiagnosticVerdict)
 	mux.HandleFunc("GET /v1alpha1/agent-diagnostics/{name}/watch", server.v1alpha1WatchAgentDiagnostic)
 	mux.HandleFunc("GET /v1alpha1/diagnostic-accuracy-summaries", server.v1alpha1ListAccuracySummaries)
+
+	// v1alpha1 versioned endpoints — AgentRequests
+	mux.HandleFunc("GET /v1alpha1/agent-requests", server.v1alpha1ListAgentRequests)
+	mux.HandleFunc("POST /v1alpha1/agent-requests", server.v1alpha1CreateAgentRequest)
+	mux.HandleFunc("GET /v1alpha1/agent-requests/{name}", server.v1alpha1GetAgentRequest)
+	mux.HandleFunc("POST /v1alpha1/agent-requests/{name}/phase", server.v1alpha1TransitionAgentRequestPhase)
+	mux.HandleFunc("PATCH /v1alpha1/agent-requests/{name}/verdict", server.v1alpha1SubmitAgentRequestVerdict)
+
 	mux.HandleFunc("POST /governed-resources", server.handleCreateGovernedResource)
 	mux.HandleFunc("GET /governed-resources", server.handleListGovernedResources)
 	mux.HandleFunc("GET /governed-resources/{name}", server.handleGetGovernedResource)
