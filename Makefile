@@ -49,6 +49,19 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	"$(CONTROLLER_GEN)" object:headerFile="hack/boilerplate.go.txt" paths="./..."
 
+.PHONY: generate-openapi
+generate-openapi: ## Generate Go types from the OpenAPI 3.0 spec (api/openapi/v1alpha1/).
+	go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen \
+		-generate types \
+		-package v1alpha1openapi \
+		-o internal/openapi/v1alpha1/types.gen.go \
+		api/openapi/v1alpha1/agent-diagnostics.yaml
+	go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen \
+		-generate types \
+		-package v1alpha1openapi \
+		-o internal/openapi/v1alpha1/types_requests.gen.go \
+		api/openapi/v1alpha1/agent-requests.yaml
+
 .PHONY: fmt
 fmt: ## Run go fmt against code.
 	go fmt ./...

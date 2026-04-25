@@ -102,6 +102,8 @@ const (
 	verdictCorrect   = "correct"
 	verdictPartial   = "partial"
 	verdictIncorrect = "incorrect"
+
+	jsonNull = "null"
 )
 
 // terminalPhases are AgentRequest phases that represent a resolved request.
@@ -277,6 +279,23 @@ func main() {
 	mux.HandleFunc("PATCH /agent-diagnostics/{name}/status", server.handlePatchAgentDiagnosticStatus)
 	mux.HandleFunc("POST /agent-diagnostics/recompute-accuracy", server.handleRecomputeAccuracy)
 	mux.HandleFunc("GET /diagnostic-accuracy-summaries", server.handleListAccuracySummaries)
+
+	// v1alpha1 versioned endpoints — OpenAPI 3.0 contract in api/openapi/v1alpha1/
+	mux.HandleFunc("GET /v1alpha1/agent-diagnostics", server.v1alpha1ListAgentDiagnostics)
+	mux.HandleFunc("POST /v1alpha1/agent-diagnostics/recompute-accuracy", server.v1alpha1RecomputeAccuracy)
+	mux.HandleFunc("POST /v1alpha1/agent-diagnostics", server.v1alpha1CreateAgentDiagnostic)
+	mux.HandleFunc("GET /v1alpha1/agent-diagnostics/{name}", server.v1alpha1GetAgentDiagnostic)
+	mux.HandleFunc("PATCH /v1alpha1/agent-diagnostics/{name}/status", server.v1alpha1SetAgentDiagnosticVerdict)
+	mux.HandleFunc("GET /v1alpha1/agent-diagnostics/{name}/watch", server.v1alpha1WatchAgentDiagnostic)
+	mux.HandleFunc("GET /v1alpha1/diagnostic-accuracy-summaries", server.v1alpha1ListAccuracySummaries)
+
+	// v1alpha1 versioned endpoints — AgentRequests
+	mux.HandleFunc("GET /v1alpha1/agent-requests", server.v1alpha1ListAgentRequests)
+	mux.HandleFunc("POST /v1alpha1/agent-requests", server.v1alpha1CreateAgentRequest)
+	mux.HandleFunc("GET /v1alpha1/agent-requests/{name}", server.v1alpha1GetAgentRequest)
+	mux.HandleFunc("POST /v1alpha1/agent-requests/{name}/phase", server.v1alpha1TransitionAgentRequestPhase)
+	mux.HandleFunc("PATCH /v1alpha1/agent-requests/{name}/verdict", server.v1alpha1SubmitAgentRequestVerdict)
+
 	mux.HandleFunc("POST /governed-resources", server.handleCreateGovernedResource)
 	mux.HandleFunc("GET /governed-resources", server.handleListGovernedResources)
 	mux.HandleFunc("GET /governed-resources/{name}", server.handleGetGovernedResource)
@@ -445,7 +464,7 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 	}
 
 	var parameters *apiextensionsv1.JSON
-	if len(body.Parameters) > 0 && string(body.Parameters) != "null" {
+	if len(body.Parameters) > 0 && string(body.Parameters) != jsonNull {
 		parameters = &apiextensionsv1.JSON{Raw: body.Parameters}
 	}
 

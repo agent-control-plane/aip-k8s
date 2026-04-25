@@ -1,0 +1,485 @@
+openapi: "3.0.3"
+info:
+  title: AIP Kubernetes Gateway API — Agent Diagnostics
+  version: v1alpha1
+  description: >
+    AgentDiagnostic and DiagnosticAccuracySummary endpoints for the AIP
+    governance control plane. All paths are prefixed with /v1alpha1/.
+    Namespace is always a query parameter; it is never part of the path.
+
+servers:
+  - url: /v1alpha1
+
+paths:
+  /agent-diagnostics:
+    get:
+      operationId: listAgentDiagnostics
+      summary: List AgentDiagnostic records
+      tags: [agent-diagnostics]
+      parameters:
+        - $ref: "#/components/parameters/namespace"
+        - name: agentIdentity
+          in: query
+          description: Filter by agent identity label
+          schema:
+            type: string
+        - name: correlationID
+          in: query
+          description: Filter by correlation ID label
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Maximum number of items to return (pagination)
+          schema:
+            type: integer
+            minimum: 1
+        - name: nextPageToken
+          in: query
+          description: Opaque continuation token from a previous list response
+          schema:
+            type: string
+        - name: createdAfter
+          in: query
+          description: "RFC3339 timestamp; return only records created after this time. Mutually exclusive with limit/nextPageToken."
+          schema:
+            type: string
+            format: date-time
+        - name: createdBefore
+          in: query
+          description: "RFC3339 timestamp; return only records created before this time. Mutually exclusive with limit/nextPageToken."
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentDiagnosticList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      operationId: createAgentDiagnostic
+      summary: Create an AgentDiagnostic record
+      description: >
+        Creates a new AgentDiagnostic. Returns 201 on successful creation.
+        Returns 200 with the existing record when an identical (agentIdentity,
+        diagnosticType, correlationID) triple already exists — idempotent dedup.
+        Namespace is supplied as a query parameter, not in the request body.
+      tags: [agent-diagnostics]
+      parameters:
+        - $ref: "#/components/parameters/namespace"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAgentDiagnosticRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentDiagnostic"
+        "200":
+          description: Duplicate — existing record returned unchanged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentDiagnostic"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /agent-diagnostics/recompute-accuracy:
+    post:
+      operationId: recomputeAccuracy
+      summary: Recompute DiagnosticAccuracySummary from scratch for an agent
+      description: >
+        Maintenance/recovery action. Scans all AgentDiagnostic records for the
+        given agent and rebuilds the accuracy counters from scratch. Requires
+        reviewer role. Use when incremental counters drift after a crash.
+      tags: [agent-diagnostics]
+      parameters:
+        - $ref: "#/components/parameters/namespace"
+        - name: agentIdentity
+          in: query
+          description: Agent identity to recompute; omit to recompute all agents
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Recompute completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /agent-diagnostics/{name}:
+    get:
+      operationId: getAgentDiagnostic
+      summary: Get a single AgentDiagnostic by name
+      tags: [agent-diagnostics]
+      parameters:
+        - $ref: "#/components/parameters/name"
+        - $ref: "#/components/parameters/namespace"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentDiagnostic"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /agent-diagnostics/{name}/status:
+    patch:
+      operationId: setAgentDiagnosticVerdict
+      summary: Set a reviewer verdict on an AgentDiagnostic
+      description: >
+        Records a reviewer's assessment (correct/incorrect/partial) on a
+        diagnostic. Updates the DiagnosticAccuracySummary incrementally.
+        Requires reviewer role. The reviewedBy field is set server-side from
+        the authenticated caller identity and is never accepted from the body.
+      tags: [agent-diagnostics]
+      parameters:
+        - $ref: "#/components/parameters/name"
+        - $ref: "#/components/parameters/namespace"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetVerdictRequest"
+      responses:
+        "200":
+          description: Verdict saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SetVerdictResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /agent-diagnostics/{name}/watch:
+    get:
+      operationId: watchAgentDiagnostic
+      summary: Watch a single AgentDiagnostic for changes via SSE
+      description: >
+        Streams Server-Sent Events for the named AgentDiagnostic. Each event
+        is a JSON-encoded WatchEvent. The stream closes when the resource is
+        deleted or the client disconnects.
+        NOTE: Not yet implemented — returns 501. Included in the spec so
+        clients can be generated ahead of the implementation.
+      tags: [agent-diagnostics]
+      parameters:
+        - $ref: "#/components/parameters/name"
+        - $ref: "#/components/parameters/namespace"
+      responses:
+        "200":
+          description: SSE stream of watch events
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/WatchEvent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          description: Not yet implemented
+
+  /diagnostic-accuracy-summaries:
+    get:
+      operationId: listAccuracySummaries
+      summary: List DiagnosticAccuracySummary records
+      tags: [diagnostic-accuracy-summaries]
+      parameters:
+        - $ref: "#/components/parameters/namespace"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccuracySummaryList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+components:
+  parameters:
+    name:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+
+    namespace:
+      name: namespace
+      in: query
+      description: 'Kubernetes namespace. Defaults to "default".'
+      schema:
+        type: string
+        default: default
+
+  schemas:
+    AgentDiagnostic:
+      type: object
+      required:
+        - name
+        - namespace
+        - createdAt
+        - agentIdentity
+        - diagnosticType
+        - correlationID
+        - summary
+      properties:
+        name:
+          type: string
+          description: Kubernetes object name (server-generated)
+        namespace:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        agentIdentity:
+          type: string
+          minLength: 1
+        diagnosticType:
+          type: string
+          minLength: 1
+        correlationID:
+          type: string
+          minLength: 1
+        summary:
+          type: string
+          maxLength: 1024
+        details:
+          description: Free-form agent-specific diagnostic data (any JSON value)
+          x-go-type: json.RawMessage
+        status:
+          $ref: "#/components/schemas/AgentDiagnosticStatus"
+
+    AgentDiagnosticStatus:
+      type: object
+      properties:
+        verdict:
+          type: string
+          enum: [correct, incorrect, partial]
+        reviewedBy:
+          type: string
+          description: Set server-side from the authenticated caller identity
+        reviewedAt:
+          type: string
+          format: date-time
+        reviewerNote:
+          type: string
+          maxLength: 512
+
+    AgentDiagnosticList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentDiagnostic"
+        nextPageToken:
+          type: string
+          description: Opaque pagination token; present only when more items exist
+
+    CreateAgentDiagnosticRequest:
+      type: object
+      required:
+        - agentIdentity
+        - diagnosticType
+        - correlationID
+        - summary
+      properties:
+        agentIdentity:
+          type: string
+          minLength: 1
+        diagnosticType:
+          type: string
+          minLength: 1
+        correlationID:
+          type: string
+          minLength: 1
+        summary:
+          type: string
+          minLength: 1
+          maxLength: 1024
+        details:
+          description: Free-form agent-specific diagnostic data (any JSON value)
+          x-go-type: json.RawMessage
+
+    SetVerdictRequest:
+      type: object
+      required: [verdict]
+      properties:
+        verdict:
+          type: string
+          enum: [correct, incorrect, partial]
+        reviewerNote:
+          type: string
+          maxLength: 512
+
+    SetVerdictResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+        warning:
+          type: string
+          description: Present when the accuracy summary update failed and a background recompute was triggered
+
+    MessageResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+
+    AccuracySummary:
+      type: object
+      required:
+        - name
+        - namespace
+        - agentIdentity
+        - totalReviewed
+        - correctCount
+        - partialCount
+        - incorrectCount
+      properties:
+        name:
+          type: string
+        namespace:
+          type: string
+        agentIdentity:
+          type: string
+        totalReviewed:
+          type: integer
+          format: int64
+          minimum: 0
+        correctCount:
+          type: integer
+          format: int64
+          minimum: 0
+        partialCount:
+          type: integer
+          format: int64
+          minimum: 0
+        incorrectCount:
+          type: integer
+          format: int64
+          minimum: 0
+        diagnosticAccuracy:
+          type: number
+          format: double
+          description: "(correctCount + 0.5 * partialCount) / totalReviewed; null when totalReviewed is 0"
+        lastUpdatedAt:
+          type: string
+          format: date-time
+
+    AccuracySummaryList:
+      type: object
+      description: >
+        Full list of DiagnosticAccuracySummary records. Pagination is
+        intentionally omitted — there is at most one summary per agent
+        identity, so cardinality is bounded by the number of agents.
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccuracySummary"
+
+    WatchEvent:
+      type: object
+      required: [type, object]
+      description: A single SSE payload for a watch stream
+      properties:
+        type:
+          type: string
+          enum: [ADDED, MODIFIED, DELETED]
+        object:
+          $ref: "#/components/schemas/AgentDiagnostic"
+
+    Problem:
+      type: object
+      description: RFC 7807 problem detail
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+
+  responses:
+    BadRequest:
+      description: Bad request — invalid input or missing required fields
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Forbidden:
+      description: Caller does not have the required role
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: Resource not found
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"

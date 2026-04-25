@@ -1,0 +1,6 @@
+# oapi-codegen v2 config for the AgentDiagnostic v1alpha1 API surface.
+# Run via: make generate-openapi
+package: v1alpha1openapi
+generate:
+  models: true
+output: ../../../internal/openapi/v1alpha1/types.gen.go

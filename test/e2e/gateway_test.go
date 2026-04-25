@@ -356,6 +356,16 @@ func gwPost(path, body string) (*http.Response, error) {
 	return http.Post(gwBaseURL+path, "application/json", strings.NewReader(body)) //nolint:noctx
 }
 
+// gwPatch sends a JSON PATCH to the gateway and returns the response.
+func gwPatch(path, body string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPatch, gwBaseURL+path, strings.NewReader(body)) //nolint:noctx
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return http.DefaultClient.Do(req) //nolint:noctx
+}
+
 // gwCleanup removes all AgentRequests, AgentDiagnostics, OpsLock Leases, and
 // the human-approval SafetyPolicy in ns. The gateway does not stamp a
 // test-specific label on resources it creates, so we delete all rather than
