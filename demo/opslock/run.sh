@@ -71,8 +71,10 @@ go run "${DEMO_DIR}/agent/main.go" \
   --gateway="${GATEWAY_URL}" --namespace="${NAMESPACE}" &
 PID_B=$!
 
+set +e
 wait $PID_A; STATUS_A=$?
 wait $PID_B; STATUS_B=$?
+set -e
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 

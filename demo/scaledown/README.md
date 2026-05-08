@@ -14,7 +14,7 @@ and ready replicas. Every autonomous attempt is blocked. The agent is forced to 
 to a human with full evidence — the contradiction between its stale cache and AIP's
 live verification is surfaced explicitly.
 
-```
+```text
 [Step 1] Agent attempts: delete payment-api (thinks it's idle)
          → AIP: DENIED — live endpoints detected, ready replicas > 0
 
@@ -127,7 +127,7 @@ Check: AWS Console → Bedrock → Model access → Anthropic → Claude Sonnet.
 
 ## Expected output
 
-```
+```text
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   IDLE RESOURCE REAPER  ·  ReACT Loop  ·  Governed by AIP
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

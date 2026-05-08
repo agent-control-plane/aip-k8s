@@ -17,8 +17,8 @@ kubectl delete auditrecords --all -n "$NAMESPACE" --ignore-not-found --timeout=3
 echo "Deleting SafetyPolicies..."
 kubectl delete safetypolicies --all -n "$NAMESPACE" --ignore-not-found
 
-echo "Deleting GovernedResources (cluster-scoped)..."
-kubectl delete governedresources --all --ignore-not-found
+echo "Deleting demo GovernedResources (cluster-scoped)..."
+kubectl delete governedresource kiro-prod-deployments scaledown-prod-deployments opslock-prod-deployments --ignore-not-found
 
 echo "Deleting AIP Leases..."
 kubectl get leases -n "$NAMESPACE" -o name 2>/dev/null | grep "aip-lock-" | xargs kubectl delete -n "$NAMESPACE" 2>/dev/null || true

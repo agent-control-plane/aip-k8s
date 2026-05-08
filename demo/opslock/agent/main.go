@@ -36,10 +36,13 @@ func poll(gateway, name, namespace string) (pollStatus, error) {
 	if err != nil {
 		return pollStatus{}, fmt.Errorf("polling %s: %w", name, err)
 	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		return pollStatus{}, fmt.Errorf("polling %s: unexpected status %d", name, resp.StatusCode)
+	}
 	var s pollStatus
-	_ = json.NewDecoder(resp.Body).Decode(&s)
-	if err := resp.Body.Close(); err != nil {
-		return s, fmt.Errorf("closing poll response body: %w", err)
+	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+		return pollStatus{}, fmt.Errorf("decoding poll response for %s: %w", name, err)
 	}
 	return s, nil
 }

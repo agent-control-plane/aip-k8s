@@ -54,7 +54,10 @@ const (
 )
 
 func submit(gateway string, body agentRequestBody) (string, error) {
-	b, _ := json.Marshal(body)
+	b, err := json.Marshal(body)
+	if err != nil {
+		return "", fmt.Errorf("marshaling request: %w", err)
+	}
 	resp, err := http.Post(gateway+"/agent-requests", "application/json", bytes.NewBuffer(b))
 	if err != nil {
 		return "", fmt.Errorf("failed to reach gateway: %w", err)
@@ -79,11 +82,15 @@ func submit(gateway string, body agentRequestBody) (string, error) {
 func pollStatus(gateway, namespace, name string) (phase string, conditions []struct {
 	Type   string `json:"type"`
 	Status string `json:"status"`
-}, auditEvents []string) {
+}, auditEvents []string, err error) {
 	url := fmt.Sprintf("%s/agent-requests/%s?namespace=%s", gateway, name, namespace)
-	resp, err := http.Get(url)
+	resp, err := http.Get(url) //nolint:noctx
 	if err != nil {
-		log.Fatalf("poll failed: %v", err)
+		return "", nil, nil, fmt.Errorf("poll %s: %w", name, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		return "", nil, nil, fmt.Errorf("poll %s: unexpected status %d", name, resp.StatusCode)
 	}
 	var status struct {
 		Phase      string `json:"phase"`
@@ -93,16 +100,22 @@ func pollStatus(gateway, namespace, name string) (phase string, conditions []str
 		} `json:"conditions"`
 		AuditEvents []string `json:"auditEvents"`
 	}
-	_ = json.NewDecoder(resp.Body).Decode(&status)
-	_ = resp.Body.Close()
-	return status.Phase, status.Conditions, status.AuditEvents
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return "", nil, nil, fmt.Errorf("decoding poll response for %s: %w", name, err)
+	}
+	return status.Phase, status.Conditions, status.AuditEvents, nil
 }
 
 // waitForInterception polls until AIP intercepts for human review (RequiresApproval) or reaches a terminal phase.
 func waitForInterception(gateway, namespace, name string) (phase string, requiresApproval bool) {
 	lastPhase := ""
 	for {
-		phase, conditions, auditEvents := pollStatus(gateway, namespace, name)
+		phase, conditions, auditEvents, err := pollStatus(gateway, namespace, name)
+		if err != nil {
+			log.Printf("poll error: %v", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
 		if phase != lastPhase && phase != "" {
 			fmt.Printf("  Phase: %s%s%s\n", cyan, phase, reset)
 			lastPhase = phase
@@ -127,7 +140,12 @@ func waitForInterception(gateway, namespace, name string) (phase string, require
 func waitForApproval(gateway, namespace, name string) string {
 	lastPhase := ""
 	for {
-		phase, _, auditEvents := pollStatus(gateway, namespace, name)
+		phase, _, auditEvents, err := pollStatus(gateway, namespace, name)
+		if err != nil {
+			log.Printf("poll error: %v", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
 		if phase != lastPhase && phase != "" {
 			fmt.Printf("  Phase: %s%s%s\n", cyan, phase, reset)
 			lastPhase = phase
@@ -254,13 +272,16 @@ func main() {
 	fmt.Println()
 	time.Sleep(2 * time.Second)
 
-	b, _ := json.Marshal(agentRequestBody{
+	b, err := json.Marshal(agentRequestBody{
 		AgentIdentity: agentIdentity,
 		Action:        "delete",
 		TargetURI:     targetURI,
 		Reason:        "Environment drift detected — deleting deployment for clean recreate",
 		Namespace:     *namespace,
 	})
+	if err != nil {
+		log.Fatalf("marshaling escalation request: %v", err)
+	}
 	resp, err := http.Post(*gateway+"/agent-requests", "application/json", bytes.NewBuffer(b))
 	if err != nil {
 		log.Fatalf("gateway unreachable: %v", err)

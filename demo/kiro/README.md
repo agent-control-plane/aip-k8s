@@ -12,7 +12,7 @@ A developer reviews the plan and approves it. Kiro then discovers environment dr
 execution and decides a full delete + recreate is the cleanest path — submitting a new intent
 without asking. AIP blocks it at the gate: `delete` was never part of the approved scope.
 
-```
+```text
 [Phase 1] Kiro submits kiro/deploy intent
           → AIP: RequireApproval (3 policies triggered)
           → Script pauses — waiting for human
@@ -71,7 +71,7 @@ controller is involved.
 
 ## Expected output
 
-```
+```text
 === KIRO SCENARIO: Autonomous Agent Scope Escalation ===
 
 [Phase 1] Kiro submits production deployment intent

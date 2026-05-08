@@ -11,12 +11,12 @@ spec:
   #     env: production
 
   # Optional: restrict CEL expressions that reference context.* fields to a
-  # specific context type (e.g. "k8s"). Must match GovernedResource.spec.contextFetcher.
-  # contextType: k8s
+  # specific context type (e.g. "k8s-deployment"). Must match GovernedResource.spec.contextFetcher.
+  # contextType: k8s-deployment
 
   rules:
     # Deny autonomous deletion of any resource with live traffic.
-    # Requires contextFetcher: k8s on the GovernedResource to populate target.*.
+    # Requires contextFetcher: k8s-deployment on the GovernedResource to populate target.*.
     - name: deny-delete-with-live-traffic
       type: StateEvaluation
       action: Deny

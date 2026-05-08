@@ -51,7 +51,7 @@ fi
 echo "  ✓ Dashboard running"
 
 echo "[ 5/7 ] Cleaning up any leftovers from previous runs..."
-kubectl delete agentrequests --all -n "${NAMESPACE}" --ignore-not-found > /dev/null 2>&1 || true
+kubectl delete agentrequests,auditrecords --all -n "${NAMESPACE}" --ignore-not-found > /dev/null 2>&1 || true
 kubectl delete -f "${DEMO_DIR}/k8s/payment-api.yaml" --namespace "${NAMESPACE}" --ignore-not-found > /dev/null 2>&1 || true
 echo "  ✓ Clean slate"
 

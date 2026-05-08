@@ -257,7 +257,9 @@ async function fetchAuditRecords(name) {
         const response = await apiFetch(
             `/api/audit-records?agentRequest=${encodeURIComponent(name)}&namespace=${encodeURIComponent(ns)}`);
         if (!response.ok) return;
-        state.auditRecords = await response.json();
+        const records = await response.json();
+        if (state.selectedRequest?.metadata?.name !== name) return;
+        state.auditRecords = records;
         renderDetails();
     } catch (err) {
         console.error('Failed to fetch audit records:', err);
@@ -536,7 +538,7 @@ function renderGovernanceTimeline(phase, needsApproval) {
     ] : hasLockEvent || isLockDenied ? [
         { label: 'Intent declared',  done: true },
         { label: 'Policy evaluated', done: true },
-        { label: 'OpsLock',          done: hasLockEvent, active: phase === 'Pending', denied: isLockDenied },
+        { label: 'OpsLock',          done: hasLockEvent || ['Approved','Executing','Completed'].includes(phase), active: phase === 'Pending', denied: isLockDenied },
         { label: 'Action executed',  done: phase === 'Completed', active: phase === 'Executing' },
     ] : [
         { label: 'Intent declared',  done: true },
@@ -1094,16 +1096,20 @@ window.openGRForm = async function(name) {
 
 window.submitGRForm = async function(name) {
     const split = s => s.split(',').map(v => v.trim()).filter(Boolean);
+    const fetcher = document.getElementById('gr-fetcher').value;
+    const spec = {
+        uriPattern: document.getElementById('gr-pattern').value.trim(),
+        permittedActions: split(document.getElementById('gr-actions').value),
+        permittedAgents: split(document.getElementById('gr-agents').value),
+        description: document.getElementById('gr-desc').value.trim(),
+        soakMode: document.getElementById('gr-soak').checked,
+    };
+    if (fetcher && fetcher !== 'none') {
+        spec.contextFetcher = fetcher;
+    }
     const body = {
         metadata: { name: document.getElementById('gr-name').value.trim() },
-        spec: {
-            uriPattern: document.getElementById('gr-pattern').value.trim(),
-            permittedActions: split(document.getElementById('gr-actions').value),
-            permittedAgents: split(document.getElementById('gr-agents').value),
-            contextFetcher: document.getElementById('gr-fetcher').value,
-            description: document.getElementById('gr-desc').value.trim(),
-            soakMode: document.getElementById('gr-soak').checked,
-        },
+        spec,
     };
 
     const method = name ? 'PUT' : 'POST';
