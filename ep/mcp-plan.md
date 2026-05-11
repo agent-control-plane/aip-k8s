@@ -75,11 +75,11 @@ New repo: `agent-control-plane/aip-demo-agent` (Python)
 - `requirements.txt` — `langchain`, `requests`
 - `README.md` — step-by-step blog companion (< 30 min follow-along)
 
-**Dependencies:** Requires #183, #184, #185 merged (all done). Requires `aip-demo-nodepool` repo created.
+**Dependencies:** Requires #183, #185 merged (done) and #184 (partial — fetcher gap resolved in Phase 5 / PR #196). Requires `aip-demo-nodepool` repo created.
 
 ---
 
-## Phase 5 — Controller-Side GitHub MCP Fetcher ✅ DONE (PR #TBD)
+## Phase 5 — Controller-Side GitHub MCP Fetcher 🔍 IN REVIEW (PR #196)
 
 **Gap from Phase 2 was completed here.** The `github://` URI context fetcher now calls the
 in-cluster GitHub MCP server instead of the GitHub REST API directly.

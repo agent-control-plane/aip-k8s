@@ -85,15 +85,18 @@ func TestFetchGitHubMCP_FileContents(t *testing.T) {
 			g.Expect(call.Arguments["branch"]).To(gomega.Equal("main"))
 
 			w.Header().Set("Content-Type", "application/json")
+			// writing to in-memory test recorder cannot fail
 			_, _ = fmt.Fprintln(w, `{"content":[{"type":"text","text":"replicas: 5\nmaxNodes: 10"}],"isError":false}`)
 			return
 		}
 		if call.Name == "list_pull_requests" {
 			w.Header().Set("Content-Type", "application/json")
+			// writing to in-memory test recorder cannot fail
 			_, _ = fmt.Fprintln(w, `{"content":[{"type":"text","text":"[{\"id\":1},{\"id\":2}]"}],"isError":false}`)
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
+		// writing to in-memory test recorder cannot fail
 		_, _ = fmt.Fprintln(w, `{"message":"unknown tool"}`)
 	}))
 	defer server.Close()
@@ -137,6 +140,7 @@ func TestFetchGitHubMCP_RepoOnly(t *testing.T) {
 			g.Expect(call.Arguments["state"]).To(gomega.Equal("open"))
 
 			w.Header().Set("Content-Type", "application/json")
+			// writing to in-memory test recorder cannot fail
 			_, _ = fmt.Fprintln(w, `{"content":[{"type":"text","text":"[{\"id\":1},{\"id\":2},{\"id\":3}]"}],"isError":false}`)
 		} else {
 			w.WriteHeader(http.StatusNotFound)
@@ -193,6 +197,8 @@ func TestFetchGitHubMCP_InvalidURI(t *testing.T) {
 
 func newScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
-	_ = corev1.AddToScheme(s)
+	if err := corev1.AddToScheme(s); err != nil {
+		panic(fmt.Sprintf("failed to add corev1 to scheme: %v", err))
+	}
 	return s
 }

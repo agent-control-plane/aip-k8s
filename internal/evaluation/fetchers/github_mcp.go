@@ -37,12 +37,17 @@ type mcpToolError struct {
 	Code    int    `json:"code"`
 }
 
-var mcpHTTPClient = &http.Client{Timeout: 15 * time.Second}
+const (
+	defaultMCPHTTPTimeout = 15 * time.Second
+	defaultPRPerPage      = 100
+)
+
+var mcpHTTPClient = &http.Client{Timeout: defaultMCPHTTPTimeout}
 
 func parseGitHubURI(targetURI string) (org, repo, branch, filePath string, err error) {
 	u, perr := url.Parse(targetURI)
 	if perr != nil || u.Scheme != "github" {
-		return "", "", "", "", fmt.Errorf("invalid GitHub URI: %s", targetURI)
+		return "", "", "", "", fmt.Errorf("parseGitHubURI: invalid GitHub URI %q", targetURI)
 	}
 
 	org = u.Host
@@ -80,7 +85,7 @@ func callMCPTool(ctx context.Context, toolName string, args map[string]any) (*mc
 	if err != nil {
 		return nil, fmt.Errorf("MCP server unreachable: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { _ = resp.Body.Close() }() // body fully consumed; Close errors are not actionable here
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -165,7 +170,7 @@ func FetchGitHubMCP(ctx context.Context, _ client.Client, targetURI string) (*ap
 		"owner":    org,
 		"repo":     repoName,
 		"state":    "open",
-		"per_page": 100,
+		"per_page": defaultPRPerPage,
 	})
 	if err == nil {
 		text := extractTextContent(prResp)
@@ -175,6 +180,9 @@ func FetchGitHubMCP(ctx context.Context, _ client.Client, targetURI string) (*ap
 		}
 	}
 
-	raw, _ := json.Marshal(result)
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("marshal result failed: %w", err)
+	}
 	return &apiextensionsv1.JSON{Raw: raw}, nil
 }
