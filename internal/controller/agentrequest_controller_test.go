@@ -451,15 +451,17 @@ var _ = Describe("AgentRequest Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
 
-			// Mock GitHub API server to return JSON that MISMATCHES schema
-			// Schema requires "title", but we return "wrong_field"
+			// Mock MCP server — the controller calls list_pull_requests for the repo URI.
+			// The MCP response returns a PR list (no "title" field), which should trigger
+			// a FetcherSchemaViolation since the schema requires "title".
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = fmt.Fprintln(w, `{"wrong_field":"data"}`)
+				// Return empty PR list in MCP format — schema requires "title" which is absent
+				_, _ = fmt.Fprintln(w, `{"content":[{"type":"text","text":"[]"}],"isError":false}`)
 			}))
 			defer server.Close()
-			fetchers.GitHubBaseURL = server.URL
-			defer func() { fetchers.GitHubBaseURL = "https://api.github.com" }()
+			fetchers.GitHubMCPURL = server.URL
+			defer func() { fetchers.GitHubMCPURL = "http://github-mcp.aip-k8s-system.svc" }()
 
 			reqName := "schema-fail-req"
 			reqNN := types.NamespacedName{Name: reqName, Namespace: "default"}

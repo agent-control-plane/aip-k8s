@@ -1234,7 +1234,7 @@ func (r *AgentRequestReconciler) fetchContextFromProvider(ctx context.Context, a
 	case "karpenter":
 		fetcher = fetchers.FetchKarpenter
 	case "github":
-		fetcher = fetchers.FetchGitHub
+		fetcher = fetchers.FetchGitHubMCP
 	default:
 		return nil, fmt.Errorf("unknown fetcher: %s", fetcherName)
 	}
