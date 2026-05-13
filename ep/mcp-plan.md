@@ -226,7 +226,327 @@ in-cluster GitHub MCP server instead of the GitHub REST API directly.
 
 ---
 
-## Phase 6 — `cmd/aip-mcp` Binary Split ❌ NOT STARTED (deferred)
+## Phase 6 — AIP as a Native MCP Server (#203) ❌ NOT STARTED
+
+### Context
+
+Phases 1–5 cover AIP *consuming* MCP servers (github-mcp-server) for provider context
+and tool call forwarding. This phase covers the inverse: **AIP *exposing itself* as an
+MCP server** so that MCP-native clients (Claude Code, Gemini, Codex) can point directly
+at the AIP gateway and get governance for free.
+
+Today `POST /mcp-proxy/{server}/{tool}` is a custom REST shim — not MCP protocol. An
+agent using Claude Code cannot point `--mcp-server-url` at the gateway and have it work.
+This phase fixes that.
+
+Both endpoints coexist permanently:
+
+| Endpoint | Audience |
+|---|---|
+| `POST /mcp-proxy/{server}/{tool}` | Non-MCP clients (K8s controllers, scripts, existing integrations) |
+| `POST /mcp` | MCP-native clients (Claude Code, Gemini, Codex) |
+
+`/mcp` and `/mcp-proxy` share the same upstream forwarding logic — `/mcp` is a
+protocol-compliant front-end over the same `mcp_proxy.go` internals.
+
+---
+
+### Transport: Streamable HTTP (MCP spec 2025-03-26)
+
+Target clients are Claude Code, Gemini, and Codex. All three support the
+**Streamable HTTP** transport (spec 2025-03-26). This is the only transport implemented.
+
+**`GET /mcp` SSE endpoint: explicitly out of scope for v1.**
+The older HTTP+SSE transport (`GET /mcp` for server→client stream, `POST /mcp/message`
+for client→server) is used by some older clients. It requires session IDs, message
+queues, and per-connection goroutines. Deferred. Streamable HTTP covers 95%+ of real
+clients today.
+
+Clients that require `GET /mcp` can continue using `/mcp-proxy` directly.
+
+---
+
+### Design Decisions
+
+#### Q1 — Auth model for `POST /mcp` and `/mcp-proxy`
+
+**Decision: both endpoints on the main `mux` behind `authMiddleware` + AIP JWT for writes.**
+
+Both `/mcp-proxy/{server}/{tool}` and `POST /mcp` are registered on the main mux so that
+`authMiddleware` controls OIDC enforcement via the `authRequired` flag:
+
+- **Local dev (no `--oidc-issuer-url`)**: `authRequired=false`, `authMiddleware` is a
+  no-op proxy-header middleware — both endpoints work without any OIDC token.
+- **Production (`--oidc-issuer-url` set)**: `authRequired=true`, OIDC enforced on every
+  request to both endpoints.
+
+This is not a breaking change for existing callers: anyone running without OIDC configured
+today continues to work exactly as before.
+
+Auth matrix (applies to both endpoints):
+
+```text
+authRequired=false (local dev):
+  all methods / tools → no OIDC required; write tools still require AIP JWT
+
+authRequired=true (production):
+  initialize / notifications/initialized → OIDC required
+  tools/list                            → OIDC required
+  tools/call read tools                 → OIDC required (identity for audit trail)
+  tools/call write tools                → OIDC required + X-AIP-Authorization: Bearer <aip-jwt>
+```
+
+Note on `initialize`: Streamable HTTP clients (Claude Code, Gemini, Codex) configure auth
+at the server URL level and send the `Authorization` header on every request including
+`initialize`. There is no pre-credentials handshake in this transport. OIDC is enforced
+uniformly across all methods when `authRequired=true`.
+
+Rationale: MCP-native clients already carry OIDC identity. The AIP JWT is an additional
+authorization layer for writes, not a replacement for identity. Moving `/mcp-proxy` onto
+the main mux unblocks read-path identity attribution (#204) and is consistent with
+the `/mcp` endpoint design.
+
+#### Q2 — Tool name prefixing in `tools/list`
+
+**Decision: Option A — prefixed names (`{server}/{tool}`).**
+
+The gateway federates multiple MCP servers (github, jira, k8s, etc.). Flat tool names
+collide when two servers expose a tool with the same name (e.g. both github and jira
+could expose `create_issue`). Prefixing is the standard approach in multi-server MCP
+gateways.
+
+```json
+{
+  "tools": [
+    { "name": "github/create_pull_request", "description": "...", "inputSchema": {...} },
+    { "name": "github/get_file_contents",   "description": "...", "inputSchema": {...} },
+    { "name": "jira/create_issue",          "description": "...", "inputSchema": {...} }
+  ]
+}
+```
+
+`tools/call` uses the same prefixed name. The handler splits on `/` to resolve the
+server and tool name, then delegates to the existing `findMCPServer` + `findTool`
+helpers in `mcp_proxy.go`.
+
+Read-only status, JWT enforcement, and `enforceRepoClaim` all apply identically to
+`/mcp-proxy` — the prefixed name is unwrapped before reaching that logic.
+
+#### Q3 — `GET /mcp` SSE endpoint scope
+
+**Decision: not implemented in v1.**
+
+Streamable HTTP (`POST /mcp` only) covers Claude Code, Gemini, and Codex. The older
+HTTP+SSE transport is deferred. This is explicitly documented in the EP so reviewers
+understand it is a known gap, not an oversight.
+
+If a specific client requires `GET /mcp` it can be added as a minimal stub in a
+follow-up PR without touching the core `POST /mcp` logic.
+
+#### Q4 — E2E test coverage
+
+**Decision: add one e2e scenario to `test/e2e_mcp/` exercising `POST /mcp`.**
+
+Unit and integration tests cover `initialize`, `tools/list`, and error paths. One e2e
+test case exercises the full `tools/call` stack for a write tool (same PR creation flow
+as Scenario B) via `POST /mcp` with a prefixed tool name. This proves the entire path:
+OIDC → AIP JWT → JSON-RPC dispatch → upstream MCP → PR created.
+
+Existing Scenario A and B tests (`/mcp-proxy` path) are unchanged.
+
+---
+
+### JSON-RPC 2.0 Method Dispatch
+
+`POST /mcp` accepts `Content-Type: application/json` with a JSON-RPC 2.0 envelope:
+
+```json
+{ "jsonrpc": "2.0", "id": 1, "method": "<method>", "params": { ... } }
+```
+
+Supported methods:
+
+| Method | Auth (`authRequired=true`) | Behaviour |
+|---|---|---|
+| `initialize` | OIDC | Return server info, protocol version, capabilities |
+| `notifications/initialized` | OIDC | No-op acknowledgement, return empty result |
+| `tools/list` | OIDC | Return all tools from all registered MCP servers, prefixed |
+| `tools/call` | OIDC + AIP JWT (writes) | Delegate to existing proxy logic |
+
+Unknown methods return JSON-RPC error `-32601` (Method not found).
+
+`initialize` response:
+
+```json
+{
+  "jsonrpc": "2.0", "id": 1,
+  "result": {
+    "protocolVersion": "2025-03-26",
+    "serverInfo": { "name": "aip-gateway", "version": "v1alpha1" },
+    "capabilities": { "tools": {} }
+  }
+}
+```
+
+---
+
+### Files
+
+```text
+internal/mcp/protocol.go          — JSON-RPC 2.0 request/response structs + error codes
+cmd/gateway/mcp_handler.go        — handleMCP: dispatches initialize/tools/list/tools/call
+cmd/gateway/mcp_handler_test.go   — unit + integration tests
+cmd/gateway/main.go               — move /mcp-proxy to main mux; register POST /mcp on main mux
+test/e2e_mcp/mcp_e2e_test.go     — Scenario C: tools/call via POST /mcp
+docs/api-reference.md             — document /mcp endpoints and auth rules
+```
+
+No changes to controller, CRDs, or existing e2e tests.
+
+Two changes touch `/mcp-proxy` specifically:
+1. `main.go` — move registration from `publicMux` to the main mux (remove the path prefix
+   check that short-circuits `authMiddleware` for `/mcp-proxy/`).
+2. `mcp_proxy.go` — `handleMCPProxy` currently reads the AIP JWT from `Authorization: Bearer`.
+   With OIDC consuming `Authorization`, write-tool JWT validation must move to
+   `X-AIP-Authorization: Bearer <aip-jwt>`. Same header convention as `handleMCP`.
+
+### Migration: Breaking changes to `/mcp-proxy`
+
+The move from `Authorization` to `X-AIP-Authorization` and the re-registration on the main
+mux are breaking changes for existing `/mcp-proxy` clients. Follow this migration plan.
+
+#### 1. Client migration steps
+
+1. **Update write-tool requests**: Change the AIP JWT header from `Authorization` to
+   `X-AIP-Authorization` in every `POST /mcp-proxy/{server}/{tool}` call.
+2. **Keep OIDC in `Authorization`** (if OIDC is enabled). The `Authorization` header now
+   carries only the OIDC Bearer token for gateway authentication. If OIDC is not configured,
+   omit `Authorization` (the gateway falls back to proxy headers).
+3. **Read-only tools**: No change — they never required an AIP JWT.
+
+**Before:**
+```text
+Authorization: Bearer <aip-jwt>
+```
+
+**After:**
+```text
+Authorization: Bearer <oidc-token>       # only if OIDC is enabled
+X-AIP-Authorization: Bearer <aip-jwt>    # always for write tools
+```
+
+#### 2. Transition period and dual-header acceptance
+
+The gateway accepts **only** `X-AIP-Authorization`. There is no fallback to `Authorization`
+for the AIP JWT — the `Authorization` header is exclusively used by the OIDC middleware
+(on the main mux). Clients must switch before upgrading.
+
+#### 3. Communication plan
+
+| Audience | Message | Channel |
+|---|---|---|
+| Internal agent authors | "AIP JWT header moved to `X-AIP-Authorization`. Update your HTTP client code before upgrading to `v1alpha1`." | Slack #agent-dev |
+| External integrators | Patch notes + migration guide in release. | GitHub release notes |
+| E2e test owners | E2e tests updated to use `X-AIP-Authorization`. | PR review (#203) |
+
+**Rollout timeline:**
+- **Phase 1 (cutover)**: Gateway starts rejecting `Authorization`-based AIP JWTs.
+  All `/mcp-proxy` calls must use `X-AIP-Authorization`.
+- **Phase 2 (stabilize)**: Monitor for 403/401 errors from clients that haven't migrated.
+  No deprecation warning emitted because both headers cannot coexist on the main mux
+  (OIDC middleware would intercept `Authorization`).
+
+#### 4. Client checklist
+
+- [ ] Scripts / CI pipelines that call `/mcp-proxy` with AIP JWTs
+- [ ] Demo apps and example code in `config/samples/`
+- [ ] E2e test suite (`test/e2e_mcp/`)
+- [ ] Any client registered in `MCP_REGISTRY` or `AIP_MCP_TOKEN` env (these are upward
+      tokens, not affected — only the client-to-gateway header changes)
+
+**Validation steps:**
+1. Deploy the updated gateway.
+2. Call a write tool with the old `Authorization` header → expect `401`.
+3. Call the same tool with `X-AIP-Authorization` → expect `200`.
+4. Call a read-only tool with no AIP JWT → expect `200` (no change).
+5. Run `make test-e2e-mcp` (both Scenario B and Scenario C exercise the new header).
+
+---
+
+### Auth Flow Detail
+
+Both `/mcp-proxy` and `POST /mcp` share the same outer auth layer:
+
+```text
+Client → POST /mcp-proxy/{server}/{tool}   OR   POST /mcp
+         └── authMiddleware (main mux)
+             ├── authRequired=false → pass through (local dev, no OIDC configured)
+             └── authRequired=true  → validate OIDC token, extract caller identity into ctx
+
+         /mcp-proxy path:
+             ├── if tool.ReadOnly → forward, log identity from ctx
+             └── if !tool.ReadOnly
+                 ├── extract X-AIP-Authorization: Bearer <aip-jwt>
+                 ├── validate AIP JWT (Action == tool, Repo matches args)
+                 └── forward to upstream MCP server
+
+         POST /mcp path (handleMCP dispatches on method):
+             ├── initialize / notifications/initialized → return response (identity already in ctx)
+             ├── tools/list → identity from ctx used for audit log, return prefixed tool list
+             └── tools/call
+                 ├── resolve {server}/{tool} from prefixed name
+                 ├── if tool.ReadOnly → forward, log identity
+                 └── if !tool.ReadOnly
+                     ├── extract X-AIP-Authorization: Bearer <aip-jwt>
+                     ├── validate AIP JWT (Action == tool, Repo matches args)
+                     └── forward to upstream MCP server
+```
+
+---
+
+### Testing Strategy
+
+**Unit tests (`mcp_handler_test.go`):**
+- `initialize` returns correct protocol version and capabilities
+- `notifications/initialized` returns empty result, no error
+- `tools/list` returns all tools from all servers with `{server}/{tool}` prefix
+- `tools/call` read tool: succeeds with OIDC only, no AIP JWT needed
+- `tools/call` write tool: fails without AIP JWT (403), succeeds with valid JWT
+- `tools/call` unknown prefixed name: returns JSON-RPC -32602 (invalid params)
+- Unknown method: returns JSON-RPC -32601 (method not found)
+- Malformed JSON body: returns JSON-RPC -32700 (parse error)
+
+**Integration tests (in-process httptest server):**
+- Full `initialize` → `tools/list` → `tools/call` sequence
+- Write tool with mismatched Repo claim rejected
+- Read tool with no AIP JWT succeeds
+
+**E2E test (Scenario C in `test/e2e_mcp/`):**
+- `POST /mcp` with `tools/call` for `github/create_pull_request`
+- Same PR creation flow as Scenario B — proves the full stack end-to-end via native MCP
+
+---
+
+### What This Unlocks
+
+Once this lands, the gateway is a real MCP server. A developer can add it to Claude Code:
+
+```json
+{
+  "mcpServers": {
+    "aip": {
+      "url": "https://aip-gateway.internal/mcp",
+      "headers": { "Authorization": "Bearer <oidc-token>" }
+    }
+  }
+}
+```
+
+Every tool call goes through AIP governance automatically. No agent code changes needed.
+
+---
+
+## Phase 7 — `cmd/aip-mcp` Binary Split ❌ NOT STARTED (deferred)
 
 Extract the MCP proxy out of the gateway binary into its own `cmd/aip-mcp` binary.
 

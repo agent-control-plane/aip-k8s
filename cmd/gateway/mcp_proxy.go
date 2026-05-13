@@ -1,19 +1,24 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/agent-control-plane/aip-k8s/internal/jwt"
 	"github.com/agent-control-plane/aip-k8s/internal/mcp"
+)
+
+var (
+	ErrJWTMissing       = errors.New("missing AIP bearer token")
+	ErrJWTInvalid       = errors.New("invalid AIP token")
+	ErrJWTActionDenied  = errors.New("tool not allowed for this action")
+	ErrJWTNotConfigured = errors.New("JWT signing not configured")
 )
 
 const mcpRequestTimeout = 30 * time.Second
@@ -37,29 +42,22 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 	var claims *jwt.Claims
 	var agent, action, requestRef string
 	if !tool.ReadOnly {
-		if s.jwtManager == nil {
-			writeError(w, http.StatusServiceUnavailable, "JWT signing not configured")
+		var authErr error
+		claims, agent, action, requestRef, authErr = s.authorizeWriteTool(r, toolName)
+		if authErr != nil {
+			switch {
+			case errors.Is(authErr, ErrJWTNotConfigured):
+				writeError(w, http.StatusServiceUnavailable, authErr.Error())
+			case errors.Is(authErr, ErrJWTActionDenied):
+				writeError(w, http.StatusForbidden, authErr.Error())
+			default:
+				writeError(w, http.StatusUnauthorized, authErr.Error())
+			}
 			return
 		}
-		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, "Bearer ") {
-			writeError(w, http.StatusUnauthorized, "missing bearer token")
-			return
-		}
-		token := strings.TrimPrefix(auth, "Bearer ")
-		var err error
-		claims, err = s.jwtManager.ValidateToken(token)
-		if err != nil {
-			writeError(w, http.StatusUnauthorized, "invalid token: "+err.Error())
-			return
-		}
-		if claims.Action != toolName {
-			writeError(w, http.StatusForbidden, "tool not allowed for this action")
-			return
-		}
-		agent = claims.Subject
-		action = claims.Action
-		requestRef = claims.Request
+	} else {
+		agent = callerSubFromCtx(r.Context())
+		action = toolName
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
@@ -69,7 +67,7 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rpcBody, args, err := buildJSONRPCRequest(body, toolName)
+	args, err := parseProxyBody(body, toolName)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
@@ -82,48 +80,10 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), mcpRequestTimeout)
-	defer cancel()
-
-	mcpURL := strings.TrimSuffix(mcpServer.URL, "/") + "/tools/call"
-	req, err := http.NewRequestWithContext(ctx, "POST", mcpURL, bytes.NewReader(rpcBody))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create request")
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	bearerToken := mcpServer.BearerToken
-	if bearerToken == "" {
-		bearerToken = os.Getenv("AIP_MCP_TOKEN")
-	}
-	if bearerToken != "" {
-		req.Header.Set("Authorization", "Bearer "+bearerToken)
-	}
-
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "MCP server unavailable: "+err.Error())
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read MCP response")
-		return
-	}
-
-	s.emitMCPLog(agent, serverName, toolName, action, resp.StatusCode, requestRef, mcpURL)
-
-	if resp.StatusCode != http.StatusOK {
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("MCP server returned status %d", resp.StatusCode))
-		return
-	}
-
-	result, rpcErr := extractMCPResult(respBody)
-	if rpcErr != "" {
-		writeError(w, http.StatusBadGateway, rpcErr)
+	result, errMsg := s.forwardToolCall(r.Context(), mcpServer, args, toolName, 1)
+	if errMsg != "" {
+		s.emitMCPLog(agent, serverName, toolName, action, http.StatusBadGateway, requestRef, mcpServer.URL)
+		writeError(w, http.StatusBadGateway, errMsg)
 		return
 	}
 
@@ -137,10 +97,12 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 				contentStr = textBlock.Text
 			}
 		}
+		s.emitMCPLog(agent, serverName, toolName, action, http.StatusBadGateway, requestRef, mcpServer.URL)
 		writeError(w, http.StatusBadGateway, contentStr)
 		return
 	}
 
+	s.emitMCPLog(agent, serverName, toolName, action, http.StatusOK, requestRef, mcpServer.URL)
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -215,43 +177,51 @@ func (s *Server) findMCPServer(name string) *MCPServer {
 }
 
 func (s *Server) findTool(server *MCPServer, toolName string) *MCPTool {
-	for _, tool := range server.Tools {
-		if tool.Name == toolName {
-			return &tool
+	for i := range server.Tools {
+		if server.Tools[i].Name == toolName {
+			return &server.Tools[i]
 		}
 	}
 	return nil
 }
 
-// buildJSONRPCRequest converts the caller's tool-call body to a JSON-RPC 2.0
-// request suitable for forwarding to the MCP server.
-func buildJSONRPCRequest(body []byte, toolName string) ([]byte, map[string]any, error) {
+// parseProxyBody extracts arguments from the proxy request body and validates
+// the tool name matches the path parameter.
+func parseProxyBody(body []byte, toolName string) (map[string]any, error) {
 	var payload struct {
 		Name      string         `json:"name"`
 		Arguments map[string]any `json:"arguments"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if payload.Name != "" && payload.Name != toolName {
-		return nil, nil, fmt.Errorf("tool name mismatch: body has %q, path has %q", payload.Name, toolName)
+		return nil, fmt.Errorf("tool name mismatch: body has %q, path has %q", payload.Name, toolName)
 	}
-	payload.Name = toolName
+	return payload.Arguments, nil
+}
 
-	rpcReq := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "tools/call",
-		"params": map[string]any{
-			"name":      toolName,
-			"arguments": payload.Arguments,
-		},
+// authorizeWriteTool validates the AIP JWT from X-AIP-Authorization for a write tool.
+// Returns the claims and derived fields on success. Returns an error on failure.
+// Read-only tools skip authorization and return without error.
+func (s *Server) authorizeWriteTool(r *http.Request, toolName string) (*jwt.Claims, string, string, string, error) {
+	if s.jwtManager == nil {
+		return nil, "", "", "", ErrJWTNotConfigured
 	}
-	encoded, err := json.Marshal(rpcReq)
+	auth := r.Header.Get("X-AIP-Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return nil, "", "", "", ErrJWTMissing
+	}
+	token := strings.TrimPrefix(auth, "Bearer ")
+	claims, err := s.jwtManager.ValidateToken(token)
 	if err != nil {
-		return nil, nil, err
+		log.Printf("JWT validation failed: %v", err)
+		return nil, "", "", "", ErrJWTInvalid
 	}
-	return encoded, payload.Arguments, nil
+	if claims.Action != toolName {
+		return nil, "", "", "", ErrJWTActionDenied
+	}
+	return claims, claims.Subject, claims.Action, claims.Request, nil
 }
 
 type mcpProxyLog struct {

@@ -45,6 +45,9 @@ var handlerDescriptions = map[string]string{
 	"GetAgentGraduationPolicy":    "Get an AgentGraduationPolicy by name",
 	"ReplaceAgentGraduationPolicy": "Replace an AgentGraduationPolicy",
 	"DeleteAgentGraduationPolicy": "Delete an AgentGraduationPolicy",
+	"MCP":                        "Proxy MCP tool calls via JSON-RPC 2.0 (native MCP protocol)",
+	"MCPProxy":                   "Proxy MCP tool calls via REST (legacy, for non-MCP clients)",
+	"MCPRegistry":                "List available MCP servers and their tools",
 }
 
 type route struct {
@@ -128,7 +131,9 @@ func generateTable(routes []route) string {
 	for _, r := range routes {
 		desc, ok := handlerDescriptions[r.Handler]
 		if !ok {
-			continue
+			fmt.Fprintf(os.Stderr, "ERROR: handler %q (route %s %s) is missing from handlerDescriptions in %s\n",
+				r.Handler, r.Method, r.Path, os.Args[0])
+			os.Exit(1)
 		}
 		fmt.Fprintf(&b, "| `%s` | `%s` | %s |\n", r.Method, r.Path, desc)
 	}

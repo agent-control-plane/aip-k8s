@@ -41,6 +41,9 @@ make build-gateway
 | `GET` | `/audit-records` | List AuditRecords |
 | `GET` | `/governed-resources` | List GovernedResources |
 | `GET` | `/safety-policies` | List SafetyPolicies |
+| `POST` | `/mcp` | Proxy MCP tool calls via JSON-RPC 2.0 (native MCP protocol) |
+| `POST` | `/mcp-proxy/{server}/{tool}` | Proxy MCP tool calls via REST (legacy, for non-MCP clients) |
+| `GET` | `/mcp-registry` | List available MCP servers and their tools |
 | `POST` | `/agent-requests/recompute-accuracy` | Trigger accuracy recomputation |
 | `PUT` | `/agent-graduation-policies/{name}` | Replace an AgentGraduationPolicy |
 | `PUT` | `/governed-resources/{name}` | Replace a GovernedResource |
@@ -115,7 +118,8 @@ The gateway supports OIDC/JWT authentication. When enabled, every non-healthz re
 | `GET /diagnostic-accuracy-summaries` | Any authenticated |
 | `GET /agent-trust-profiles`, `GET /agent-trust-profiles/{name}` | `agent`, `reviewer`, or `admin` |
 | `GET /mcp-registry` | Any authenticated |
-| `POST /mcp-proxy/{server}/{tool}` | `agent` (requires valid AIP JWT) |
+| `POST /mcp-proxy/{server}/{tool}` | `agent` (AIP JWT in `X-AIP-Authorization` required for write tools; not required for read-only tools) |
+| `POST /mcp` | `agent` (OIDC required in production; write tools additionally require AIP JWT in `X-AIP-Authorization`) |
 | `POST /governed-resources` | `admin` |
 | `GET /governed-resources`, `GET /governed-resources/{name}` | `admin` |
 | `PUT /governed-resources/{name}` | `admin` |
@@ -128,6 +132,50 @@ The gateway supports OIDC/JWT authentication. When enabled, every non-healthz re
 | `GET /agent-graduation-policies`, `GET /agent-graduation-policies/{name}` | `admin` |
 | `PUT /agent-graduation-policies/{name}` | `admin` |
 | `DELETE /agent-graduation-policies/{name}` | `admin` |
+
+### AIP JWT for write tools
+
+Write tools (tools that modify state, such as `create_pull_request`) require a second, short-lived JWT sent via the `X-AIP-Authorization` header. This AIP JWT is distinct from the OIDC `Authorization: Bearer` token:
+
+- **`Authorization: Bearer <oidc-token>`** — authenticates the caller to the gateway (OIDC / proxy header).
+- **`X-AIP-Authorization: Bearer <aip-jwt>`** — authorizes a specific write action. The JWT is scoped to a single tool name, target repository, and request reference.
+
+**Read tools** (tools that only query state, such as `get_file_contents`) do not require an AIP JWT — they only need the OIDC-level authentication.
+
+To obtain an AIP JWT for a write tool, first submit an `AgentRequest` through the gateway, then approve it via `POST /agent-requests/{name}/approve`. The approve endpoint returns the signed JWT:
+
+```sh
+# 1. Submit an AgentRequest
+curl -s -X POST http://localhost:8080/agent-requests \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agentIdentity": "my-agent",
+    "action": "create_pull_request",
+    "targetURI": "github://acme/demo/files/main/config.json",
+    "reason": "Update config",
+    "namespace": "default"
+  }'
+
+# 2. Approve the request (reviewer with X-Remote-User or OIDC)
+curl -s -X POST "http://localhost:8080/agent-requests/<name>/approve?namespace=default" \
+  -H "Content-Type: application/json" \
+  -H "X-Remote-User: reviewer" \
+  -d '{"reason": "approved"}'
+
+# Response includes: {"token": "<aip-jwt>", "token_expires_at": "..."}
+```
+
+When calling a write tool via `/mcp-proxy` or `POST /mcp`, send both headers:
+
+```sh
+curl -X POST http://localhost:8080/mcp-proxy/github/create_pull_request \
+  -H "Authorization: Bearer <oidc-token>" \
+  -H "X-AIP-Authorization: Bearer <aip-jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"create_pull_request","arguments":{"owner":"acme","repo":"demo"}}'
+```
+
+The MCP registry at `GET /mcp-registry` lists each tool's `read_only` field so clients can determine whether a call requires an AIP JWT. Tools with `read_only: false` are write tools and require the `X-AIP-Authorization` header.
 
 ### Production setup (Helm)
 
