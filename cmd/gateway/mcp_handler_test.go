@@ -17,19 +17,26 @@ import (
 )
 
 func mcpRequest(method string, params any) []byte {
-	body, _ := json.Marshal(map[string]any{
+	body, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  method,
 		"params":  params,
 	})
+	if err != nil {
+		panic("mcpRequest: " + err.Error())
+	}
 	return body
 }
 
 func TestMCPHandler_Initialize(t *testing.T) {
 	g := gomega.NewWithT(t)
 	s := &Server{httpClient: &http.Client{}}
-	body := mcpRequest("initialize", map[string]any{"protocolVersion": "2025-03-26", "clientInfo": map[string]any{"name": "test"}})
+	initParams := map[string]any{
+		"protocolVersion": "2025-03-26",
+		"clientInfo":      map[string]any{"name": "test"},
+	}
+	body := mcpRequest("initialize", initParams)
 	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(string(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -63,6 +70,19 @@ func TestMCPHandler_NotificationsInitialized(t *testing.T) {
 	g.Expect(json.Unmarshal(rr.Body.Bytes(), &resp)).To(gomega.Succeed())
 	g.Expect(resp.Error).To(gomega.BeNil())
 	g.Expect(resp.Result).ToNot(gomega.BeNil())
+}
+
+func TestMCPHandler_NotificationsInitialized_NoID(t *testing.T) {
+	g := gomega.NewWithT(t)
+	s := &Server{httpClient: &http.Client{}}
+	body := []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(string(body)))
+	rr := httptest.NewRecorder()
+
+	s.handleMCP(rr, req)
+
+	g.Expect(rr.Code).To(gomega.Equal(http.StatusOK))
+	g.Expect(rr.Body.Len()).To(gomega.Equal(0))
 }
 
 func TestMCPHandler_ToolsList(t *testing.T) {
@@ -128,7 +148,7 @@ func TestMCPHandler_ToolsList_Empty(t *testing.T) {
 
 	var result mcp.ToolsListResult
 	g.Expect(json.Unmarshal(resp.Result, &result)).To(gomega.Succeed())
-	g.Expect(result.Tools).To(gomega.HaveLen(0))
+	g.Expect(result.Tools).To(gomega.BeEmpty())
 }
 
 func TestMCPHandler_ToolsCall_ReadOnly(t *testing.T) {
@@ -137,6 +157,7 @@ func TestMCPHandler_ToolsCall_ReadOnly(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
+		// Safe to ignore: writing to an in-memory test ResponseRecorder never fails.
 		_, _ = fmt.Fprintln(w, "event: message")
 		_, _ = fmt.Fprintln(w, `data: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"public data"}]}}`)
 	}))
@@ -201,6 +222,7 @@ func TestMCPHandler_ToolsCall_WriteTool_ValidJWT(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
+		// Safe to ignore: writing to an in-memory test server ResponseRecorder never fails.
 		_, _ = fmt.Fprintln(w, "event: message")
 		_, _ = fmt.Fprintln(w, `data: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"PR created"}]}}`)
 	}))
@@ -266,64 +288,46 @@ func TestMCPHandler_ToolsCall_WriteTool_InvalidJWT(t *testing.T) {
 	}
 	g.Expect(json.Unmarshal(rr.Body.Bytes(), &resp)).To(gomega.Succeed())
 	g.Expect(resp.Error).ToNot(gomega.BeNil())
+	g.Expect(resp.Error.Code).To(gomega.Equal(mcp.ErrCodeAuth))
 }
 
-func TestMCPHandler_ToolsCall_UnknownServer(t *testing.T) {
-	g := gomega.NewWithT(t)
-
-	s := &Server{httpClient: &http.Client{},
-		mcpServers: []MCPServer{
-			{Name: "github", URL: "http://example.com", Status: "available",
-				Tools: []MCPTool{{Name: "get_file_contents", ReadOnly: true}}},
-		},
+func TestMCPHandler_ToolsCall_Unknown(t *testing.T) {
+	tests := []struct {
+		name     string
+		toolName string
+	}{
+		{"unknown server", "jira/get_file_contents"},
+		{"unknown tool", "github/create_pull_request"},
 	}
-	body := mcpRequest("tools/call", mcp.ToolsCallParams{
-		Name:      "jira/get_file_contents",
-		Arguments: map[string]any{},
-	})
-	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(string(body)))
-	rr := httptest.NewRecorder()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			s := &Server{httpClient: &http.Client{},
+				mcpServers: []MCPServer{
+					{Name: "github", URL: "http://example.com", Status: "available",
+						Tools: []MCPTool{{Name: "get_file_contents", ReadOnly: true}}},
+				},
+			}
+			body := mcpRequest("tools/call", mcp.ToolsCallParams{
+				Name:      tc.toolName,
+				Arguments: map[string]any{},
+			})
+			req := httptest.NewRequest("POST", "/mcp", strings.NewReader(string(body)))
+			rr := httptest.NewRecorder()
 
-	s.handleMCP(rr, req)
+			s.handleMCP(rr, req)
 
-	g.Expect(rr.Code).To(gomega.Equal(http.StatusOK))
-	var resp struct {
-		Error *struct {
-			Code int `json:"code"`
-		} `json:"error"`
+			g.Expect(rr.Code).To(gomega.Equal(http.StatusOK))
+			var resp struct {
+				Error *struct {
+					Code int `json:"code"`
+				} `json:"error"`
+			}
+			g.Expect(json.Unmarshal(rr.Body.Bytes(), &resp)).To(gomega.Succeed())
+			g.Expect(resp.Error).ToNot(gomega.BeNil())
+			g.Expect(resp.Error.Code).To(gomega.Equal(mcp.ErrCodeInvalid))
+		})
 	}
-	g.Expect(json.Unmarshal(rr.Body.Bytes(), &resp)).To(gomega.Succeed())
-	g.Expect(resp.Error).ToNot(gomega.BeNil())
-	g.Expect(resp.Error.Code).To(gomega.Equal(mcp.ErrCodeInvalid))
-}
-
-func TestMCPHandler_ToolsCall_UnknownTool(t *testing.T) {
-	g := gomega.NewWithT(t)
-
-	s := &Server{httpClient: &http.Client{},
-		mcpServers: []MCPServer{
-			{Name: "github", URL: "http://example.com", Status: "available",
-				Tools: []MCPTool{{Name: "get_file_contents", ReadOnly: true}}},
-		},
-	}
-	body := mcpRequest("tools/call", mcp.ToolsCallParams{
-		Name:      "github/create_pull_request",
-		Arguments: map[string]any{},
-	})
-	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(string(body)))
-	rr := httptest.NewRecorder()
-
-	s.handleMCP(rr, req)
-
-	g.Expect(rr.Code).To(gomega.Equal(http.StatusOK))
-	var resp struct {
-		Error *struct {
-			Code int `json:"code"`
-		} `json:"error"`
-	}
-	g.Expect(json.Unmarshal(rr.Body.Bytes(), &resp)).To(gomega.Succeed())
-	g.Expect(resp.Error).ToNot(gomega.BeNil())
-	g.Expect(resp.Error.Code).To(gomega.Equal(mcp.ErrCodeInvalid))
 }
 
 func TestMCPHandler_MethodNotFound(t *testing.T) {
@@ -369,7 +373,7 @@ func TestMCPHandler_ParseError(t *testing.T) {
 func TestSplitPrefixedName_Valid(t *testing.T) {
 	g := gomega.NewWithT(t)
 	server, tool, err := splitPrefixedName("github/create_pull_request")
-	g.Expect(err).To(gomega.BeNil())
+	g.Expect(err).ToNot(gomega.HaveOccurred())
 	g.Expect(server).To(gomega.Equal("github"))
 	g.Expect(tool).To(gomega.Equal("create_pull_request"))
 }
@@ -377,28 +381,32 @@ func TestSplitPrefixedName_Valid(t *testing.T) {
 func TestSplitPrefixedName_NoSeparator(t *testing.T) {
 	g := gomega.NewWithT(t)
 	_, _, err := splitPrefixedName("justatoolname")
-	g.Expect(err).ToNot(gomega.BeNil())
+	g.Expect(err).To(gomega.HaveOccurred())
 }
 
 func TestSplitPrefixedName_EmptyParts(t *testing.T) {
 	g := gomega.NewWithT(t)
 	_, _, err := splitPrefixedName("/tool")
-	g.Expect(err).ToNot(gomega.BeNil())
+	g.Expect(err).To(gomega.HaveOccurred())
 	_, _, err = splitPrefixedName("server/")
-	g.Expect(err).ToNot(gomega.BeNil())
+	g.Expect(err).To(gomega.HaveOccurred())
 }
 
 func TestMCPHandler_FullSequence(t *testing.T) {
 	g := gomega.NewWithT(t)
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Safe to ignore: r.Body in a test server is always readable unless the test itself
+		// corrupts the request, which is not the case here.
 		body, _ := io.ReadAll(r.Body)
 		g.Expect(string(body)).To(gomega.ContainSubstring(`"method":"tools/call"`))
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
+		// Safe to ignore: writing to an in-memory test server ResponseRecorder never fails.
 		_, _ = fmt.Fprintln(w, "event: message")
-		_, _ = fmt.Fprintln(w, `data: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"integration result"}]}}`)
+		data := `data: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"integration result"}]}}`
+		_, _ = fmt.Fprintln(w, data)
 	}))
 	defer upstream.Close()
 
@@ -412,15 +420,26 @@ func TestMCPHandler_FullSequence(t *testing.T) {
 	if err := os.Setenv("MCP_REGISTRY", registry); err != nil {
 		t.Skipf("skipping: %v", err)
 	}
-	defer func() { _ = os.Unsetenv("MCP_REGISTRY") }()
+	defer func() {
+		// Safe to ignore: Unsetenv only errors on empty name, which is a compile-time constant.
+		_ = os.Unsetenv("MCP_REGISTRY")
+	}()
 
 	mcpServers, err := loadMCPRegistry()
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	s := &Server{jwtManager: mgr, httpClient: &http.Client{Timeout: 5 * time.Second}, mcpServers: mcpServers}
+	s := &Server{
+		jwtManager: mgr,
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+		mcpServers: mcpServers,
+	}
 
 	t.Run("initialize", func(t *testing.T) {
 		g := gomega.NewWithT(t)
-		body := mcpRequest("initialize", map[string]any{"protocolVersion": "2025-03-26", "clientInfo": map[string]any{"name": "test"}})
+		initParams := map[string]any{
+			"protocolVersion": "2025-03-26",
+			"clientInfo":      map[string]any{"name": "test"},
+		}
+		body := mcpRequest("initialize", initParams)
 		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(string(body)))
 		rr := httptest.NewRecorder()
 		s.handleMCP(rr, req)

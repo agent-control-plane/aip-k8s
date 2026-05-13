@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -11,6 +12,13 @@ import (
 
 	"github.com/agent-control-plane/aip-k8s/internal/jwt"
 	"github.com/agent-control-plane/aip-k8s/internal/mcp"
+)
+
+var (
+	ErrJWTMissing       = errors.New("missing AIP bearer token")
+	ErrJWTInvalid       = errors.New("invalid AIP token")
+	ErrJWTActionDenied  = errors.New("tool not allowed for this action")
+	ErrJWTNotConfigured = errors.New("JWT signing not configured")
 )
 
 const mcpRequestTimeout = 30 * time.Second
@@ -34,29 +42,19 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 	var claims *jwt.Claims
 	var agent, action, requestRef string
 	if !tool.ReadOnly {
-		if s.jwtManager == nil {
-			writeError(w, http.StatusServiceUnavailable, "JWT signing not configured")
+		var authErr error
+		claims, agent, action, requestRef, authErr = s.authorizeWriteTool(r, toolName)
+		if authErr != nil {
+			switch {
+			case errors.Is(authErr, ErrJWTNotConfigured):
+				writeError(w, http.StatusServiceUnavailable, authErr.Error())
+			case errors.Is(authErr, ErrJWTActionDenied):
+				writeError(w, http.StatusForbidden, authErr.Error())
+			default:
+				writeError(w, http.StatusUnauthorized, authErr.Error())
+			}
 			return
 		}
-		auth := r.Header.Get("X-AIP-Authorization")
-		if !strings.HasPrefix(auth, "Bearer ") {
-			writeError(w, http.StatusUnauthorized, "missing AIP bearer token")
-			return
-		}
-		token := strings.TrimPrefix(auth, "Bearer ")
-		var err error
-		claims, err = s.jwtManager.ValidateToken(token)
-		if err != nil {
-			writeError(w, http.StatusUnauthorized, "invalid token: "+err.Error())
-			return
-		}
-		if claims.Action != toolName {
-			writeError(w, http.StatusForbidden, "tool not allowed for this action")
-			return
-		}
-		agent = claims.Subject
-		action = claims.Action
-		requestRef = claims.Request
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
@@ -79,13 +77,12 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result, errMsg := s.forwardToolCall(r.Context(), mcpServer, args, toolName)
+	result, errMsg := s.forwardToolCall(r.Context(), mcpServer, args, toolName, 1)
 	if errMsg != "" {
+		s.emitMCPLog(agent, serverName, toolName, action, http.StatusBadGateway, requestRef, mcpServer.URL)
 		writeError(w, http.StatusBadGateway, errMsg)
 		return
 	}
-
-	s.emitMCPLog(agent, serverName, toolName, action, http.StatusOK, requestRef, mcpServer.URL)
 
 	if result.IsError {
 		contentStr := "MCP tool returned an error"
@@ -97,10 +94,12 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 				contentStr = textBlock.Text
 			}
 		}
+		s.emitMCPLog(agent, serverName, toolName, action, http.StatusBadGateway, requestRef, mcpServer.URL)
 		writeError(w, http.StatusBadGateway, contentStr)
 		return
 	}
 
+	s.emitMCPLog(agent, serverName, toolName, action, http.StatusOK, requestRef, mcpServer.URL)
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -175,9 +174,9 @@ func (s *Server) findMCPServer(name string) *MCPServer {
 }
 
 func (s *Server) findTool(server *MCPServer, toolName string) *MCPTool {
-	for _, tool := range server.Tools {
-		if tool.Name == toolName {
-			return &tool
+	for i := range server.Tools {
+		if server.Tools[i].Name == toolName {
+			return &server.Tools[i]
 		}
 	}
 	return nil
@@ -197,6 +196,29 @@ func parseProxyBody(body []byte, toolName string) (map[string]any, error) {
 		return nil, fmt.Errorf("tool name mismatch: body has %q, path has %q", payload.Name, toolName)
 	}
 	return payload.Arguments, nil
+}
+
+// authorizeWriteTool validates the AIP JWT from X-AIP-Authorization for a write tool.
+// Returns the claims and derived fields on success. Returns an error on failure.
+// Read-only tools skip authorization and return without error.
+func (s *Server) authorizeWriteTool(r *http.Request, toolName string) (*jwt.Claims, string, string, string, error) {
+	if s.jwtManager == nil {
+		return nil, "", "", "", ErrJWTNotConfigured
+	}
+	auth := r.Header.Get("X-AIP-Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return nil, "", "", "", ErrJWTMissing
+	}
+	token := strings.TrimPrefix(auth, "Bearer ")
+	claims, err := s.jwtManager.ValidateToken(token)
+	if err != nil {
+		log.Printf("JWT validation failed: %v", err)
+		return nil, "", "", "", ErrJWTInvalid
+	}
+	if claims.Action != toolName {
+		return nil, "", "", "", ErrJWTActionDenied
+	}
+	return claims, claims.Subject, claims.Action, claims.Request, nil
 }
 
 type mcpProxyLog struct {

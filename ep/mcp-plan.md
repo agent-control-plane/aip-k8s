@@ -285,7 +285,7 @@ today continues to work exactly as before.
 
 Auth matrix (applies to both endpoints):
 
-```
+```text
 authRequired=false (local dev):
   all methods / tools → no OIDC required; write tools still require AIP JWT
 
@@ -409,6 +409,67 @@ Two changes touch `/mcp-proxy` specifically:
 2. `mcp_proxy.go` — `handleMCPProxy` currently reads the AIP JWT from `Authorization: Bearer`.
    With OIDC consuming `Authorization`, write-tool JWT validation must move to
    `X-AIP-Authorization: Bearer <aip-jwt>`. Same header convention as `handleMCP`.
+
+### Migration: Breaking changes to `/mcp-proxy`
+
+The move from `Authorization` to `X-AIP-Authorization` and the re-registration on the main
+mux are breaking changes for existing `/mcp-proxy` clients. Follow this migration plan.
+
+#### 1. Client migration steps
+
+1. **Update write-tool requests**: Change the AIP JWT header from `Authorization` to
+   `X-AIP-Authorization` in every `POST /mcp-proxy/{server}/{tool}` call.
+2. **Keep OIDC in `Authorization`** (if OIDC is enabled). The `Authorization` header now
+   carries only the OIDC Bearer token for gateway authentication. If OIDC is not configured,
+   omit `Authorization` (the gateway falls back to proxy headers).
+3. **Read-only tools**: No change — they never required an AIP JWT.
+
+**Before:**
+```text
+Authorization: Bearer <aip-jwt>
+```
+
+**After:**
+```text
+Authorization: Bearer <oidc-token>       # only if OIDC is enabled
+X-AIP-Authorization: Bearer <aip-jwt>    # always for write tools
+```
+
+#### 2. Transition period and dual-header acceptance
+
+The gateway accepts **only** `X-AIP-Authorization`. There is no fallback to `Authorization`
+for the AIP JWT — the `Authorization` header is exclusively used by the OIDC middleware
+(on the main mux). Clients must switch before upgrading.
+
+#### 3. Communication plan
+
+| Audience | Message | Channel |
+|---|---|---|
+| Internal agent authors | "AIP JWT header moved to `X-AIP-Authorization`. Update your HTTP client code before upgrading to `v1alpha1`." | Slack #agent-dev |
+| External integrators | Patch notes + migration guide in release. | GitHub release notes |
+| E2e test owners | E2e tests updated to use `X-AIP-Authorization`. | PR review (#203) |
+
+**Rollout timeline:**
+- **Phase 1 (cutover)**: Gateway starts rejecting `Authorization`-based AIP JWTs.
+  All `/mcp-proxy` calls must use `X-AIP-Authorization`.
+- **Phase 2 (stabilize)**: Monitor for 403/401 errors from clients that haven't migrated.
+  No deprecation warning emitted because both headers cannot coexist on the main mux
+  (OIDC middleware would intercept `Authorization`).
+
+#### 4. Client checklist
+
+- [ ] Scripts / CI pipelines that call `/mcp-proxy` with AIP JWTs
+- [ ] Demo apps and example code in `config/samples/`
+- [ ] E2e test suite (`test/e2e_mcp/`)
+- [ ] Any client registered in `MCP_REGISTRY` or `AIP_MCP_TOKEN` env (these are upward
+      tokens, not affected — only the client-to-gateway header changes)
+
+**Validation steps:**
+1. Deploy the updated gateway.
+2. Call a write tool with the old `Authorization` header → expect `401`.
+3. Call the same tool with `X-AIP-Authorization` → expect `200`.
+4. Call a read-only tool with no AIP JWT → expect `200` (no change).
+5. Run `make test-e2e-mcp` (both Scenario B and Scenario C exercise the new header).
 
 ---
 

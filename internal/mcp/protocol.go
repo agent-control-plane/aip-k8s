@@ -2,8 +2,14 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+)
+
+var (
+	ErrJSONParse             = errors.New("invalid JSON-RPC: malformed JSON")
+	ErrInvalidJSONRPCVersion = errors.New("unsupported JSON-RPC version")
 )
 
 type JSONRPCRequest struct {
@@ -65,27 +71,27 @@ const (
 func ParseJSONRPCRequest(body []byte) (*JSONRPCRequest, error) {
 	var req JSONRPCRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		return nil, fmt.Errorf("invalid JSON-RPC: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrJSONParse, err)
 	}
 	if req.JSONRPC != JSONRPCVersion {
-		return nil, fmt.Errorf("unsupported JSON-RPC version: %q", req.JSONRPC)
+		return nil, fmt.Errorf("%w: %q", ErrInvalidJSONRPCVersion, req.JSONRPC)
 	}
 	return &req, nil
 }
 
-func WriteJSONRPCResponse(w http.ResponseWriter, id any, result any) {
+func WriteJSONRPCResponse(w http.ResponseWriter, id any, result any) error {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(JSONRPCResponse{
+	return json.NewEncoder(w).Encode(JSONRPCResponse{
 		JSONRPC: JSONRPCVersion,
 		ID:      id,
 		Result:  result,
 	})
 }
 
-func WriteJSONRPCError(w http.ResponseWriter, id any, code int, message string) {
+func WriteJSONRPCError(w http.ResponseWriter, id any, code int, message string) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(JSONRPCResponse{
+	return json.NewEncoder(w).Encode(JSONRPCResponse{
 		JSONRPC: JSONRPCVersion,
 		ID:      id,
 		Error: &JSONRPCError{

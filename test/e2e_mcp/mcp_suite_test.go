@@ -123,6 +123,56 @@ func waitForDeploymentReady(ns, name string, timeout time.Duration) {
 	}, timeout, 2*time.Second).Should(Succeed())
 }
 
+// ensureBranchLifecycle ensures a GitHub branch exists with a dummy commit and
+// closes any open PRs from prior runs on that branch.
+func ensureBranchLifecycle(branchName, dummyPrefix string) {
+	By(fmt.Sprintf("ensuring branch %s exists in GitHub repo", branchName))
+	cmd := exec.Command("gh", "api",
+		fmt.Sprintf("repos/%s/%s/git/refs/heads/%s", githubOwner, githubRepo, branchName),
+		"--jq", ".ref")
+	if _, err := runCmd(cmd); err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Branch %s not found, creating from %s\n", branchName, githubConfigFileBranch)
+		shaOut, shaErr := runCmd(exec.Command("gh", "api",
+			fmt.Sprintf("repos/%s/%s/git/refs/heads/%s", githubOwner, githubRepo, githubConfigFileBranch),
+			"--jq", ".object.sha"))
+		Expect(shaErr).NotTo(HaveOccurred(), "Failed to get SHA of base branch for %s", branchName)
+		sha := strings.TrimSpace(shaOut)
+		createCmd := exec.Command("gh", "api", "--method", "POST",
+			fmt.Sprintf("repos/%s/%s/git/refs", githubOwner, githubRepo),
+			"-f", fmt.Sprintf("ref=refs/heads/%s", branchName),
+			"-f", fmt.Sprintf("sha=%s", sha))
+		_, createErr := runCmd(createCmd)
+		Expect(createErr).NotTo(HaveOccurred(), "Failed to create branch %s", branchName)
+	} else {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Branch %s already exists\n", branchName)
+	}
+
+	By(fmt.Sprintf("closing any open PRs from prior runs on %s", branchName))
+	listPRs := exec.Command("gh", "api",
+		fmt.Sprintf("repos/%s/%s/pulls?head=%s:%s&state=open", githubOwner, githubRepo, githubOwner, branchName),
+		"--jq", ".[].number")
+	if prOut, prErr := runCmd(listPRs); prErr == nil {
+		for _, prNum := range strings.Fields(strings.TrimSpace(prOut)) {
+			closePR := exec.Command("gh", "api", "--method", "PATCH",
+				fmt.Sprintf("repos/%s/%s/pulls/%s", githubOwner, githubRepo, prNum),
+				"-f", "state=closed")
+			_, _ = runCmd(closePR)
+		}
+	}
+
+	By(fmt.Sprintf("creating a dummy commit on %s", branchName))
+	dummyFile := fmt.Sprintf("%s-%d.txt", dummyPrefix, time.Now().Unix())
+	dummyContent := base64.StdEncoding.EncodeToString([]byte("e2e test"))
+	putCmd := exec.Command("gh", "api",
+		fmt.Sprintf("repos/%s/%s/contents/%s", githubOwner, githubRepo, dummyFile),
+		"--method", "PUT",
+		"-f", "message=e2e dummy commit",
+		"-f", fmt.Sprintf("content=%s", dummyContent),
+		"-f", fmt.Sprintf("branch=%s", branchName))
+	_, err := runCmd(putCmd)
+	Expect(err).NotTo(HaveOccurred(), "Failed to create dummy commit on %s", branchName)
+}
+
 var _ = BeforeSuite(func() {
 	projDir := getProjectDir()
 
@@ -169,94 +219,8 @@ var _ = BeforeSuite(func() {
 		Skip(fmt.Sprintf("%s env var not set — skipping MCP e2e tests", githubPATEnv))
 	}
 
-	By("ensuring e2e test branch exists in GitHub repo (uses gh CLI)")
-	cmd := exec.Command("gh", "api",
-		fmt.Sprintf("repos/%s/%s/git/refs/heads/%s", githubOwner, githubRepo, e2eTestBranch),
-		"--jq", ".ref")
-	if _, err := runCmd(cmd); err != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Branch %s not found, creating from %s\n", e2eTestBranch, githubConfigFileBranch)
-		shaCmd := exec.Command("gh", "api",
-			fmt.Sprintf("repos/%s/%s/git/refs/heads/%s", githubOwner, githubRepo, githubConfigFileBranch),
-			"--jq", ".object.sha")
-		shaOut, shaErr := runCmd(shaCmd)
-		Expect(shaErr).NotTo(HaveOccurred(), "Failed to get SHA of base branch")
-		sha := strings.TrimSpace(shaOut)
-		createCmd := exec.Command("gh", "api", "--method", "POST",
-			fmt.Sprintf("repos/%s/%s/git/refs", githubOwner, githubRepo),
-			"-f", fmt.Sprintf("ref=refs/heads/%s", e2eTestBranch),
-			"-f", fmt.Sprintf("sha=%s", sha))
-		_, createErr := runCmd(createCmd)
-		Expect(createErr).NotTo(HaveOccurred(), "Failed to create branch %s", e2eTestBranch)
-	} else {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Branch %s already exists\n", e2eTestBranch)
-	}
-
-	By("closing any open PRs from prior runs on this branch")
-	listPRs := exec.Command("gh", "api",
-		fmt.Sprintf("repos/%s/%s/pulls?head=%s:%s&state=open", githubOwner, githubRepo, githubOwner, e2eTestBranch),
-		"--jq", ".[].number")
-	if prOut, prErr := runCmd(listPRs); prErr == nil {
-		for _, prNum := range strings.Fields(strings.TrimSpace(prOut)) {
-			closePR := exec.Command("gh", "api", "--method", "PATCH",
-				fmt.Sprintf("repos/%s/%s/pulls/%s", githubOwner, githubRepo, prNum),
-				"-f", "state=closed")
-			_, _ = runCmd(closePR)
-		}
-	}
-
-	By("creating a dummy commit on e2e test branch so a PR can be opened")
-	dummyFile := fmt.Sprintf("e2e-dummy-%d.txt", time.Now().Unix())
-	dummyContent := base64.StdEncoding.EncodeToString([]byte("e2e test"))
-	putCmd := exec.Command("gh", "api",
-		fmt.Sprintf("repos/%s/%s/contents/%s", githubOwner, githubRepo, dummyFile),
-		"--method", "PUT",
-		"-f", "message=e2e dummy commit",
-		"-f", fmt.Sprintf("content=%s", dummyContent),
-		"-f", fmt.Sprintf("branch=%s", e2eTestBranch))
-	_, err = runCmd(putCmd)
-	Expect(err).NotTo(HaveOccurred(), "Failed to create dummy commit on %s", e2eTestBranch)
-
-	By("ensuring second e2e test branch exists for Scenario C")
-	cmd2 := exec.Command("gh", "api",
-		fmt.Sprintf("repos/%s/%s/git/refs/heads/%s", githubOwner, githubRepo, e2eTestBranch2),
-		"--jq", ".ref")
-	if _, err2 := runCmd(cmd2); err2 != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Branch %s not found, creating from %s\n", e2eTestBranch2, githubConfigFileBranch)
-		shaOut, shaErr := runCmd(exec.Command("gh", "api",
-			fmt.Sprintf("repos/%s/%s/git/refs/heads/%s", githubOwner, githubRepo, githubConfigFileBranch),
-			"--jq", ".object.sha"))
-		Expect(shaErr).NotTo(HaveOccurred(), "Failed to get SHA of base branch for Scenario C")
-		sha := strings.TrimSpace(shaOut)
-		createCmd := exec.Command("gh", "api", "--method", "POST",
-			fmt.Sprintf("repos/%s/%s/git/refs", githubOwner, githubRepo),
-			"-f", fmt.Sprintf("ref=refs/heads/%s", e2eTestBranch2),
-			"-f", fmt.Sprintf("sha=%s", sha))
-		_, createErr := runCmd(createCmd)
-		Expect(createErr).NotTo(HaveOccurred(), "Failed to create branch %s", e2eTestBranch2)
-	}
-
-	By("closing any open PRs from prior runs on second e2e branch")
-	listPRs2 := exec.Command("gh", "api",
-		fmt.Sprintf("repos/%s/%s/pulls?head=%s:%s&state=open", githubOwner, githubRepo, githubOwner, e2eTestBranch2),
-		"--jq", ".[].number")
-	if prOut2, prErr2 := runCmd(listPRs2); prErr2 == nil {
-		for _, prNum := range strings.Fields(strings.TrimSpace(prOut2)) {
-			closePR := exec.Command("gh", "api", "--method", "PATCH",
-				fmt.Sprintf("repos/%s/%s/pulls/%s", githubOwner, githubRepo, prNum), "-f", "state=closed")
-			_, _ = runCmd(closePR)
-		}
-	}
-
-	By("creating a dummy commit on second e2e test branch")
-	dummyFile2 := fmt.Sprintf("e2e-dummy-c-%d.txt", time.Now().Unix())
-	putCmd2 := exec.Command("gh", "api",
-		fmt.Sprintf("repos/%s/%s/contents/%s", githubOwner, githubRepo, dummyFile2),
-		"--method", "PUT",
-		"-f", "message=e2e dummy commit",
-		"-f", fmt.Sprintf("content=%s", dummyContent),
-		"-f", fmt.Sprintf("branch=%s", e2eTestBranch2))
-	_, err = runCmd(putCmd2)
-	Expect(err).NotTo(HaveOccurred(), "Failed to create dummy commit on %s", e2eTestBranch2)
+	ensureBranchLifecycle(e2eTestBranch, "e2e-dummy")
+	ensureBranchLifecycle(e2eTestBranch2, "e2e-dummy-c")
 
 	By("removing pod security enforcement on namespace for mcp server (image runs as root)")
 	cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,

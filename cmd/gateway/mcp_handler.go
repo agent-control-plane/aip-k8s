@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -18,13 +20,17 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		mcp.WriteJSONRPCError(w, nil, mcp.ErrCodeParse, "failed to read body: "+err.Error())
+		if wErr := mcp.WriteJSONRPCError(w, nil, mcp.ErrCodeParse, "failed to read body: "+err.Error()); wErr != nil {
+			log.Printf("WriteJSONRPCError failed: %v", wErr)
+		}
 		return
 	}
 
 	req, err := mcp.ParseJSONRPCRequest(body)
 	if err != nil {
-		mcp.WriteJSONRPCError(w, nil, mcp.ErrCodeParse, err.Error())
+		if wErr := mcp.WriteJSONRPCError(w, nil, mcp.ErrCodeParse, err.Error()); wErr != nil {
+			log.Printf("WriteJSONRPCError failed: %v", wErr)
+		}
 		return
 	}
 
@@ -32,18 +38,26 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	case "initialize":
 		s.handleInitialize(w, req)
 	case "notifications/initialized":
-		mcp.WriteJSONRPCResponse(w, req.ID, map[string]any{})
+		if req.ID != nil {
+			// Be lenient: respond to requests with an id (misparked notification).
+			if wErr := mcp.WriteJSONRPCResponse(w, req.ID, map[string]any{}); wErr != nil {
+				log.Printf("WriteJSONRPCResponse failed: %v", wErr)
+			}
+		}
 	case "tools/list":
 		s.handleToolsList(w, req)
 	case "tools/call":
 		s.handleToolsCall(w, r, req)
 	default:
-		mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeMethod, fmt.Sprintf("Method not found: %s", req.Method))
+		msg := fmt.Sprintf("Method not found: %s", req.Method)
+		if wErr := mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeMethod, msg); wErr != nil {
+			log.Printf("WriteJSONRPCError failed: %v", wErr)
+		}
 	}
 }
 
 func (s *Server) handleInitialize(w http.ResponseWriter, req *mcp.JSONRPCRequest) {
-	mcp.WriteJSONRPCResponse(w, req.ID, mcp.InitializeResult{
+	if wErr := mcp.WriteJSONRPCResponse(w, req.ID, mcp.InitializeResult{
 		ProtocolVersion: "2025-03-26",
 		ServerInfo: map[string]any{
 			"name":    "aip-gateway",
@@ -52,7 +66,9 @@ func (s *Server) handleInitialize(w http.ResponseWriter, req *mcp.JSONRPCRequest
 		Capabilities: map[string]any{
 			"tools": map[string]any{},
 		},
-	})
+	}); wErr != nil {
+		log.Printf("WriteJSONRPCResponse failed: %v", wErr)
+	}
 }
 
 func (s *Server) handleToolsList(w http.ResponseWriter, req *mcp.JSONRPCRequest) {
@@ -67,86 +83,88 @@ func (s *Server) handleToolsList(w http.ResponseWriter, req *mcp.JSONRPCRequest)
 	if tools == nil {
 		tools = []mcp.MCPToolInfo{}
 	}
-	mcp.WriteJSONRPCResponse(w, req.ID, mcp.ToolsListResult{Tools: tools})
+	if wErr := mcp.WriteJSONRPCResponse(w, req.ID, mcp.ToolsListResult{Tools: tools}); wErr != nil {
+		log.Printf("WriteJSONRPCResponse failed: %v", wErr)
+	}
 }
 
 func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *mcp.JSONRPCRequest) {
-	var params mcp.ToolsCallParams
-	if err := json.Unmarshal(req.Params, &params); err != nil {
-		mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeInvalid, "invalid tools/call params: "+err.Error())
-		return
-	}
-
-	serverName, toolName, err := splitPrefixedName(params.Name)
+	params, serverName, toolName, err := parseToolCallParams(req)
 	if err != nil {
-		mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeInvalid, err.Error())
+		if wErr := mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeInvalid, err.Error()); wErr != nil {
+			log.Printf("WriteJSONRPCError failed: %v", wErr)
+		}
 		return
 	}
 
 	mcpServer := s.findMCPServer(serverName)
 	if mcpServer == nil {
-		mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeInvalid, "MCP server not found: "+serverName)
+		if wErr := mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeInvalid, "MCP server not found: "+serverName); wErr != nil {
+			log.Printf("WriteJSONRPCError failed: %v", wErr)
+		}
 		return
 	}
 
 	tool := s.findTool(mcpServer, toolName)
 	if tool == nil {
-		mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeInvalid, "tool not found: "+toolName)
+		if wErr := mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeInvalid, "tool not found: "+toolName); wErr != nil {
+			log.Printf("WriteJSONRPCError failed: %v", wErr)
+		}
 		return
 	}
 
 	var claims *jwt.Claims
 	var agent, action, requestRef string
 	if !tool.ReadOnly {
-		if s.jwtManager == nil {
-			mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeInternal, "JWT signing not configured")
+		var authErr error
+		claims, agent, action, requestRef, authErr = s.authorizeWriteTool(r, toolName)
+		if authErr != nil {
+			var wErr error
+			switch {
+			case errors.Is(authErr, ErrJWTNotConfigured):
+				wErr = mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeInternal, authErr.Error())
+			case errors.Is(authErr, ErrJWTActionDenied):
+				wErr = mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeForbidden, authErr.Error())
+			default:
+				wErr = mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeAuth, authErr.Error())
+			}
+			if wErr != nil {
+				log.Printf("WriteJSONRPCError failed: %v", wErr)
+			}
 			return
 		}
-		auth := r.Header.Get("X-AIP-Authorization")
-		if !strings.HasPrefix(auth, "Bearer ") {
-			mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeAuth, "missing AIP bearer token")
-			return
-		}
-		token := strings.TrimPrefix(auth, "Bearer ")
-		var err error
-		claims, err = s.jwtManager.ValidateToken(token)
-		if err != nil {
-			mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeAuth, "invalid token: "+err.Error())
-			return
-		}
-		if claims.Action != toolName {
-			mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeForbidden, "tool not allowed for this action")
-			return
-		}
-		agent = claims.Subject
-		action = claims.Action
-		requestRef = claims.Request
-	}
 
-	if !tool.ReadOnly {
 		if repoErr := enforceRepoClaim(claims.Repo, params.Arguments); repoErr != "" {
-			mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeForbidden, repoErr)
+			if wErr := mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeForbidden, repoErr); wErr != nil {
+				log.Printf("WriteJSONRPCError failed: %v", wErr)
+			}
 			return
 		}
 	}
 
-	result, errMsg := s.forwardToolCall(r.Context(), mcpServer, params.Arguments, toolName)
+	result, errMsg := s.forwardToolCall(r.Context(), mcpServer, params.Arguments, toolName, req.ID)
 	if errMsg != "" {
-		mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeInternal, errMsg)
+		if wErr := mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeInternal, errMsg); wErr != nil {
+			log.Printf("WriteJSONRPCError failed: %v", wErr)
+		}
 		return
 	}
 
 	s.emitMCPLog(agent, serverName, toolName, action, http.StatusOK, requestRef, mcpServer.URL)
 
 	if result.IsError {
-		mcp.WriteJSONRPCResponse(w, req.ID, mcp.ToolsCallResult{
+		if wErr := mcp.WriteJSONRPCResponse(w, req.ID, mcp.ToolsCallResult{
 			Content: result.Content,
 			IsError: true,
-		})
+		}); wErr != nil {
+			log.Printf("WriteJSONRPCResponse failed: %v", wErr)
+		}
 		return
 	}
 
-	mcp.WriteJSONRPCResponse(w, req.ID, result)
+	if wErr := mcp.WriteJSONRPCResponse(w, req.ID, result); wErr != nil {
+		log.Printf("WriteJSONRPCResponse failed: %v", wErr)
+	}
 }
 
 func splitPrefixedName(prefixed string) (server, tool string, err error) {
@@ -157,8 +175,24 @@ func splitPrefixedName(prefixed string) (server, tool string, err error) {
 	return parts[0], parts[1], nil
 }
 
-func (s *Server) forwardToolCall(ctx context.Context, mcpServer *MCPServer, args map[string]any, toolName string) (mcpProxyResult, string) {
-	rpcBody, err := buildJSONRPCRequestBody(args, toolName)
+// parseToolCallParams unmarshals and validates the params of a tools/call request.
+func parseToolCallParams(req *mcp.JSONRPCRequest) (*mcp.ToolsCallParams, string, string, error) {
+	var params mcp.ToolsCallParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return nil, "", "", fmt.Errorf("invalid tools/call params: %w", err)
+	}
+	server, tool, err := splitPrefixedName(params.Name)
+	if err != nil {
+		return nil, "", "", err
+	}
+	return &params, server, tool, nil
+}
+
+func (s *Server) forwardToolCall(
+	ctx context.Context, mcpServer *MCPServer, args map[string]any,
+	toolName string, id any,
+) (mcpProxyResult, string) {
+	rpcBody, err := buildJSONRPCRequestBody(args, toolName, id)
 	if err != nil {
 		return mcpProxyResult{}, "failed to build request: " + err.Error()
 	}
@@ -183,13 +217,18 @@ func (s *Server) forwardToolCall(ctx context.Context, mcpServer *MCPServer, args
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return mcpProxyResult{}, "MCP server unavailable: " + err.Error()
+		log.Printf("MCP forward error: %v", err)
+		return mcpProxyResult{}, "MCP server unavailable"
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	const maxMCPResponseSize = 10 << 20
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxMCPResponseSize+1))
 	if err != nil {
 		return mcpProxyResult{}, "failed to read MCP response"
+	}
+	if len(respBody) > maxMCPResponseSize {
+		return mcpProxyResult{}, "MCP response too large"
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -203,10 +242,10 @@ func (s *Server) forwardToolCall(ctx context.Context, mcpServer *MCPServer, args
 	return result, ""
 }
 
-func buildJSONRPCRequestBody(args map[string]any, toolName string) ([]byte, error) {
+func buildJSONRPCRequestBody(args map[string]any, toolName string, id any) ([]byte, error) {
 	rpcReq := map[string]any{
 		"jsonrpc": "2.0",
-		"id":      1,
+		"id":      id,
 		"method":  "tools/call",
 		"params": map[string]any{
 			"name":      toolName,

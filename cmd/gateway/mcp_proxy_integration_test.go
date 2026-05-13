@@ -143,7 +143,7 @@ func TestMCPProxy_InvalidJWT_WriteTool(t *testing.T) {
 	s.handleMCPProxy(rr, req)
 
 	g.Expect(rr.Code).To(gomega.Equal(http.StatusUnauthorized))
-	g.Expect(rr.Body.String()).To(gomega.ContainSubstring("invalid token"))
+	g.Expect(rr.Body.String()).To(gomega.ContainSubstring("invalid AIP token"))
 }
 
 func TestMCPProxy_UnknownServer(t *testing.T) {
