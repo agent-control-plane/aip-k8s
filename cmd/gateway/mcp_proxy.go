@@ -1,14 +1,11 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -41,9 +38,9 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusServiceUnavailable, "JWT signing not configured")
 			return
 		}
-		auth := r.Header.Get("Authorization")
+		auth := r.Header.Get("X-AIP-Authorization")
 		if !strings.HasPrefix(auth, "Bearer ") {
-			writeError(w, http.StatusUnauthorized, "missing bearer token")
+			writeError(w, http.StatusUnauthorized, "missing AIP bearer token")
 			return
 		}
 		token := strings.TrimPrefix(auth, "Bearer ")
@@ -69,7 +66,7 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rpcBody, args, err := buildJSONRPCRequest(body, toolName)
+	args, err := parseProxyBody(body, toolName)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
@@ -82,50 +79,13 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), mcpRequestTimeout)
-	defer cancel()
-
-	mcpURL := strings.TrimSuffix(mcpServer.URL, "/") + "/tools/call"
-	req, err := http.NewRequestWithContext(ctx, "POST", mcpURL, bytes.NewReader(rpcBody))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create request")
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	bearerToken := mcpServer.BearerToken
-	if bearerToken == "" {
-		bearerToken = os.Getenv("AIP_MCP_TOKEN")
-	}
-	if bearerToken != "" {
-		req.Header.Set("Authorization", "Bearer "+bearerToken)
-	}
-
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "MCP server unavailable: "+err.Error())
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read MCP response")
+	result, errMsg := s.forwardToolCall(r.Context(), mcpServer, args, toolName)
+	if errMsg != "" {
+		writeError(w, http.StatusBadGateway, errMsg)
 		return
 	}
 
-	s.emitMCPLog(agent, serverName, toolName, action, resp.StatusCode, requestRef, mcpURL)
-
-	if resp.StatusCode != http.StatusOK {
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("MCP server returned status %d", resp.StatusCode))
-		return
-	}
-
-	result, rpcErr := extractMCPResult(respBody)
-	if rpcErr != "" {
-		writeError(w, http.StatusBadGateway, rpcErr)
-		return
-	}
+	s.emitMCPLog(agent, serverName, toolName, action, http.StatusOK, requestRef, mcpServer.URL)
 
 	if result.IsError {
 		contentStr := "MCP tool returned an error"
@@ -223,35 +183,20 @@ func (s *Server) findTool(server *MCPServer, toolName string) *MCPTool {
 	return nil
 }
 
-// buildJSONRPCRequest converts the caller's tool-call body to a JSON-RPC 2.0
-// request suitable for forwarding to the MCP server.
-func buildJSONRPCRequest(body []byte, toolName string) ([]byte, map[string]any, error) {
+// parseProxyBody extracts arguments from the proxy request body and validates
+// the tool name matches the path parameter.
+func parseProxyBody(body []byte, toolName string) (map[string]any, error) {
 	var payload struct {
 		Name      string         `json:"name"`
 		Arguments map[string]any `json:"arguments"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if payload.Name != "" && payload.Name != toolName {
-		return nil, nil, fmt.Errorf("tool name mismatch: body has %q, path has %q", payload.Name, toolName)
+		return nil, fmt.Errorf("tool name mismatch: body has %q, path has %q", payload.Name, toolName)
 	}
-	payload.Name = toolName
-
-	rpcReq := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "tools/call",
-		"params": map[string]any{
-			"name":      toolName,
-			"arguments": payload.Arguments,
-		},
-	}
-	encoded, err := json.Marshal(rpcReq)
-	if err != nil {
-		return nil, nil, err
-	}
-	return encoded, payload.Arguments, nil
+	return payload.Arguments, nil
 }
 
 type mcpProxyLog struct {

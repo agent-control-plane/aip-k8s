@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -189,10 +188,8 @@ func main() {
 	mux.HandleFunc("GET /agent-trust-profiles", server.handleListAgentTrustProfiles)
 	mux.HandleFunc("GET /agent-trust-profiles/{name}", server.handleGetAgentTrustProfile)
 	mux.HandleFunc("GET /mcp-registry", server.handleMCPRegistry)
-	// /mcp-proxy is registered on a separate mux to bypass the outer
-	// authMiddleware (OIDC/proxy-header). It enforces its own AIP JWT auth.
-	publicMux := http.NewServeMux()
-	publicMux.HandleFunc("POST /mcp-proxy/{server}/{tool}", server.handleMCPProxy)
+	mux.HandleFunc("POST /mcp-proxy/{server}/{tool}", server.handleMCPProxy)
+	mux.HandleFunc("POST /mcp", server.handleMCP)
 
 	mux.HandleFunc("POST /governed-resources", server.handleCreateGovernedResource)
 	mux.HandleFunc("GET /governed-resources", server.handleListGovernedResources)
@@ -226,13 +223,7 @@ func main() {
 	mux.Handle("GET /metrics", metricsHandler())
 
 	log.Printf("Starting AIP Demo Gateway on %s", *addr)
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/mcp-proxy/") {
-			publicMux.ServeHTTP(w, r)
-			return
-		}
-		authMiddleware(mux).ServeHTTP(w, r)
-	})
+	handler := authMiddleware(mux)
 	srv := &http.Server{
 		Addr:    *addr,
 		Handler: metricsMiddleware(loggingMiddleware(handler)),

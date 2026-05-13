@@ -81,7 +81,7 @@ func TestMCPProxy_FullFlow_ValidJWT(t *testing.T) {
 		strings.NewReader(`{"name":"get_file_contents","arguments":{"owner":"acme","repo":"demo"}}`))
 	req.SetPathValue("server", "github")
 	req.SetPathValue("tool", "get_file_contents")
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-AIP-Authorization", "Bearer "+token)
 	rr := httptest.NewRecorder()
 
 	s.handleMCPProxy(rr, req)
@@ -137,7 +137,7 @@ func TestMCPProxy_InvalidJWT_WriteTool(t *testing.T) {
 		strings.NewReader("{}"))
 	req.SetPathValue("server", "github")
 	req.SetPathValue("tool", "create_pull_request")
-	req.Header.Set("Authorization", "Bearer invalid-token")
+	req.Header.Set("X-AIP-Authorization", "Bearer invalid-token")
 	rr := httptest.NewRecorder()
 
 	s.handleMCPProxy(rr, req)
@@ -170,7 +170,7 @@ func TestMCPProxy_UnknownServer(t *testing.T) {
 		strings.NewReader("{}"))
 	req.SetPathValue("server", "jira")
 	req.SetPathValue("tool", "get_file_contents")
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-AIP-Authorization", "Bearer "+token)
 	rr := httptest.NewRecorder()
 
 	s.handleMCPProxy(rr, req)
@@ -204,7 +204,7 @@ func TestMCPProxy_UnknownTool(t *testing.T) {
 		strings.NewReader("{}"))
 	req.SetPathValue("server", "github")
 	req.SetPathValue("tool", "create_pull_request")
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-AIP-Authorization", "Bearer "+token)
 	rr := httptest.NewRecorder()
 
 	s.handleMCPProxy(rr, req)
@@ -234,7 +234,7 @@ func TestMCPProxy_WriteTool_ActionMismatch(t *testing.T) {
 		strings.NewReader("{}"))
 	req.SetPathValue("server", "github")
 	req.SetPathValue("tool", "create_pull_request")
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-AIP-Authorization", "Bearer "+token)
 	rr := httptest.NewRecorder()
 
 	s.handleMCPProxy(rr, req)

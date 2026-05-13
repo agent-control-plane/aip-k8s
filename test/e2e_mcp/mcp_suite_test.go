@@ -44,6 +44,7 @@ const (
 	githubConfigFileBranch = "main"
 	githubConfigFilePath   = "infra/payment-service.json"
 	e2eTestBranch          = "e2e-mcp-scale-17"
+	e2eTestBranch2         = "e2e-mcp-scale-17-v2"
 )
 
 var (
@@ -215,6 +216,48 @@ var _ = BeforeSuite(func() {
 	_, err = runCmd(putCmd)
 	Expect(err).NotTo(HaveOccurred(), "Failed to create dummy commit on %s", e2eTestBranch)
 
+	By("ensuring second e2e test branch exists for Scenario C")
+	cmd2 := exec.Command("gh", "api",
+		fmt.Sprintf("repos/%s/%s/git/refs/heads/%s", githubOwner, githubRepo, e2eTestBranch2),
+		"--jq", ".ref")
+	if _, err2 := runCmd(cmd2); err2 != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Branch %s not found, creating from %s\n", e2eTestBranch2, githubConfigFileBranch)
+		shaOut, shaErr := runCmd(exec.Command("gh", "api",
+			fmt.Sprintf("repos/%s/%s/git/refs/heads/%s", githubOwner, githubRepo, githubConfigFileBranch),
+			"--jq", ".object.sha"))
+		Expect(shaErr).NotTo(HaveOccurred(), "Failed to get SHA of base branch for Scenario C")
+		sha := strings.TrimSpace(shaOut)
+		createCmd := exec.Command("gh", "api", "--method", "POST",
+			fmt.Sprintf("repos/%s/%s/git/refs", githubOwner, githubRepo),
+			"-f", fmt.Sprintf("ref=refs/heads/%s", e2eTestBranch2),
+			"-f", fmt.Sprintf("sha=%s", sha))
+		_, createErr := runCmd(createCmd)
+		Expect(createErr).NotTo(HaveOccurred(), "Failed to create branch %s", e2eTestBranch2)
+	}
+
+	By("closing any open PRs from prior runs on second e2e branch")
+	listPRs2 := exec.Command("gh", "api",
+		fmt.Sprintf("repos/%s/%s/pulls?head=%s:%s&state=open", githubOwner, githubRepo, githubOwner, e2eTestBranch2),
+		"--jq", ".[].number")
+	if prOut2, prErr2 := runCmd(listPRs2); prErr2 == nil {
+		for _, prNum := range strings.Fields(strings.TrimSpace(prOut2)) {
+			closePR := exec.Command("gh", "api", "--method", "PATCH",
+				fmt.Sprintf("repos/%s/%s/pulls/%s", githubOwner, githubRepo, prNum), "-f", "state=closed")
+			_, _ = runCmd(closePR)
+		}
+	}
+
+	By("creating a dummy commit on second e2e test branch")
+	dummyFile2 := fmt.Sprintf("e2e-dummy-c-%d.txt", time.Now().Unix())
+	putCmd2 := exec.Command("gh", "api",
+		fmt.Sprintf("repos/%s/%s/contents/%s", githubOwner, githubRepo, dummyFile2),
+		"--method", "PUT",
+		"-f", "message=e2e dummy commit",
+		"-f", fmt.Sprintf("content=%s", dummyContent),
+		"-f", fmt.Sprintf("branch=%s", e2eTestBranch2))
+	_, err = runCmd(putCmd2)
+	Expect(err).NotTo(HaveOccurred(), "Failed to create dummy commit on %s", e2eTestBranch2)
+
 	By("removing pod security enforcement on namespace for mcp server (image runs as root)")
 	cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
 		"pod-security.kubernetes.io/enforce-")
@@ -318,9 +361,12 @@ var _ = AfterSuite(func() {
 	}
 
 	if os.Getenv(githubPATEnv) != "" {
-		By("deleting e2e test branch from GitHub (auto-closes any open PRs)")
+		By("deleting e2e test branches from GitHub (auto-closes any open PRs)")
 		cmd = exec.Command("gh", "api", "--method", "DELETE",
 			fmt.Sprintf("repos/%s/%s/git/refs/heads/%s", githubOwner, githubRepo, e2eTestBranch))
+		_, _ = runCmd(cmd)
+		cmd = exec.Command("gh", "api", "--method", "DELETE",
+			fmt.Sprintf("repos/%s/%s/git/refs/heads/%s", githubOwner, githubRepo, e2eTestBranch2))
 		_, _ = runCmd(cmd)
 	}
 })

@@ -41,6 +41,9 @@ make build-gateway
 | `GET` | `/audit-records` | List AuditRecords |
 | `GET` | `/governed-resources` | List GovernedResources |
 | `GET` | `/safety-policies` | List SafetyPolicies |
+| `POST` | `/mcp` | Proxy MCP tool calls via JSON-RPC 2.0 (native MCP protocol) |
+| `POST` | `/mcp-proxy/{server}/{tool}` | Proxy MCP tool calls via REST (legacy, for non-MCP clients) |
+| `GET` | `/mcp-registry` | List available MCP servers and their tools |
 | `POST` | `/agent-requests/recompute-accuracy` | Trigger accuracy recomputation |
 | `PUT` | `/agent-graduation-policies/{name}` | Replace an AgentGraduationPolicy |
 | `PUT` | `/governed-resources/{name}` | Replace a GovernedResource |
@@ -115,7 +118,8 @@ The gateway supports OIDC/JWT authentication. When enabled, every non-healthz re
 | `GET /diagnostic-accuracy-summaries` | Any authenticated |
 | `GET /agent-trust-profiles`, `GET /agent-trust-profiles/{name}` | `agent`, `reviewer`, or `admin` |
 | `GET /mcp-registry` | Any authenticated |
-| `POST /mcp-proxy/{server}/{tool}` | `agent` (requires valid AIP JWT) |
+| `POST /mcp-proxy/{server}/{tool}` | `agent` (requires valid AIP JWT in `X-AIP-Authorization`) |
+| `POST /mcp` | `agent` (OIDC required in production; write tools additionally require AIP JWT in `X-AIP-Authorization`) |
 | `POST /governed-resources` | `admin` |
 | `GET /governed-resources`, `GET /governed-resources/{name}` | `admin` |
 | `PUT /governed-resources/{name}` | `admin` |
