@@ -102,6 +102,7 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 
 	reqLabels := map[string]string{
 		"aip.io/agentIdentity": sanitizeLabelValue(body.AgentIdentity),
+		"aip.io/profileName":   v1alpha1.ProfileNameForAgent(body.AgentIdentity),
 	}
 	if body.CorrelationID != "" {
 		reqLabels["aip.io/correlationID"] = sanitizeLabelValue(body.CorrelationID)

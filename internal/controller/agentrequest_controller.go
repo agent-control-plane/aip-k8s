@@ -816,12 +816,31 @@ func (r *AgentRequestReconciler) handleLockAcquisition(ctx context.Context, agen
 				return ctrl.Result{}, getErr
 			}
 
-			// Ensure that the holder is not ourselves (re-entrant success handling)
-			if existingLease.Spec.HolderIdentity != nil && *existingLease.Spec.HolderIdentity == holderIdentity {
-				// We somehow already own the lock
+			alreadyOwned := existingLease.Spec.HolderIdentity != nil && *existingLease.Spec.HolderIdentity == holderIdentity
+			leaseExpired := false
+			if existingLease.Spec.RenewTime != nil && existingLease.Spec.LeaseDurationSeconds != nil {
+				expiry := existingLease.Spec.RenewTime.Add(time.Duration(*existingLease.Spec.LeaseDurationSeconds) * time.Second)
+				leaseExpired = r.now().After(expiry)
+			}
+
+			if alreadyOwned {
+				// We somehow already own the lock — fall through to lock acquired.
 				logger.Info("AgentRequest already holds the lease", "lease", leaseName)
+			} else if leaseExpired {
+				// Previous holder's lease has expired; take it over.
+				logger.Info("Taking over expired lease", "lease", leaseName, "expiredHolder", ptr.Deref(existingLease.Spec.HolderIdentity, "unknown"))
+				base := existingLease.DeepCopy()
+				existingLease.Spec.HolderIdentity = ptr.To(holderIdentity)
+				existingLease.Spec.AcquireTime = &metav1.MicroTime{Time: r.now()}
+				existingLease.Spec.RenewTime = &metav1.MicroTime{Time: r.now()}
+				existingLease.Spec.LeaseDurationSeconds = ptr.To(int32(duration / time.Second))
+				if patchErr := r.Patch(ctx, existingLease, client.MergeFrom(base)); patchErr != nil {
+					logger.Error(patchErr, "Failed to take over expired lease")
+					return ctrl.Result{}, patchErr
+				}
+				// Fall through to lock acquired.
 			} else {
-				// Check timeout
+				// Lock is held and not yet expired — check how long we've been waiting.
 				lockTimeout := r.lockWaitTimeout()
 				waitLimit := r.now().Add(-lockTimeout)
 				if agentReq.CreationTimestamp.Time.Before(waitLimit) {
@@ -907,12 +926,35 @@ func (r *AgentRequestReconciler) reconcileApproved(ctx context.Context, agentReq
 	deadline := approvedCond.LastTransitionTime.Add(ApprovedTimeout)
 	now := r.now()
 
-	if !now.After(deadline) {
-		// Requeue just before the deadline so we handle it promptly.
-		return ctrl.Result{RequeueAfter: deadline.Sub(now)}, nil
+	if now.After(deadline) {
+		logger.Info("AgentRequest timed out in Approved phase (agent never started execution)", "name", agentReq.Name)
+	} else {
+		// Heartbeat the OpsLock lease so it stays alive until the agent picks up
+		// the JWT and transitions to Executing. reconcileExecuting takes over
+		// heartbeating once execution begins; this covers the gap between lock
+		// acquisition and execution start. Without renewal, a short
+		// ops-lock-duration (e.g. 15s in tests) would let the lease lapse before
+		// the agent ever starts, allowing another AR to take over prematurely.
+		leaseDuration := r.opsLockDurationOrDefault()
+		leaseName := generateLeaseName(agentReq.Spec.Target.URI)
+		lease := &coordinationv1.Lease{}
+		if err := r.Get(ctx, types.NamespacedName{Name: leaseName, Namespace: agentReq.Namespace}, lease); err != nil {
+			if !errors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+			logger.Info("OpsLock lease missing in Approved phase, requeueing", "lease", leaseName)
+		} else {
+			expectedHolder := fmt.Sprintf("%s/%s", agentReq.Spec.AgentIdentity, agentReq.Name)
+			if lease.Spec.HolderIdentity != nil && *lease.Spec.HolderIdentity == expectedHolder {
+				base := lease.DeepCopy()
+				lease.Spec.RenewTime = ptr.To(metav1.NewMicroTime(r.now()))
+				if err := r.Patch(ctx, lease, client.MergeFrom(base)); err != nil {
+					return ctrl.Result{}, fmt.Errorf("heartbeating approved-phase lease %s: %w", leaseName, err)
+				}
+			}
+		}
+		return ctrl.Result{RequeueAfter: leaseDuration / 2}, nil
 	}
-
-	logger.Info("AgentRequest timed out in Approved phase (agent never started execution)", "name", agentReq.Name)
 
 	// Release the lock BEFORE patching to PhaseFailed so that if this fails
 	// the object is still in PhaseApproved and the next reconcile retries.

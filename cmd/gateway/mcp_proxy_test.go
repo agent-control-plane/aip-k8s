@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -84,13 +88,13 @@ func TestEnforceRepoClaim_MissingOwnerOrRepo(t *testing.T) {
 func TestEnforceRepoClaim_EmptyRepo(t *testing.T) {
 	g := gomega.NewWithT(t)
 	errStr := enforceRepoClaim("", map[string]any{"owner": "acme", "repo": "demo"})
-	g.Expect(errStr).To(gomega.ContainSubstring("missing repo claim"))
+	g.Expect(errStr).To(gomega.ContainSubstring("missing resource claim"))
 }
 
 func TestEnforceRepoClaim_InvalidURI(t *testing.T) {
 	g := gomega.NewWithT(t)
 	errStr := enforceRepoClaim("github://acme", map[string]any{"owner": "acme", "repo": "demo"})
-	g.Expect(errStr).To(gomega.ContainSubstring("invalid repo claim"))
+	g.Expect(errStr).To(gomega.ContainSubstring("invalid resource claim"))
 }
 
 func TestFindTool_Found(t *testing.T) {
@@ -108,4 +112,31 @@ func TestFindTool_NotFound(t *testing.T) {
 	srv := &Server{}
 	tool := srv.findTool(server, "create_pull_request")
 	g.Expect(tool).To(gomega.BeNil())
+}
+
+func TestEmitMCPLog_ServerURLField(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(os.Stderr)
+
+	s := &Server{}
+	s.emitMCPLog("agent-1", "k8s", "resources_scale", "resources_scale",
+		http.StatusOK, "req-123", "http://upstream:8090")
+
+	logLine := logBuf.String()
+	idx := strings.Index(logLine, "MCP_PROXY ")
+	g.Expect(idx).To(gomega.BeNumerically(">=", 0))
+
+	jsonPart := strings.TrimSpace(logLine[idx+len("MCP_PROXY "):])
+	if nl := strings.Index(jsonPart, "\n"); nl >= 0 {
+		jsonPart = jsonPart[:nl]
+	}
+
+	var entry map[string]any
+	g.Expect(json.Unmarshal([]byte(jsonPart), &entry)).To(gomega.Succeed())
+	g.Expect(entry).To(gomega.HaveKey("serverURL"))
+	g.Expect(entry).NotTo(gomega.HaveKey("targetURI"))
+	g.Expect(entry["serverURL"]).To(gomega.Equal("http://upstream:8090"))
 }

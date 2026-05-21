@@ -37,7 +37,7 @@ func (s *Server) recomputeAccuracyForAgent(ctx context.Context, ns, agentId stri
 			continue
 		}
 
-		summaryName := summaryNameForAgent(id)
+		summaryName := v1alpha1.ProfileNameForAgent(id)
 		summary, ok := stats[summaryName]
 		if !ok {
 			summary = &v1alpha1.DiagnosticAccuracySummary{

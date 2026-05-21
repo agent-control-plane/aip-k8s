@@ -18,11 +18,7 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
-	"fmt"
-	"regexp"
 	"slices"
-	"strings"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -181,24 +177,7 @@ func (r *DiagnosticAccuracyReconciler) SetupWithManager(mgr ctrl.Manager) error 
 		Complete(r)
 }
 
-var invalidDNSChars = regexp.MustCompile(`[^a-z0-9-]`)
-
-func sanitizeDNSSegment(s string, maxLen int) string {
-	s = strings.ToLower(s)
-	s = invalidDNSChars.ReplaceAllString(s, "-")
-	if len(s) > maxLen {
-		s = s[:maxLen]
-	}
-	s = strings.Trim(s, "-")
-	return s
-}
-
+// summaryNameForAgent is a package-local alias for the shared API function.
 func summaryNameForAgent(agentIdentity string) string {
-	h := sha256.Sum256([]byte(agentIdentity))
-	suffix := fmt.Sprintf("%x", h[:4]) // 8 hex chars
-	prefix := sanitizeDNSSegment(agentIdentity, 54)
-	if prefix == "" {
-		prefix = "agent"
-	}
-	return prefix + "-" + suffix
+	return governancev1alpha1.ProfileNameForAgent(agentIdentity)
 }

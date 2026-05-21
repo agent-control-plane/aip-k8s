@@ -34,9 +34,9 @@ type Manager struct {
 // Claims are the custom JWT claims for AIP tokens.
 type Claims struct {
 	jwt.RegisteredClaims
-	Action  string `json:"action"`
-	Repo    string `json:"repo"`
-	Request string `json:"request"`
+	Action   string `json:"action"`
+	Resource string `json:"resource"` // fully-qualified target URI (e.g. github://owner/repo, k8s://ns/deployment/name)
+	Request  string `json:"request"`
 }
 
 // NewManager loads an Ed25519 private key from a PEM file.
@@ -190,7 +190,7 @@ func (m *Manager) StartKeyWatcher(ctx context.Context, keyPath string, interval 
 
 // MintToken creates a signed JWT for an approved AgentRequest.
 // Returns the token string, its expiry time, and any error.
-func (m *Manager) MintToken(agentID, action, repo, requestName string) (string, time.Time, error) {
+func (m *Manager) MintToken(agentID, action, resource, requestName string) (string, time.Time, error) {
 	now := m.clock()
 	expiresAt := now.Add(tokenTTL)
 
@@ -202,9 +202,9 @@ func (m *Manager) MintToken(agentID, action, repo, requestName string) (string, 
 			Subject:   agentID,
 			ID:        fmt.Sprintf("%s-%d", requestName, now.UnixNano()),
 		},
-		Action:  action,
-		Repo:    repo,
-		Request: requestName,
+		Action:   action,
+		Resource: resource,
+		Request:  requestName,
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)

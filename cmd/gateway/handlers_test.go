@@ -375,7 +375,7 @@ func TestApproveReturnsJWTToken(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(claims.Subject).To(gomega.Equal("agent-sub"))
 	g.Expect(claims.Action).To(gomega.Equal("pull-request"))
-	g.Expect(claims.Repo).To(gomega.Equal("github://owner/repo"))
+	g.Expect(claims.Resource).To(gomega.Equal("github://owner/repo"))
 	g.Expect(claims.Request).To(gomega.Equal("req-jwt"))
 }
 

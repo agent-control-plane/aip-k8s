@@ -11,6 +11,7 @@ Dockerfile.cross
 /agent
 /gateway
 /main
+/k8s-mcp-server
 
 # Claude Code session data
 .claude/
@@ -46,6 +47,11 @@ go.work
 
 # Kubeconfig might contain secrets
 *.kubeconfig
+
+# Local credential files — never commit tokens or keys
+gh_token
+*.pem
+*-jwt.key
 
 # MkDocs build output
 site/

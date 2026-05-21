@@ -66,8 +66,8 @@ func TestManager(t *testing.T) {
 	if claims.Action != "pull-request" {
 		t.Errorf("action = %q, want %q", claims.Action, "pull-request")
 	}
-	if claims.Repo != "owner/repo" {
-		t.Errorf("repo = %q, want %q", claims.Repo, "owner/repo")
+	if claims.Resource != "owner/repo" {
+		t.Errorf("resource = %q, want %q", claims.Resource, "owner/repo")
 	}
 	if claims.Request != "req-001" {
 		t.Errorf("request = %q, want %q", claims.Request, "req-001")

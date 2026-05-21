@@ -1,0 +1,59 @@
+apiVersion: governance.aip.io/v1alpha1
+kind: AgentGraduationPolicy
+metadata:
+  name: default
+  namespace: default
+spec:
+  # Roll over the last 5 verdicts for trust evaluation.
+  evaluationWindow:
+    count: 5
+
+  # Ungraded Observer requests expire after 24 hours in the demo.
+  awaitingVerdictTTL: 24h
+
+  levels:
+    - name: Observer
+      canExecute: false
+      requiresHumanApproval: false
+      # Observer is the entry level. canExecute: false means the action is NOT
+      # performed; instead the AgentRequest routes to AwaitingVerdict where a
+      # human reviewer grades the proposed action as correct/incorrect/partial.
+      # Each graded verdict counts toward the accuracy score. Once accuracy
+      # reaches 0.6 over at least 3 verdicts the agent graduates to Advisor.
+
+    - name: Advisor
+      canExecute: true
+      requiresHumanApproval: true
+      accuracy:
+        min: 0.6  # 60% correct diagnoses to enter Advisor
+      executions:
+        min: 3    # at least 3 graded verdicts before graduating
+
+    - name: Supervised
+      canExecute: true
+      requiresHumanApproval: true
+      accuracy:
+        min: 0.75
+      executions:
+        min: 10
+
+    - name: Trusted
+      canExecute: true
+      requiresHumanApproval: false
+      accuracy:
+        min: 0.9
+      executions:
+        min: 25
+
+    - name: Autonomous
+      canExecute: true
+      requiresHumanApproval: false
+      accuracy:
+        min: 0.95
+      executions:
+        min: 50
+
+  demotionPolicy:
+    accuracyDropThreshold: 0.15  # demote if accuracy drops 15 points
+    windowSize: 5
+    gracePeriod: 1h

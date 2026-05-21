@@ -13,6 +13,8 @@ import (
 	"github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 )
 
+const defaultGraduationPolicyName = "default"
+
 var (
 	globCache = make(map[string]glob.Glob)
 	globMu    sync.RWMutex
@@ -84,7 +86,7 @@ func (s *Server) evaluateTrustGate(
 	}
 
 	// Fetch the agent's trust profile.
-	profileName := summaryNameForAgent(agentIdentity)
+	profileName := v1alpha1.ProfileNameForAgent(agentIdentity)
 	var profile v1alpha1.AgentTrustProfile
 	if err := s.client.Get(ctx, types.NamespacedName{Name: profileName, Namespace: ns}, &profile); err != nil {
 		if !apierrors.IsNotFound(err) {
@@ -127,7 +129,8 @@ func (s *Server) evaluateTrustGate(
 	var policy v1alpha1.AgentGraduationPolicy
 	requiresApproval := true // fail-closed default
 	canExecute := false      // fail-closed default
-	if err := s.client.Get(ctx, types.NamespacedName{Name: "default", Namespace: ns}, &policy); err != nil {
+	key := types.NamespacedName{Name: defaultGraduationPolicyName, Namespace: ns}
+	if err := s.client.Get(ctx, key, &policy); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return trustGateResult{}, fmt.Errorf("getting AgentGraduationPolicy default: %w", err)
 		}

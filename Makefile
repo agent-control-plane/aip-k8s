@@ -352,6 +352,7 @@ build-gateway: ## Build the AIP gateway binary.
 build-dashboard: ## Build the AIP dashboard binary.
 	go build -o bin/dashboard ./cmd/dashboard
 
+
 .PHONY: local
 local: build-gateway build-dashboard ## Start gateway (:8080) and dashboard (:8082) against the active cluster.
 	@bin/gateway & echo $$! > $(GATEWAY_PID_FILE); echo "Gateway    started on http://localhost:8080 (PID $$(cat $(GATEWAY_PID_FILE)))"

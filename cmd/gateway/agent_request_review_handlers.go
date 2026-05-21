@@ -73,6 +73,9 @@ func (s *Server) handleVerdictAgentRequest(w http.ResponseWriter, r *http.Reques
 		if agentReq.Status.Phase != v1alpha1.PhaseAwaitingVerdict {
 			return fmt.Errorf("request is in phase %q: %w", agentReq.Status.Phase, errVerdictWrongPhase)
 		}
+		if agentReq.Status.Verdict != "" {
+			return fmt.Errorf("request already graded as %q: %w", agentReq.Status.Verdict, errVerdictWrongPhase)
+		}
 
 		now := metav1.Now()
 		base := agentReq.DeepCopy()
@@ -191,12 +194,16 @@ func (s *Server) handleHumanDecision(w http.ResponseWriter, r *http.Request, dec
 		response["token_expires_at"] = expiresAt.Format(time.RFC3339)
 	}
 
+	reviewer := sub
+	if reviewer == "" {
+		reviewer = "unknown (admin)"
+	}
 	patch := client.MergeFrom(agentReq.DeepCopy())
 	agentReq.Spec.HumanApproval = &v1alpha1.HumanApproval{
 		Decision:      decision,
 		Reason:        humanReason,
 		ForGeneration: agentReq.Status.EvaluationGeneration,
-		ApprovedBy:    sub,
+		ApprovedBy:    reviewer,
 	}
 
 	if err := s.client.Patch(r.Context(), &agentReq, patch); err != nil {

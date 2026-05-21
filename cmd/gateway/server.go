@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"regexp"
@@ -185,16 +183,6 @@ func sanitizeDNSSegment(s string, maxLen int) string {
 	}
 	s = strings.Trim(s, "-")
 	return s
-}
-
-func summaryNameForAgent(agentIdentity string) string {
-	h := sha256.Sum256([]byte(agentIdentity))
-	suffix := fmt.Sprintf("%x", h[:4])
-	prefix := sanitizeDNSSegment(agentIdentity, 54)
-	if prefix == "" {
-		prefix = "agent"
-	}
-	return prefix + "-" + suffix
 }
 
 var invalidLabelChars = regexp.MustCompile(`[^A-Za-z0-9\-_.]`)
