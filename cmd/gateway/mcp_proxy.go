@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -74,7 +75,7 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !tool.ReadOnly {
-		if repoErr := enforceRepoClaim(claims.Repo, args); repoErr != "" {
+		if repoErr := enforceRepoClaim(claims.Resource, args); repoErr != "" {
 			writeError(w, http.StatusForbidden, repoErr)
 			return
 		}
@@ -82,6 +83,9 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 
 	result, errMsg := s.forwardToolCall(r.Context(), mcpServer, args, toolName, 1)
 	if errMsg != "" {
+		if !tool.ReadOnly && requestRef != "" {
+			s.failAgentRequest(r.Context(), requestRef, "MCP tool execution failed: "+errMsg)
+		}
 		s.emitMCPLog(agent, serverName, toolName, action, http.StatusBadGateway, requestRef, mcpServer.URL)
 		writeError(w, http.StatusBadGateway, errMsg)
 		return
@@ -97,9 +101,22 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 				contentStr = textBlock.Text
 			}
 		}
+		if !tool.ReadOnly && requestRef != "" {
+			s.failAgentRequest(r.Context(), requestRef, "MCP tool returned an error: "+contentStr)
+		}
 		s.emitMCPLog(agent, serverName, toolName, action, http.StatusBadGateway, requestRef, mcpServer.URL)
 		writeError(w, http.StatusBadGateway, contentStr)
 		return
+	}
+
+	// JWT-authorized write tool succeeded: advance AR through Executing → Completed
+	// so the controller releases the OpsLock.
+	if !tool.ReadOnly && requestRef != "" {
+		go func(ref string) {
+			ctx, cancel := context.WithTimeout(context.Background(), mcpRequestTimeout)
+			defer cancel()
+			s.completeAgentRequest(ctx, ref, "")
+		}(requestRef)
 	}
 
 	s.emitMCPLog(agent, serverName, toolName, action, http.StatusOK, requestRef, mcpServer.URL)
@@ -138,16 +155,16 @@ func extractMCPResult(body []byte) (mcpProxyResult, string) {
 	return *rpc.Result, ""
 }
 
-// enforceRepoClaim validates that the JWT's Repo claim (a github:// URI)
+// enforceRepoClaim validates that the JWT's Resource claim (a github:// URI)
 // matches the owner and repo arguments in the proxy request body.
-func enforceRepoClaim(claimsRepo string, args map[string]any) string {
-	if claimsRepo == "" {
-		return "token missing repo claim"
+func enforceRepoClaim(claimsResource string, args map[string]any) string {
+	if claimsResource == "" {
+		return "token missing resource claim"
 	}
-	claimsRepo = strings.TrimPrefix(claimsRepo, "github://")
-	parts := strings.SplitN(claimsRepo, "/", 3)
+	claimsResource = strings.TrimPrefix(claimsResource, "github://")
+	parts := strings.SplitN(claimsResource, "/", 3)
 	if len(parts) < 2 {
-		return "token has invalid repo claim"
+		return "token has invalid resource claim"
 	}
 	claimsOwner := parts[0]
 	claimsRepoName := parts[1]
@@ -163,6 +180,19 @@ func enforceRepoClaim(claimsRepo string, args map[string]any) string {
 	}
 	if argRepo != claimsRepoName {
 		return fmt.Sprintf("repo mismatch: token has %q, request has %q", claimsRepoName, argRepo)
+	}
+	return ""
+}
+
+// enforceResourceClaim validates that the JWT's Resource claim matches the
+// target URI derived from the tool arguments. Used for non-GitHub MCP tools.
+func enforceResourceClaim(claimsResource string, args map[string]any) string {
+	if claimsResource == "" {
+		return "token missing resource claim"
+	}
+	expected := buildTargetURI(args)
+	if claimsResource != expected {
+		return fmt.Sprintf("resource mismatch: token has %q, request targets %q", claimsResource, expected)
 	}
 	return ""
 }
@@ -224,6 +254,24 @@ func (s *Server) authorizeWriteTool(r *http.Request, toolName string) (*jwt.Clai
 	return claims, claims.Subject, claims.Action, claims.Request, nil
 }
 
+// authorizeWriteToolFromToken validates an AIP JWT passed directly (e.g. from
+// _aip_authorization in tool arguments) rather than from the request header.
+// Used by handleToolsCall after aip/await_approval returns a JWT.
+func (s *Server) authorizeWriteToolFromToken(toolName, token string) (*jwt.Claims, string, string, string, error) {
+	if s.jwtManager == nil {
+		return nil, "", "", "", ErrJWTNotConfigured
+	}
+	claims, err := s.jwtManager.ValidateToken(token)
+	if err != nil {
+		log.Printf("JWT validation failed (from args): %v", err)
+		return nil, "", "", "", ErrJWTInvalid
+	}
+	if claims.Action != toolName {
+		return nil, "", "", "", ErrJWTActionDenied
+	}
+	return claims, claims.Subject, claims.Action, claims.Request, nil
+}
+
 type mcpProxyLog struct {
 	Timestamp  string `json:"timestamp"`
 	Agent      string `json:"agent"`
@@ -232,11 +280,11 @@ type mcpProxyLog struct {
 	Action     string `json:"action"`
 	Status     int    `json:"status"`
 	RequestRef string `json:"requestRef,omitempty"`
-	TargetURI  string `json:"targetURI"`
+	ServerURL  string `json:"serverURL"`
 }
 
 func (s *Server) emitMCPLog(agent, server, tool, action string,
-	status int, requestRef, targetURI string) {
+	status int, requestRef, serverURL string) {
 	entry := mcpProxyLog{
 		Timestamp:  time.Now().Format(time.RFC3339),
 		Agent:      agent,
@@ -245,7 +293,7 @@ func (s *Server) emitMCPLog(agent, server, tool, action string,
 		Action:     action,
 		Status:     status,
 		RequestRef: requestRef,
-		TargetURI:  targetURI,
+		ServerURL:  serverURL,
 	}
 	data, err := json.Marshal(entry)
 	if err != nil {

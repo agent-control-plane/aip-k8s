@@ -45,6 +45,7 @@ const (
 	githubConfigFilePath   = "infra/payment-service.json"
 	e2eTestBranch          = "e2e-mcp-scale-17"
 	e2eTestBranch2         = "e2e-mcp-scale-17-v2"
+	e2eTestBranch3         = "e2e-mcp-scale-17-v3"
 )
 
 var (
@@ -224,6 +225,7 @@ var _ = BeforeSuite(func() {
 
 	ensureBranchLifecycle(e2eTestBranch, "e2e-dummy")
 	ensureBranchLifecycle(e2eTestBranch2, "e2e-dummy-c")
+	ensureBranchLifecycle(e2eTestBranch3, "e2e-dummy-d")
 
 	By("removing pod security enforcement on namespace for mcp server (image runs as root)")
 	cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
@@ -335,6 +337,9 @@ var _ = AfterSuite(func() {
 		_, _ = runCmd(cmd)
 		cmd = exec.Command("gh", "api", "--method", "DELETE",
 			fmt.Sprintf("repos/%s/%s/git/refs/heads/%s", githubOwner, githubRepo, e2eTestBranch2))
+		_, _ = runCmd(cmd)
+		cmd = exec.Command("gh", "api", "--method", "DELETE",
+			fmt.Sprintf("repos/%s/%s/git/refs/heads/%s", githubOwner, githubRepo, e2eTestBranch3))
 		_, _ = runCmd(cmd)
 	}
 })

@@ -153,6 +153,9 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 		_ = kubectlDelete(govResourceJSON)
 		cmd := exec.Command("kubectl", "delete", "agentrequest", "--all", "-n", reqNamespace, "--ignore-not-found")
 		_, _ = runCmd(cmd)
+		cmd = exec.Command("bash", "-c",
+			fmt.Sprintf("kubectl get lease -n %s -o name 2>/dev/null | grep aip-lock- | xargs -r kubectl delete -n %s", reqNamespace, reqNamespace))
+		_, _ = runCmd(cmd)
 	})
 
 	Context("Scenario A: Denied — agent proposes 19 replicas (95% of absoluteMax)", func() {
@@ -356,6 +359,230 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 			Expect(rpcResp.Result.Content).NotTo(BeEmpty())
 			Expect(rpcResp.Result.Content[0].Text).To(ContainSubstring("/pull/"))
 			_, _ = fmt.Fprintf(GinkgoWriter, "PR created via POST /mcp: %s\n", rpcResp.Result.Content[0].Text)
+		})
+	})
+
+	Context("Scenario D: Full MCP-native await_approval flow", func() {
+		It("should return pending_approval on a write tool call, block in aip/await_approval, and execute after human approval", func() {
+			mcpURL := fmt.Sprintf("%s/mcp", gwURL)
+
+			By("calling tools/call for github/create_pull_request without an AIP JWT — expect pending_approval")
+			// proposedMaxReplicas=17 triggers the require-human-approval SafetyPolicy rule
+			// (ratio 0.85 < 0.9, so the deny rule does NOT fire). The AR goes to Pending,
+			// requiring a human reviewer to approve before aip/await_approval can unblock.
+			submitRPC := fmt.Sprintf(`{
+				"jsonrpc": "2.0",
+				"id": 20,
+				"method": "tools/call",
+				"params": {
+					"name": "github/create_pull_request",
+					"arguments": {
+						"_aip_target_uri": "github://%s/%s/files/%s/%s",
+						"owner": "%s",
+						"repo": "%s",
+						"title": "[e2e-test] await_approval flow",
+						"body": "MCP-native await_approval e2e test.",
+						"head": "%s",
+						"base": "%s",
+						"draft": true,
+						"proposedMaxReplicas": 17
+					}
+				}
+			}`, githubOwner, githubRepo, githubConfigFileBranch, githubConfigFilePath, githubOwner, githubRepo, e2eTestBranch3, testBranch)
+
+			submitReq, err := http.NewRequest("POST", mcpURL, strings.NewReader(submitRPC))
+			Expect(err).NotTo(HaveOccurred())
+			submitReq.Header.Set("Content-Type", "application/json")
+			submitReq.Header.Set("X-Remote-User", "e2e-mcp-agent-d")
+
+			submitResp, err := http.DefaultClient.Do(submitReq)
+			Expect(err).NotTo(HaveOccurred())
+			defer submitResp.Body.Close()
+			submitBodyBytes, err := io.ReadAll(submitResp.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(submitResp.StatusCode).To(Equal(http.StatusOK), "tools/call: %s", string(submitBodyBytes))
+
+			By("verifying the response is pending_approval with a requestId")
+			var submitRPCResp struct {
+				Result *struct {
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"result,omitempty"`
+			}
+			Expect(json.Unmarshal(submitBodyBytes, &submitRPCResp)).To(Succeed())
+			Expect(submitRPCResp.Result).NotTo(BeNil())
+			Expect(submitRPCResp.Result.Content).NotTo(BeEmpty())
+
+			var pendingPayload struct {
+				Status    string `json:"status"`
+				RequestID string `json:"requestId"`
+			}
+			Expect(json.Unmarshal([]byte(submitRPCResp.Result.Content[0].Text), &pendingPayload)).To(Succeed())
+			Expect(pendingPayload.Status).To(Equal("pending_approval"))
+			Expect(pendingPayload.RequestID).NotTo(BeEmpty())
+			requestID := pendingPayload.RequestID
+			_, _ = fmt.Fprintf(GinkgoWriter, "AgentRequest created by tools/call: %s\n", requestID)
+
+			By("starting aip/await_approval in background — will block until the AR is approved")
+			type awaitResult struct {
+				jwt string
+				err error
+			}
+			awaitCh := make(chan awaitResult, 1)
+
+			go func() {
+				awaitRPC := fmt.Sprintf(`{
+					"jsonrpc": "2.0",
+					"id": 21,
+					"method": "tools/call",
+					"params": {
+						"name": "aip/await_approval",
+						"arguments": {"requestId": "%s"}
+					}
+				}`, requestID)
+
+				awaitReq, reqErr := http.NewRequest("POST", mcpURL, strings.NewReader(awaitRPC))
+				if reqErr != nil {
+					awaitCh <- awaitResult{err: reqErr}
+					return
+				}
+				awaitReq.Header.Set("Content-Type", "application/json")
+
+				// Client timeout must exceed the gateway --wait-timeout (90s in BeforeSuite).
+				awaitClient := &http.Client{Timeout: 3 * time.Minute}
+				awaitResp, respErr := awaitClient.Do(awaitReq)
+				if respErr != nil {
+					awaitCh <- awaitResult{err: respErr}
+					return
+				}
+				defer awaitResp.Body.Close()
+				awaitBodyBytes, readErr := io.ReadAll(awaitResp.Body)
+				if readErr != nil {
+					awaitCh <- awaitResult{err: readErr}
+					return
+				}
+
+				var awaitRPCResp struct {
+					Result *struct {
+						Content []struct {
+							Text string `json:"text"`
+						} `json:"content"`
+					} `json:"result,omitempty"`
+					Error *struct {
+						Message string `json:"message"`
+					} `json:"error,omitempty"`
+				}
+				if jsonErr := json.Unmarshal(awaitBodyBytes, &awaitRPCResp); jsonErr != nil {
+					awaitCh <- awaitResult{err: fmt.Errorf("unmarshal await_approval response: %w; body: %s", jsonErr, string(awaitBodyBytes))}
+					return
+				}
+				if awaitRPCResp.Error != nil {
+					awaitCh <- awaitResult{err: fmt.Errorf("await_approval JSON-RPC error: %s", awaitRPCResp.Error.Message)}
+					return
+				}
+				if awaitRPCResp.Result == nil || len(awaitRPCResp.Result.Content) == 0 {
+					awaitCh <- awaitResult{err: fmt.Errorf("empty await_approval result: %s", string(awaitBodyBytes))}
+					return
+				}
+
+				var approvedPayload struct {
+					Status string `json:"status"`
+					JWT    string `json:"jwt"`
+				}
+				if jsonErr := json.Unmarshal([]byte(awaitRPCResp.Result.Content[0].Text), &approvedPayload); jsonErr != nil {
+					awaitCh <- awaitResult{err: fmt.Errorf("unmarshal approved payload: %w", jsonErr)}
+					return
+				}
+				if approvedPayload.Status != "approved" {
+					awaitCh <- awaitResult{err: fmt.Errorf("unexpected await_approval status: %s (full: %s)", approvedPayload.Status, awaitRPCResp.Result.Content[0].Text)}
+					return
+				}
+				awaitCh <- awaitResult{jwt: approvedPayload.JWT}
+			}()
+
+			By("waiting briefly for await_approval to be blocking, then approving via gateway REST API")
+			time.Sleep(2 * time.Second)
+
+			approveURL := fmt.Sprintf("%s/agent-requests/%s/approve?namespace=%s", gwURL, requestID, reqNamespace)
+			approveReq, err := http.NewRequest("POST", approveURL, bytes.NewReader([]byte(`{"reason":"e2e await_approval test"}`)))
+			Expect(err).NotTo(HaveOccurred())
+			approveReq.Header.Set("Content-Type", "application/json")
+			approveReq.Header.Set("X-Remote-User", "e2e-reviewer")
+			approveReq.Header.Set("X-Remote-Groups", "reviewers")
+
+			approveResp, err := http.DefaultClient.Do(approveReq)
+			Expect(err).NotTo(HaveOccurred())
+			defer approveResp.Body.Close()
+			approveBodyBytes, err := io.ReadAll(approveResp.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(approveResp.StatusCode).To(Equal(http.StatusOK), "approve endpoint: %s", string(approveBodyBytes))
+			_, _ = fmt.Fprintf(GinkgoWriter, "Approved AgentRequest %s\n", requestID)
+
+			By("receiving JWT from aip/await_approval")
+			var res awaitResult
+			Eventually(awaitCh, 2*time.Minute).Should(Receive(&res))
+			if res.err != nil {
+				// Capture AR status for diagnosis before failing.
+				diagCmd := exec.Command("kubectl", "get", "agentrequest", requestID, "-n", reqNamespace, "-o", "json")
+				diagOut, _ := runCmd(diagCmd)
+				_, _ = fmt.Fprintf(GinkgoWriter, "DIAG AR status: %s\n", diagOut)
+			}
+			Expect(res.err).NotTo(HaveOccurred())
+			Expect(res.jwt).NotTo(BeEmpty())
+			_, _ = fmt.Fprintf(GinkgoWriter, "aip/await_approval returned JWT (len=%d)\n", len(res.jwt))
+
+			By("re-calling github/create_pull_request via POST /mcp with _aip_authorization from aip/await_approval")
+			execRPC := fmt.Sprintf(`{
+				"jsonrpc": "2.0",
+				"id": 22,
+				"method": "tools/call",
+				"params": {
+					"name": "github/create_pull_request",
+					"arguments": {
+						"_aip_authorization": "%s",
+						"owner": "%s",
+						"repo": "%s",
+						"title": "[e2e-test] await_approval flow",
+						"body": "MCP-native await_approval e2e test.\n\nApproved via aip/await_approval.",
+						"head": "%s",
+						"base": "%s",
+						"draft": true,
+						"proposedMaxReplicas": 17
+					}
+				}
+			}`, res.jwt, githubOwner, githubRepo, e2eTestBranch3, testBranch)
+
+			execReq, err := http.NewRequest("POST", mcpURL, strings.NewReader(execRPC))
+			Expect(err).NotTo(HaveOccurred())
+			execReq.Header.Set("Content-Type", "application/json")
+			execReq.Header.Set("X-Remote-User", "e2e-mcp-agent-d")
+
+			execResp, err := http.DefaultClient.Do(execReq)
+			Expect(err).NotTo(HaveOccurred())
+			defer execResp.Body.Close()
+			execBodyBytes, err := io.ReadAll(execResp.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(execResp.StatusCode).To(Equal(http.StatusOK), "POST /mcp exec: %s", string(execBodyBytes))
+
+			By("verifying the JSON-RPC response contains a GitHub PR URL")
+			var execRPCResp struct {
+				Result *struct {
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"result,omitempty"`
+				Error *struct {
+					Code    int    `json:"code"`
+					Message string `json:"message"`
+				} `json:"error,omitempty"`
+			}
+			Expect(json.Unmarshal(execBodyBytes, &execRPCResp)).To(Succeed())
+			Expect(execRPCResp.Error).To(BeNil(), "JSON-RPC error: %+v", execRPCResp.Error)
+			Expect(execRPCResp.Result).NotTo(BeNil())
+			Expect(execRPCResp.Result.Content).NotTo(BeEmpty())
+			Expect(execRPCResp.Result.Content[0].Text).To(ContainSubstring("/pull/"))
+			_, _ = fmt.Fprintf(GinkgoWriter, "PR created via aip/await_approval flow: %s\n", execRPCResp.Result.Content[0].Text)
 		})
 	})
 })

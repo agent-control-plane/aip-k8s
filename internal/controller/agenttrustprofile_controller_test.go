@@ -163,7 +163,10 @@ var _ = Describe("AgentTrustProfile Controller", Ordered, func() {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      name,
 				Namespace: ns,
-				Labels:    map[string]string{"aip.io/agentIdentity": agentID},
+				Labels: map[string]string{
+					"aip.io/agentIdentity": agentID,
+					"aip.io/profileName":   summaryNameForAgent(agentID),
+				},
 			},
 			Spec: governancev1alpha1.AgentRequestSpec{
 				AgentIdentity: agentID,
@@ -219,7 +222,43 @@ var _ = Describe("AgentTrustProfile Controller", Ordered, func() {
 		Expect(profile.Status.TrustLevel).To(Equal(governancev1alpha1.TrustLevelObserver))
 	})
 
-	It("should be a no-op when no DiagnosticAccuracySummary exists", func() {
+	It("should bootstrap AgentTrustProfile from a terminal AgentRequest when no DAS exists", func() {
+		ns := createNamespace("tp-ar-bootstrap")
+		agentID := "agent-ar-bootstrap"
+		profileName := summaryNameForAgent(agentID)
+
+		ar := &governancev1alpha1.AgentRequest{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-ar",
+				Namespace: ns,
+				Labels: map[string]string{
+					"aip.io/agentIdentity": agentID,
+					"aip.io/profileName":   profileName,
+				},
+			},
+			Spec: governancev1alpha1.AgentRequestSpec{
+				AgentIdentity: agentID,
+				Action:        "test",
+				Reason:        "bootstrap test",
+				Target:        governancev1alpha1.Target{URI: "k8s://cluster/test"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, ar)).To(Succeed())
+		base := ar.DeepCopy()
+		ar.Status.Phase = governancev1alpha1.PhaseDenied
+		Expect(k8sClient.Status().Patch(ctx, ar, client.MergeFrom(base))).To(Succeed())
+
+		req := reconcile.Request{NamespacedName: types.NamespacedName{Name: profileName, Namespace: ns}}
+		_, err := newReconciler().Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		var profile governancev1alpha1.AgentTrustProfile
+		Expect(k8sClient.Get(ctx, req.NamespacedName, &profile)).To(Succeed())
+		Expect(profile.Spec.AgentIdentity).To(Equal(agentID))
+		Expect(profile.Status.TrustLevel).To(Equal(governancev1alpha1.TrustLevelObserver))
+	})
+
+	It("should be a no-op when neither DiagnosticAccuracySummary nor AgentRequest exists", func() {
 		ns := createNamespace("tp-noop")
 		req := reconcile.Request{NamespacedName: types.NamespacedName{Name: "non-existent", Namespace: ns}}
 		_, err := newReconciler().Reconcile(ctx, req)

@@ -61,47 +61,13 @@ type AgentTrustProfileReconciler struct {
 func (r *AgentTrustProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// Find the AgentTrustProfile for this agent identity.
 	profileNN := types.NamespacedName{Name: req.Name, Namespace: req.Namespace}
-	var profile governancev1alpha1.AgentTrustProfile
-	if err := r.Get(ctx, profileNN, &profile); err != nil {
-		if !errors.IsNotFound(err) {
-			return ctrl.Result{}, err
-		}
-
-		// Bootstrap: we need the AgentIdentity to create the profile. Try to derive it
-		// from the DiagnosticAccuracySummary which shares the same name.
-		var summary governancev1alpha1.DiagnosticAccuracySummary
-		if err := r.Get(ctx, profileNN, &summary); err != nil {
-			// If neither exists, we can't bootstrap yet.
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
-		agentID := summary.Spec.AgentIdentity
-
-		logger.Info("Bootstrapping AgentTrustProfile", "agentIdentity", agentID)
-		profile = governancev1alpha1.AgentTrustProfile{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      profileNN.Name,
-				Namespace: profileNN.Namespace,
-			},
-			Spec: governancev1alpha1.AgentTrustProfileSpec{
-				AgentIdentity: agentID,
-			},
-		}
-		if err := r.Create(ctx, &profile); err != nil {
-			if !errors.IsAlreadyExists(err) {
-				return ctrl.Result{}, err
-			}
-			// Race: another reconcile created it concurrently — fetch it.
-			if err := r.Get(ctx, profileNN, &profile); err != nil {
-				return ctrl.Result{}, err
-			}
-		} else {
-			// Fetch fresh copy after Create to get a valid resourceVersion for the status patch.
-			if err := r.Get(ctx, profileNN, &profile); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
+	profile, err := r.getOrBootstrapProfile(ctx, profileNN)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if profile.Spec.AgentIdentity == "" {
+		return ctrl.Result{}, nil
 	}
 
 	agentID := profile.Spec.AgentIdentity
@@ -218,6 +184,78 @@ func (r *AgentTrustProfileReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 // computeDemotionAccuracy computes accuracy over DemotionPolicy.WindowSize for demotion
 // evaluation. Falls back to recentAccuracy if WindowSize is unset or the computation fails.
+// getOrBootstrapProfile finds the AgentTrustProfile by name or bootstraps
+// a new one from DiagnosticAccuracySummary or terminal AgentRequests.
+func (r *AgentTrustProfileReconciler) getOrBootstrapProfile(
+	ctx context.Context, profileNN types.NamespacedName,
+) (governancev1alpha1.AgentTrustProfile, error) {
+	var profile governancev1alpha1.AgentTrustProfile
+	if err := r.Get(ctx, profileNN, &profile); err != nil {
+		if !errors.IsNotFound(err) {
+			return profile, err
+		}
+
+		var agentID string
+		var summary governancev1alpha1.DiagnosticAccuracySummary
+		if err := r.Get(ctx, profileNN, &summary); err != nil {
+			if !errors.IsNotFound(err) {
+				return profile, err
+			}
+
+			var arList governancev1alpha1.AgentRequestList
+			if err := r.List(ctx, &arList,
+				client.InNamespace(profileNN.Namespace),
+				client.MatchingLabels{"aip.io/profileName": profileNN.Name},
+			); err != nil {
+				return profile, err
+			}
+			if len(arList.Items) == 0 {
+				var allARs governancev1alpha1.AgentRequestList
+				if err := r.List(ctx, &allARs, client.InNamespace(profileNN.Namespace)); err != nil {
+					return profile, err
+				}
+				for _, ar := range allARs.Items {
+					if governancev1alpha1.ProfileNameForAgent(ar.Spec.AgentIdentity) == profileNN.Name {
+						agentID = ar.Spec.AgentIdentity
+						break
+					}
+				}
+				if agentID == "" {
+					return profile, nil
+				}
+			} else {
+				agentID = arList.Items[0].Spec.AgentIdentity
+			}
+		} else {
+			agentID = summary.Spec.AgentIdentity
+		}
+
+		log.FromContext(ctx).Info("Bootstrapping AgentTrustProfile", "agentIdentity", agentID)
+		profile = governancev1alpha1.AgentTrustProfile{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      profileNN.Name,
+				Namespace: profileNN.Namespace,
+			},
+			Spec: governancev1alpha1.AgentTrustProfileSpec{
+				AgentIdentity: agentID,
+			},
+		}
+		if err := r.Create(ctx, &profile); err != nil {
+			if !errors.IsAlreadyExists(err) {
+				return profile, err
+			}
+			if err := r.Get(ctx, profileNN, &profile); err != nil {
+				return profile, err
+			}
+		} else {
+			if err := r.Get(ctx, profileNN, &profile); err != nil {
+				return profile, err
+			}
+		}
+	}
+	return profile, nil
+}
+
 func (r *AgentTrustProfileReconciler) computeDemotionAccuracy(
 	ctx context.Context,
 	ns, agentID string,
@@ -317,14 +355,19 @@ func (r *AgentTrustProfileReconciler) computeRollingAccuracy(ctx context.Context
 }
 
 // countTerminalExecutions counts Completed and Failed AgentRequests for the agent.
+// Lists all ARs and filters by Spec.AgentIdentity so that pre-existing ARs
+// without the aip.io/agentIdentity label are still counted correctly.
 func (r *AgentTrustProfileReconciler) countTerminalExecutions(ctx context.Context, ns, agentID string) (int64, *float64, error) {
 	var list governancev1alpha1.AgentRequestList
-	if err := r.List(ctx, &list, client.InNamespace(ns), client.MatchingLabels{"aip.io/agentIdentity": agentID}); err != nil {
+	if err := r.List(ctx, &list, client.InNamespace(ns)); err != nil {
 		return 0, nil, err
 	}
 
 	var total, completed int64
 	for _, ar := range list.Items {
+		if ar.Spec.AgentIdentity != agentID {
+			continue
+		}
 		if ar.Status.Phase == governancev1alpha1.PhaseCompleted ||
 			ar.Status.Phase == governancev1alpha1.PhaseFailed {
 
@@ -483,7 +526,8 @@ func (r *AgentTrustProfileReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			return false
 		}
 		return ar.Status.Phase == governancev1alpha1.PhaseCompleted ||
-			ar.Status.Phase == governancev1alpha1.PhaseFailed
+			ar.Status.Phase == governancev1alpha1.PhaseFailed ||
+			ar.Status.Phase == governancev1alpha1.PhaseDenied
 	})
 
 	return ctrl.NewControllerManagedBy(mgr).

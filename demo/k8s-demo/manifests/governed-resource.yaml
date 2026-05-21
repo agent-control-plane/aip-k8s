@@ -1,0 +1,20 @@
+apiVersion: governance.aip.io/v1alpha1
+kind: GovernedResource
+metadata:
+  name: k8s-production
+  labels:
+    env: production
+    tier: infra
+spec:
+  uriPattern: "k8s://default/**"
+  permittedActions:
+    - k8s/resources_scale
+    - k8s/resources_delete
+    - k8s/resources_get
+    - k8s/resources_list
+    - k8s/pods_list
+    - k8s/pods_log
+  contextFetcher: none
+  trustRequirements:
+    minTrustLevel: Advisor
+    maxAutonomyLevel: Supervised

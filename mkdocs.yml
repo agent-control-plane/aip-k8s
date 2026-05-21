@@ -81,6 +81,7 @@ nav:
       - Trust Gate: trust-gate.md
       - Governed Resources: governed-resources.md
       - Garbage Collection: garbage-collection.md
+      - MCP Protocol Gateway: mcp-protocol.md
   - Authentication:
       - OIDC with Keycloak: oidc-keycloak.md
   - Reference:

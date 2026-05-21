@@ -357,12 +357,18 @@ function renderList() {
         const isActive = state.selectedRequest && state.selectedRequest.metadata.name === req.metadata.name;
         const phase = req.status?.phase || 'Pending';
         const time = new Date(req.metadata.creationTimestamp).toLocaleTimeString();
+        const verdict = req.status?.verdict;
+        const verdictBadgeClass = verdict === 'correct' ? 'badge-completed' : verdict === 'incorrect' ? 'badge-failed' : 'badge-warning';
+        const verdictBadge = verdict
+            ? `<span class="badge ${verdictBadgeClass}" style="margin-left:0.4rem;font-size:0.7rem;">${escapeHtml(verdict)}</span>`
+            : '';
 
         return `
             <div class="request-item ${isActive ? 'active' : ''}" data-name="${escapeHtml(req.metadata.name)}" onclick="selectRequestById(this.dataset.name)">
                 <div class="title">${escapeHtml(req.spec.agentIdentity)}</div>
                 <div class="meta">
                     <span class="badge badge-${escapeHtml(phase.toLowerCase())}">${escapeHtml(phase)}</span>
+                    ${verdictBadge}
                     <span>${time}</span>
                 </div>
                 <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.4rem;">
@@ -606,19 +612,19 @@ function renderDetails() {
     if (req.status?.verdict) {
         const v = req.status.verdict;
         let vclass = 'badge-executing';
-        if (v === 'correct') vclass = 'badge-completed';
-        else if (v === 'incorrect') vclass = 'badge-failed';
-        else if (v === 'partial') vclass = 'badge-warning';
+        let borderColor = 'var(--warning)';
+        if (v === 'correct') { vclass = 'badge-completed'; borderColor = 'var(--success)'; }
+        else if (v === 'incorrect') { vclass = 'badge-failed'; borderColor = 'var(--error)'; }
 
         verdictInfo = `
-            <div style="margin-top:1.25rem;padding:1rem;background:rgba(255,255,255,0.02);border:1px solid var(--border-color);border-radius:8px;">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+            <div style="margin-top:1.25rem;padding:1rem;background:rgba(255,255,255,0.03);border:1px solid var(--border-color);border-left:3px solid ${borderColor};border-radius:8px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
                     <span style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-secondary);">Human Verdict</span>
-                    <span class="badge ${vclass}">${escapeHtml(v)}</span>
+                    <span class="badge ${vclass}" style="font-size:0.85rem;padding:0.3rem 0.75rem;">${escapeHtml(v)}</span>
                 </div>
                 ${req.status.verdictReasonCode ? `<div style="font-size:0.85rem;margin-bottom:0.5rem;"><span style="color:var(--text-secondary);">Reason:</span> ${escapeHtml(req.status.verdictReasonCode)}</div>` : ''}
                 ${req.status.verdictNote ? `<div style="font-size:0.85rem;margin-bottom:0.5rem;font-style:italic;">&ldquo;${escapeHtml(req.status.verdictNote)}&rdquo;</div>` : ''}
-                <div style="font-size:0.72rem;color:var(--text-secondary);text-align:right;">Graded by ${escapeHtml(req.status.verdictBy || 'unknown')} at ${req.status.verdictAt ? new Date(req.status.verdictAt).toLocaleString() : ''}</div>
+                <div style="font-size:0.72rem;color:var(--text-secondary);text-align:right;">Graded by ${escapeHtml(req.status.verdictBy || 'unknown')} &bull; ${req.status.verdictAt ? new Date(req.status.verdictAt).toLocaleString() : ''}</div>
             </div>`;
     }
 
@@ -720,7 +726,7 @@ function renderDetails() {
                 </div>
                 ${(needsApproval || phase === 'AwaitingVerdict') && isReviewer ? `
                     <div class="actions">
-                        ${phase === 'AwaitingVerdict' ? 
+                        ${phase === 'AwaitingVerdict' ?
                             `<button class="primary" onclick="gradeAgentRequest('${escapeHtml(name)}')">Grade Diagnosis</button>` :
                             `<button class="primary" data-name="${escapeHtml(name)}" data-endpoints="${!!req.status?.controlPlaneVerification?.hasActiveEndpoints}" onclick="promptApproval(this.dataset.name, this.dataset.endpoints === 'true')">Approve Override</button>
                              <button class="danger" data-name="${escapeHtml(name)}" onclick="confirmDenial(this.dataset.name)">Deny</button>`
@@ -766,14 +772,25 @@ function renderDetails() {
                             `<span style="margin-right:0.75rem;">${escapeHtml(pr.policyName)}/${escapeHtml(pr.ruleName)}: ${escapeHtml(pr.result)}${pr.policyGeneration != null ? ' (gen ' + escapeHtml(String(pr.policyGeneration)) + ')' : ''}</span>`
                           ).join('') + `</div>`
                         : '';
+                    const ann = log.spec.annotations || {};
+                    const actorLabel = (() => {
+                        if (ann.approvedBy)  return `by <strong>${escapeHtml(ann.approvedBy)}</strong>`;
+                        if (ann.verdictBy)   return `by <strong>${escapeHtml(ann.verdictBy)}</strong>`;
+                        return '';
+                    })();
+                    const verdictLabel = ann.verdict
+                        ? `<span style="margin-left:0.5rem;font-size:0.72rem;color:var(--text-secondary);">verdict: ${escapeHtml(ann.verdict)}</span>`
+                        : '';
                     return `
                     <div class="audit-item">
                         <span class="time">${new Date(log.spec.timestamp).toLocaleTimeString()}</span>
                         <span style="margin-right:0.35rem;">${icon}</span>
                         <span style="font-weight:600;color:var(--accent-color);">${escapeHtml(log.spec.event)}</span>
+                        ${actorLabel ? `<span style="margin-left:0.4rem;font-size:0.82rem;color:var(--text-secondary);">${actorLabel}</span>` : ''}
                         ${log.spec.phaseTransition ? `
                             <span style="color:var(--text-secondary);">&nbsp;(${escapeHtml(log.spec.phaseTransition.from)} &rarr; ${escapeHtml(log.spec.phaseTransition.to)})</span>
                         ` : ''}
+                        ${verdictLabel}
                         ${policyResults}
                     </div>`;
                 }).join('')}

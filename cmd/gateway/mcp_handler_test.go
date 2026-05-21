@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -120,7 +123,7 @@ func TestMCPHandler_ToolsList(t *testing.T) {
 
 	var result mcp.ToolsListResult
 	g.Expect(json.Unmarshal(resp.Result, &result)).To(gomega.Succeed())
-	g.Expect(result.Tools).To(gomega.HaveLen(3))
+	g.Expect(result.Tools).To(gomega.HaveLen(4))
 
 	toolNames := make(map[string]string)
 	for _, t := range result.Tools {
@@ -129,6 +132,7 @@ func TestMCPHandler_ToolsList(t *testing.T) {
 	g.Expect(toolNames).To(gomega.HaveKey("github/create_pull_request"))
 	g.Expect(toolNames).To(gomega.HaveKey("github/get_file_contents"))
 	g.Expect(toolNames).To(gomega.HaveKey("jira/create_issue"))
+	g.Expect(toolNames).To(gomega.HaveKey("aip/await_approval"))
 }
 
 func TestMCPHandler_ToolsList_Empty(t *testing.T) {
@@ -148,7 +152,9 @@ func TestMCPHandler_ToolsList_Empty(t *testing.T) {
 
 	var result mcp.ToolsListResult
 	g.Expect(json.Unmarshal(resp.Result, &result)).To(gomega.Succeed())
-	g.Expect(result.Tools).To(gomega.BeEmpty())
+	// aip/await_approval is always present as an internal governance tool.
+	g.Expect(result.Tools).To(gomega.HaveLen(1))
+	g.Expect(result.Tools[0].Name).To(gomega.Equal("aip/await_approval"))
 }
 
 func TestMCPHandler_ToolsCall_ReadOnly(t *testing.T) {
@@ -212,8 +218,10 @@ func TestMCPHandler_ToolsCall_WriteTool_MissingJWT(t *testing.T) {
 		} `json:"error"`
 	}
 	g.Expect(json.Unmarshal(rr.Body.Bytes(), &resp)).To(gomega.Succeed())
+	// With no k8s client configured, governance submission fails with ErrCodeInternal.
+	// In production a client is always set and the call returns pending_approval instead.
 	g.Expect(resp.Error).ToNot(gomega.BeNil())
-	g.Expect(resp.Error.Code).To(gomega.Equal(mcp.ErrCodeAuth))
+	g.Expect(resp.Error.Code).To(gomega.Equal(mcp.ErrCodeInternal))
 }
 
 func TestMCPHandler_ToolsCall_WriteTool_ValidJWT(t *testing.T) {
@@ -395,18 +403,32 @@ func TestSplitPrefixedName_EmptyParts(t *testing.T) {
 func TestMCPHandler_FullSequence(t *testing.T) {
 	g := gomega.NewWithT(t)
 
+	// The upstream must handle initialize (lazy session init), tools/list (schema
+	// fetch), and tools/call (actual forwarding).
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Safe to ignore: r.Body in a test server is always readable unless the test itself
-		// corrupts the request, which is not the case here.
+		// Safe to ignore: r.Body in a test server is always readable.
 		body, _ := io.ReadAll(r.Body)
-		g.Expect(string(body)).To(gomega.ContainSubstring(`"method":"tools/call"`))
+		bodyStr := string(body)
 
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		// Safe to ignore: writing to an in-memory test server ResponseRecorder never fails.
-		_, _ = fmt.Fprintln(w, "event: message")
-		data := `data: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"integration result"}]}}`
-		_, _ = fmt.Fprintln(w, data)
+		switch {
+		case strings.Contains(bodyStr, `"initialize"`):
+			w.Header().Set("Mcp-Session-Id", "test-session-123")
+			w.WriteHeader(http.StatusOK)
+		case strings.Contains(bodyStr, `"tools/list"`):
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			// Safe to ignore: writing to an in-memory test server never fails.
+			_, _ = fmt.Fprintln(w, `data: {"jsonrpc":"2.0","id":2,"result":{"tools":[`+
+				`{"name":"get_file_contents","inputSchema":{"type":"object","properties":{"path":{"type":"string"}}}}]}}`)
+		default:
+			g.Expect(bodyStr).To(gomega.ContainSubstring(`"method":"tools/call"`))
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			// Safe to ignore: writing to an in-memory test server never fails.
+			_, _ = fmt.Fprintln(w, "event: message")
+			data := `data: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"integration result"}]}}`
+			_, _ = fmt.Fprintln(w, data)
+		}
 	}))
 	defer upstream.Close()
 
@@ -471,6 +493,96 @@ func TestMCPHandler_FullSequence(t *testing.T) {
 	})
 }
 
+func TestMCPHandler_ToolsCall_EnsureSessionFailureLogged(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	// Upstream returns 200 with no Mcp-Session-Id, causing ensureSession to fail.
+	// It then handles tools/call normally so we can verify the handler proceeded.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), `"initialize"`) {
+			// No Mcp-Session-Id header: initUpstreamSession returns false.
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintln(w, "event: message")
+		_, _ = fmt.Fprintln(w, `data: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"pod data"}]}}`)
+	}))
+	defer upstream.Close()
+
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(os.Stderr)
+
+	s := &Server{
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+		mcpServers: []MCPServer{
+			{Name: "k8s", URL: upstream.URL, Status: "available",
+				Tools:     []MCPTool{{Name: "pods_list", ReadOnly: true}},
+				sessionMu: &sync.Mutex{}},
+		},
+	}
+	body := mcpRequest("tools/call", mcp.ToolsCallParams{
+		Name:      "k8s/pods_list",
+		Arguments: map[string]any{"namespace": "default"},
+	})
+	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(string(body)))
+	rr := httptest.NewRecorder()
+
+	s.handleMCP(rr, req)
+
+	g.Expect(rr.Code).To(gomega.Equal(http.StatusOK))
+	g.Expect(logBuf.String()).To(gomega.ContainSubstring("failed to establish session with k8s"))
+	// Handler proceeds and returns the upstream result.
+	g.Expect(rr.Body.String()).To(gomega.ContainSubstring("pod data"))
+}
+
+func TestMCPHandler_ToolsCall_Upstream401_ResetsSession(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer upstream.Close()
+
+	mu := &sync.Mutex{}
+	s := &Server{
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+		mcpServers: []MCPServer{
+			{Name: "k8s", URL: upstream.URL, Status: "available",
+				Tools:        []MCPTool{{Name: "pods_list", ReadOnly: true}},
+				sessionMu:    mu,
+				sessionReady: true}, // pre-warmed session
+		},
+	}
+	body := mcpRequest("tools/call", mcp.ToolsCallParams{
+		Name:      "k8s/pods_list",
+		Arguments: map[string]any{"namespace": "default"},
+	})
+	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(string(body)))
+	rr := httptest.NewRecorder()
+
+	s.handleMCP(rr, req)
+
+	g.Expect(rr.Code).To(gomega.Equal(http.StatusOK))
+	var resp struct {
+		Error *struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	g.Expect(json.Unmarshal(rr.Body.Bytes(), &resp)).To(gomega.Succeed())
+	g.Expect(resp.Error).ToNot(gomega.BeNil())
+	g.Expect(resp.Error.Code).To(gomega.Equal(mcp.ErrCodeInternal))
+
+	// After 401, resetSession must have cleared the ready flag.
+	mu.Lock()
+	ready := s.mcpServers[0].sessionReady
+	mu.Unlock()
+	g.Expect(ready).To(gomega.BeFalse())
+}
+
 func TestMCPHandler_ToolsCall_WriteTool_RepoMismatch(t *testing.T) {
 	g := gomega.NewWithT(t)
 
@@ -494,6 +606,50 @@ func TestMCPHandler_ToolsCall_WriteTool_RepoMismatch(t *testing.T) {
 	})
 	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(string(body)))
 	req.Header.Set("X-AIP-Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+
+	s.handleMCP(rr, req)
+
+	g.Expect(rr.Code).To(gomega.Equal(http.StatusOK))
+	var resp struct {
+		Error *struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	g.Expect(json.Unmarshal(rr.Body.Bytes(), &resp)).To(gomega.Succeed())
+	g.Expect(resp.Error).ToNot(gomega.BeNil())
+	g.Expect(resp.Error.Code).To(gomega.Equal(mcp.ErrCodeForbidden))
+}
+
+func TestMCPHandler_ToolsCall_WriteTool_K8sResourceMismatch(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	keyPath, cleanup := generateTestKeyFile(t)
+	defer cleanup()
+	mgr, err := jwt.NewManager(keyPath, time.Now)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// JWT authorizes "other-app"; call targets "payment-api".
+	token, _, err := mgr.MintToken("agent-1", "resources_scale",
+		"k8s://default/deployment/other-app", "req-456")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	s := &Server{jwtManager: mgr, httpClient: &http.Client{},
+		mcpServers: []MCPServer{
+			{Name: "k8s", URL: "http://example.com", Status: "available",
+				Tools: []MCPTool{{Name: "resources_scale", ReadOnly: false}}},
+		},
+	}
+	body := mcpRequest("tools/call", mcp.ToolsCallParams{
+		Name: "k8s/resources_scale",
+		Arguments: map[string]any{
+			"_aip_authorization": token,
+			"namespace":          "default",
+			"name":               "payment-api",
+			"kind":               "Deployment",
+		},
+	})
+	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(string(body)))
 	rr := httptest.NewRecorder()
 
 	s.handleMCP(rr, req)

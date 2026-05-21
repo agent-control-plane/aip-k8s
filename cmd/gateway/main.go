@@ -143,6 +143,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load MCP registry: %v", err)
 	}
+	// Upstream sessions are initialized lazily on first tools/call.
 
 	server := &Server{
 		client:                  k8sClient,

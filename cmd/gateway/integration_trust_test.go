@@ -19,6 +19,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+const annotationFalse = "false"
+
 // trustTestCleanup deletes all trust-gate resources created during a test run.
 // It is safe to call even if resources do not exist.
 func trustTestCleanup(ctx context.Context, c client.Client) {
@@ -126,7 +128,7 @@ func profileLevelPrereqs(level string) (numVerdicts, numExecs int) {
 func setProfileLevel(
 	ctx context.Context, gm *gomega.WithT, mgrClient, directClient client.Client, agentID, level string,
 ) {
-	profileName := summaryNameForAgent(agentID)
+	profileName := v1alpha1.ProfileNameForAgent(agentID)
 	numVerdicts, numExecs := profileLevelPrereqs(level)
 
 	// Create AuditRecords so computeRollingAccuracy returns the required accuracy.
@@ -361,7 +363,7 @@ func runTrustGateTests(t *testing.T, mgrClient, directClient client.Client, ctx 
 		var found bool
 		for i := range arList.Items {
 			if arList.Items[i].Spec.Action == "test" &&
-				arList.Items[i].Annotations[v1alpha1.AnnotationCanExecute] == "false" {
+				arList.Items[i].Annotations[v1alpha1.AnnotationCanExecute] == annotationFalse {
 				found = true
 				break
 			}
@@ -427,7 +429,7 @@ func runTrustGateTests(t *testing.T, mgrClient, directClient client.Client, ctx 
 		// Effective level = Supervised (capped from Autonomous).
 		gm.Expect(ar.Annotations[v1alpha1.AnnotationEffectiveTrustLevel]).To(gomega.Equal(v1alpha1.TrustLevelSupervised))
 		// Supervised.CanExecute=true → annotation is NOT "false".
-		gm.Expect(ar.Annotations[v1alpha1.AnnotationCanExecute]).NotTo(gomega.Equal("false"))
+		gm.Expect(ar.Annotations[v1alpha1.AnnotationCanExecute]).NotTo(gomega.Equal(annotationFalse))
 		// Supervised.RequiresHumanApproval=true.
 		gm.Expect(ar.Annotations[v1alpha1.AnnotationRequiresHumanApproval]).To(gomega.Equal("true"))
 	})
@@ -568,7 +570,7 @@ func runTrustGateTests(t *testing.T, mgrClient, directClient client.Client, ctx 
 
 		// Phase 4: Wait for AgentTrustProfile to be promoted.
 		// 5 correct verdicts (accuracy=1.0) + 5 completed executions → Trusted.
-		profileName := summaryNameForAgent(agentID)
+		profileName := v1alpha1.ProfileNameForAgent(agentID)
 		gm.Eventually(func() string {
 			var profile v1alpha1.AgentTrustProfile
 			_ = directClient.Get(ctx, types.NamespacedName{Name: profileName, Namespace: testDefaultNS}, &profile)

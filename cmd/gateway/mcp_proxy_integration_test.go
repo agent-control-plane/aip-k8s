@@ -47,7 +47,6 @@ func TestMCPProxy_FullFlow_ValidJWT(t *testing.T) {
 	g := gomega.NewWithT(t)
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		g.Expect(r.URL.Path).To(gomega.Equal("/tools/call"))
 		body, _ := io.ReadAll(r.Body)
 		g.Expect(string(body)).To(gomega.ContainSubstring(`"jsonrpc":"2.0"`))
 		g.Expect(string(body)).To(gomega.ContainSubstring(`"method":"tools/call"`))

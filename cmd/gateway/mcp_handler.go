@@ -75,11 +75,18 @@ func (s *Server) handleToolsList(w http.ResponseWriter, req *mcp.JSONRPCRequest)
 	var tools []mcp.MCPToolInfo
 	for _, srv := range s.mcpServers {
 		for _, t := range srv.Tools {
+			schema := t.Schema
+			if schema == nil {
+				schema = map[string]any{"type": "object"}
+			}
 			tools = append(tools, mcp.MCPToolInfo{
-				Name: fmt.Sprintf("%s/%s", srv.Name, t.Name),
+				Name:        fmt.Sprintf("%s/%s", srv.Name, t.Name),
+				InputSchema: schema,
 			})
 		}
 	}
+	// AIP governance tools are always available alongside external server tools.
+	tools = append(tools, aipToolDefs...)
 	if tools == nil {
 		tools = []mcp.MCPToolInfo{}
 	}
@@ -97,12 +104,23 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *mc
 		return
 	}
 
+	// AIP governance tools (aip/*) are handled internally before any registry lookup.
+	if serverName == "aip" {
+		s.handleAIPTool(w, r, req, toolName, params.Arguments)
+		return
+	}
+
 	mcpServer := s.findMCPServer(serverName)
 	if mcpServer == nil {
 		if wErr := mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeInvalid, "MCP server not found: "+serverName); wErr != nil {
 			log.Printf("WriteJSONRPCError failed: %v", wErr)
 		}
 		return
+	}
+
+	// Lazily establish the upstream session and populate tool schemas on first use.
+	if !mcpServer.ensureSession(s.httpClient) {
+		log.Printf("handleToolsCall: failed to establish session with %s; proceeding anyway", mcpServer.Name)
 	}
 
 	tool := s.findTool(mcpServer, toolName)
@@ -113,29 +131,41 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *mc
 		return
 	}
 
+	// Extract AIP-specific arguments before forwarding to the upstream server.
+	// These are stripped from the args map so they are not sent upstream.
+	aipJWT, _ := params.Arguments["_aip_authorization"].(string)
+	delete(params.Arguments, "_aip_authorization")
+	aipTargetURI, _ := params.Arguments["_aip_target_uri"].(string)
+	delete(params.Arguments, "_aip_target_uri")
+	aipReason, _ := params.Arguments["_aip_reason"].(string)
+	delete(params.Arguments, "_aip_reason")
+
 	var claims *jwt.Claims
 	var agent, action, requestRef string
 	if !tool.ReadOnly {
 		var authErr error
-		claims, agent, action, requestRef, authErr = s.authorizeWriteTool(r, toolName)
+		if aipJWT != "" {
+			// JWT supplied via tool arguments (after aip/await_approval approval).
+			claims, agent, action, requestRef, authErr = s.authorizeWriteToolFromToken(toolName, aipJWT)
+		} else {
+			// JWT from X-AIP-Authorization header (direct /mcp-proxy callers).
+			claims, agent, action, requestRef, authErr = s.authorizeWriteTool(r, toolName)
+		}
+
 		if authErr != nil {
-			var wErr error
-			switch {
-			case errors.Is(authErr, ErrJWTNotConfigured):
-				wErr = mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeInternal, authErr.Error())
-			case errors.Is(authErr, ErrJWTActionDenied):
-				wErr = mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeForbidden, authErr.Error())
-			default:
-				wErr = mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeAuth, authErr.Error())
+			if errors.Is(authErr, ErrJWTMissing) {
+				s.governanceSubmissionPath(w, r, req, params, aipTargetURI, aipReason)
+				return
 			}
-			if wErr != nil {
-				log.Printf("WriteJSONRPCError failed: %v", wErr)
-			}
+			s.writeAuthError(w, req, authErr)
 			return
 		}
 
-		if repoErr := enforceRepoClaim(claims.Repo, params.Arguments); repoErr != "" {
-			if wErr := mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeForbidden, repoErr); wErr != nil {
+		// Enforce resource claim: GitHub tools parse the github:// URI against
+		// owner/repo args; all other tools compare the claim against the target
+		// URI rebuilt from arguments.
+		if err := s.enforceResourceClaimForTool(serverName, claims.Resource, params.Arguments); err != "" {
+			if wErr := mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeForbidden, err); wErr != nil {
 				log.Printf("WriteJSONRPCError failed: %v", wErr)
 			}
 			return
@@ -147,10 +177,25 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *mc
 
 	result, errMsg := s.forwardToolCall(r.Context(), mcpServer, params.Arguments, toolName, req.ID)
 	if errMsg != "" {
+		// JWT-authorized write tool failed: advance AR to Failed to release the lock.
+		if requestRef != "" {
+			s.failAgentRequest(r.Context(), requestRef, "MCP tool execution failed: "+errMsg)
+		}
 		if wErr := mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeInternal, errMsg); wErr != nil {
 			log.Printf("WriteJSONRPCError failed: %v", wErr)
 		}
 		return
+	}
+
+	// JWT-authorized write tool succeeded: advance AR through Executing → Completed
+	// so the controller releases the OpsLock. Fire-and-forget in background so the
+	// MCP response is not delayed by the K8s patch.
+	if requestRef != "" {
+		go func(ref string) {
+			ctx, cancel := context.WithTimeout(context.Background(), mcpRequestTimeout)
+			defer cancel()
+			s.completeAgentRequest(ctx, ref, "")
+		}(requestRef)
 	}
 
 	s.emitMCPLog(agent, serverName, toolName, action, http.StatusOK, requestRef, mcpServer.URL)
@@ -191,6 +236,66 @@ func parseToolCallParams(req *mcp.JSONRPCRequest) (*mcp.ToolsCallParams, string,
 	return &params, server, tool, nil
 }
 
+// governanceSubmissionPath submits an AgentRequest for governance and writes a
+// pending_approval JSON-RPC response. Returns after writing; caller must return.
+func (s *Server) governanceSubmissionPath(
+	w http.ResponseWriter, r *http.Request, req *mcp.JSONRPCRequest,
+	params *mcp.ToolsCallParams, aipTargetURI, aipReason string,
+) {
+	agentID := callerSubFromCtx(r.Context())
+	if agentID == "" {
+		if s.authRequired {
+			if wErr := mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeAuth,
+				"caller identity required for write tools"); wErr != nil {
+				log.Printf("WriteJSONRPCError failed: %v", wErr)
+			}
+			return
+		}
+		agentID = "unauthenticated"
+	}
+	ar, submitErr := s.submitAgentRequestForTool(
+		r.Context(), agentID, params.Name, aipTargetURI, aipReason, params.Arguments,
+	)
+	if submitErr != nil {
+		if wErr := mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeInternal,
+			"failed to submit governance request: "+submitErr.Error()); wErr != nil {
+			log.Printf("WriteJSONRPCError failed: %v", wErr)
+		}
+		return
+	}
+	if wErr := mcp.WriteJSONRPCResponse(w, req.ID, mcp.ToolsCallResult{
+		Content: []json.RawMessage{pendingApprovalContent(ar.Name)},
+	}); wErr != nil {
+		log.Printf("WriteJSONRPCResponse failed: %v", wErr)
+	}
+}
+
+// writeAuthError writes an appropriate JSON-RPC error response for a write tool
+// auth failure. Returns after writing; caller must return.
+func (s *Server) writeAuthError(w http.ResponseWriter, req *mcp.JSONRPCRequest, authErr error) {
+	var wErr error
+	switch {
+	case errors.Is(authErr, ErrJWTNotConfigured):
+		wErr = mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeInternal, authErr.Error())
+	case errors.Is(authErr, ErrJWTActionDenied):
+		wErr = mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeForbidden, authErr.Error())
+	default:
+		wErr = mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeAuth, authErr.Error())
+	}
+	if wErr != nil {
+		log.Printf("WriteJSONRPCError failed: %v", wErr)
+	}
+}
+
+// enforceResourceClaimForTool enforces the JWT resource claim against the tool
+// arguments. Returns an error string (non-empty means mismatch) or "" on match.
+func (s *Server) enforceResourceClaimForTool(serverName, resource string, args map[string]any) string {
+	if serverName == "github" {
+		return enforceRepoClaim(resource, args)
+	}
+	return enforceResourceClaim(resource, args)
+}
+
 func (s *Server) forwardToolCall(
 	ctx context.Context, mcpServer *MCPServer, args map[string]any,
 	toolName string, id any,
@@ -203,13 +308,17 @@ func (s *Server) forwardToolCall(
 	callCtx, cancel := context.WithTimeout(ctx, mcpRequestTimeout)
 	defer cancel()
 
-	mcpURL := strings.TrimSuffix(mcpServer.URL, "/") + "/tools/call"
-	req, err := http.NewRequestWithContext(callCtx, "POST", mcpURL, bytes.NewReader(rpcBody))
+	// Streamable HTTP transport (MCP 2025-03-26): POST JSON-RPC to the base URL,
+	// not to a /tools/call sub-path.
+	req, err := http.NewRequestWithContext(callCtx, "POST", mcpServer.URL, bytes.NewReader(rpcBody))
 	if err != nil {
 		return mcpProxyResult{}, "failed to create request"
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	if mcpServer.SessionID != "" {
+		req.Header.Set("Mcp-Session-Id", mcpServer.SessionID)
+	}
 	bearerToken := mcpServer.BearerToken
 	if bearerToken == "" {
 		bearerToken = os.Getenv("AIP_MCP_TOKEN")
@@ -235,6 +344,10 @@ func (s *Server) forwardToolCall(
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		// A 401 from upstream means the session expired; reset so the next call re-initializes.
+		if resp.StatusCode == http.StatusUnauthorized {
+			mcpServer.resetSession()
+		}
 		return mcpProxyResult{}, fmt.Sprintf("MCP server returned status %d", resp.StatusCode)
 	}
 
