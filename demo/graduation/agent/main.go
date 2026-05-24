@@ -209,12 +209,20 @@ func gradeVerdict(gateway, ns, name string) {
 	}
 }
 
-func approveRequest(gateway, ns, name string) {
+func approveRequest(gateway, ns, name string) error {
 	url := fmt.Sprintf("%s/agent-requests/%s/approve?namespace=%s", gateway, name, ns)
 	_, code, err := post(url, map[string]string{"reason": "demo auto-approval"})
-	if err != nil || code >= 400 {
-		log.Fatalf("approve failed for %s: err=%v code=%d", name, err, code)
+	if err != nil {
+		return err
 	}
+	if code == 409 {
+		// Benign race: controller auto-approved between getPhase and this call.
+		return nil
+	}
+	if code >= 400 {
+		return fmt.Errorf("approve failed for %s: code=%d", name, code)
+	}
+	return nil
 }
 
 func markExecuting(gateway, ns, name string) {
@@ -314,7 +322,9 @@ func humanApprovalPhase(gateway, ns, fromLevel, toLevel string, n int) {
 		phase, _ := getPhase(gateway, ns, name)
 		if phase == "Pending" {
 			fmt.Printf("  %s👤 Reviewer approving...%s\n", yellow, reset)
-			approveRequest(gateway, ns, name)
+			if err := approveRequest(gateway, ns, name); err != nil {
+				log.Fatalf("approveRequest failed for %s: %v", name, err)
+			}
 		} else {
 			fmt.Printf("  %s👤 Auto-approved (open mode — trust level not yet visible to controller cache)%s\n", yellow, reset)
 		}

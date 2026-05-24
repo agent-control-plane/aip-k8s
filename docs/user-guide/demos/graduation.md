@@ -50,7 +50,7 @@ The agent submits 3 requests that require human approval. In dev mode (open auth
 
 ## Expected output
 
-```
+```text
 🎉 Graduation complete!
 
 The agent progressed through all five trust levels:

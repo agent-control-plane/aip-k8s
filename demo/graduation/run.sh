@@ -104,8 +104,17 @@ banner "Starting AIP Controller (health probe: $CTL_PROBE_PORT)"
   --jwt-key-namespace "$HELM_NAMESPACE" \
   &
 CTL_PID=$!
-sleep 3
-curl -sf "http://localhost:$CTL_PROBE_PORT/healthz" > /dev/null || { echo "Controller failed to start"; exit 1; }
+info "Waiting for controller health probe..."
+for i in $(seq 1 30); do
+  if curl -sf "http://localhost:$CTL_PROBE_PORT/healthz" > /dev/null; then
+    break
+  fi
+  if [ "$i" -eq 30 ]; then
+    echo "Controller failed to start"
+    exit 1
+  fi
+  sleep 1
+done
 info "AIP Controller running (PID $CTL_PID)"
 
 # ── Start AIP Gateway (open mode — no auth required) ─────────────────────────
@@ -115,8 +124,17 @@ banner "Starting AIP Gateway (port $GATEWAY_PORT)"
   --wait-timeout 120s \
   &
 GW_PID=$!
-sleep 2
-curl -sf "${GATEWAY_URL}/healthz" > /dev/null || { echo "Gateway failed to start"; exit 1; }
+info "Waiting for gateway health probe..."
+for i in $(seq 1 30); do
+  if curl -sf "${GATEWAY_URL}/healthz" > /dev/null; then
+    break
+  fi
+  if [ "$i" -eq 30 ]; then
+    echo "Gateway failed to start"
+    exit 1
+  fi
+  sleep 1
+done
 info "AIP Gateway running at ${GATEWAY_URL} (PID $GW_PID)"
 
 # ── Run the agent ─────────────────────────────────────────────────────────────
