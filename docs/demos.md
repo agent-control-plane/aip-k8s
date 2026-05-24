@@ -5,6 +5,7 @@
 | [`demo/scaledown`](https://github.com/agent-control-plane/aip-k8s/tree/main/demo/scaledown) | **DataTalks incident, reproduced and prevented.** An idle-resource-reaper agent tries to delete a production service it misclassifies as unused (stale monitoring data). AIP independently verifies live traffic and blocks the deletion. ReACT loop: `delete` → `scale-to-0` → human escalation. |
 | [`demo/opslock`](https://github.com/agent-control-plane/aip-k8s/tree/main/demo/opslock) | Two concurrent agents attempt conflicting operations on the same resource. OpsLock mutual exclusion ensures only one proceeds; the other receives `LOCK_CONTENTION`. |
 | [`demo/kiro`](https://github.com/agent-control-plane/aip-k8s/tree/main/demo/kiro) | An autonomous deployment agent is blocked by a `RequireApproval` policy on production targets, triggering the human-in-the-loop escalation path with a full audit trail. |
+| [`demo/graduation`](https://github.com/agent-control-plane/aip-k8s/tree/main/demo/graduation) | **Trust graduation ladder.** An agent progresses from Observer → Advisor → Supervised → Trusted → Autonomous by building an accuracy signal through human-graded verdicts. Demonstrates the full five-level trust progression with compressed thresholds. |
 
 ## The Scenario in 60 Seconds
 

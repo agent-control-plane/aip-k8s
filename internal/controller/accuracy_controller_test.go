@@ -61,8 +61,9 @@ var _ = Describe("DiagnosticAccuracy Controller", func() {
 			Expect(k8sClient.Status().Patch(context.Background(), agentReq, client.MergeFrom(base))).To(Succeed())
 
 			reconciler := &DiagnosticAccuracyReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:    k8sClient,
+				APIReader: k8sClient,
+				Scheme:    k8sClient.Scheme(),
 			}
 
 			_, err := reconciler.Reconcile(context.Background(), reconcile.Request{
@@ -107,8 +108,9 @@ var _ = Describe("DiagnosticAccuracy Controller", func() {
 			Expect(k8sClient.Status().Patch(context.Background(), agentReq, client.MergeFrom(base))).To(Succeed())
 
 			reconciler := &DiagnosticAccuracyReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:    k8sClient,
+				APIReader: k8sClient,
+				Scheme:    k8sClient.Scheme(),
 			}
 
 			_, err := reconciler.Reconcile(context.Background(), reconcile.Request{
@@ -154,8 +156,9 @@ var _ = Describe("DiagnosticAccuracy Controller", func() {
 			Expect(k8sClient.Status().Patch(context.Background(), agentReq, client.MergeFrom(base))).To(Succeed())
 
 			reconciler := &DiagnosticAccuracyReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:    k8sClient,
+				APIReader: k8sClient,
+				Scheme:    k8sClient.Scheme(),
 			}
 
 			_, err := reconciler.Reconcile(context.Background(), reconcile.Request{
@@ -203,8 +206,9 @@ var _ = Describe("DiagnosticAccuracy Controller", func() {
 			Expect(k8sClient.Status().Patch(context.Background(), agentReq, client.MergeFrom(base))).To(Succeed())
 
 			reconciler := &DiagnosticAccuracyReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:    k8sClient,
+				APIReader: k8sClient,
+				Scheme:    k8sClient.Scheme(),
 			}
 
 			_, err := reconciler.Reconcile(context.Background(), reconcile.Request{
@@ -270,8 +274,9 @@ var _ = Describe("DiagnosticAccuracy Controller", func() {
 			Expect(k8sClient.Status().Patch(context.Background(), agentReq, client.MergeFrom(baseReq))).To(Succeed())
 
 			reconciler := &DiagnosticAccuracyReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:    k8sClient,
+				APIReader: k8sClient,
+				Scheme:    k8sClient.Scheme(),
 			}
 
 			_, err := reconciler.Reconcile(context.Background(), reconcile.Request{
