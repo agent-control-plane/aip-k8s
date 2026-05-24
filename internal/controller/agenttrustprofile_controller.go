@@ -244,11 +244,13 @@ func (r *AgentTrustProfileReconciler) getOrBootstrapProfile(
 			if !errors.IsAlreadyExists(err) {
 				return profile, err
 			}
-			if err := r.Get(ctx, profileNN, &profile); err != nil {
+			// Bypass cache — informer may not have the object yet.
+			if err := r.APIReader.Get(ctx, profileNN, &profile); err != nil {
 				return profile, err
 			}
 		} else {
-			if err := r.Get(ctx, profileNN, &profile); err != nil {
+			// Bypass cache — informer may not have the object yet.
+			if err := r.APIReader.Get(ctx, profileNN, &profile); err != nil {
 				return profile, err
 			}
 		}
@@ -458,7 +460,7 @@ func (r *AgentTrustProfileReconciler) emitTrustProfileAuditWithRetry(ctx context
 		Spec: governancev1alpha1.AuditRecordSpec{
 			Timestamp:       metav1.NewTime(now),
 			AgentIdentity:   profile.Spec.AgentIdentity,
-			AgentRequestRef: "",
+			AgentRequestRef: "-",
 			Event:           eventType,
 			Action:          "trust-evaluation",
 			TargetURI:       "agent-trust-profile",

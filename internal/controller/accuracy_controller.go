@@ -42,7 +42,8 @@ const (
 // DiagnosticAccuracyReconciler reconciles AgentRequest verdict changes to maintain DiagnosticAccuracySummary.
 type DiagnosticAccuracyReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
 }
 
 // +kubebuilder:rbac:groups=governance.aip.io,resources=agentrequests,verbs=get;list;watch
@@ -93,12 +94,13 @@ func (r *DiagnosticAccuracyReconciler) Reconcile(ctx context.Context, req ctrl.R
 					}
 					// Race: another reconcile created it concurrently; fetch the existing object.
 					// RetryOnConflict does not retry AlreadyExists, so we handle it explicitly here.
-					if err := r.Get(ctx, summaryNN, &summary); err != nil {
+					if err := r.APIReader.Get(ctx, summaryNN, &summary); err != nil {
 						return err
 					}
 				} else {
-					// Get fresh copy after create to ensure resourceVersion is set for status patch
-					if err := r.Get(ctx, summaryNN, &summary); err != nil {
+					// Bypass informer cache — the object was just created and the cache may not
+					// have it yet, causing a spurious NotFound on a cached Get.
+					if err := r.APIReader.Get(ctx, summaryNN, &summary); err != nil {
 						return err
 					}
 				}

@@ -71,7 +71,7 @@ var reasons = []string{
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
-var httpClient = &http.Client{Timeout: 15 * time.Second}
+var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 func post(url string, body any) (map[string]any, int, error) {
 	b, _ := json.Marshal(body)
@@ -209,12 +209,20 @@ func gradeVerdict(gateway, ns, name string) {
 	}
 }
 
-func approveRequest(gateway, ns, name string) {
+func approveRequest(gateway, ns, name string) error {
 	url := fmt.Sprintf("%s/agent-requests/%s/approve?namespace=%s", gateway, name, ns)
 	_, code, err := post(url, map[string]string{"reason": "demo auto-approval"})
-	if err != nil || code >= 400 {
-		log.Fatalf("approve failed for %s: err=%v code=%d", name, err, code)
+	if err != nil {
+		return err
 	}
+	if code == 409 {
+		// Benign race: controller auto-approved between getPhase and this call.
+		return nil
+	}
+	if code >= 400 {
+		return fmt.Errorf("approve failed for %s: code=%d", name, code)
+	}
+	return nil
 }
 
 func markExecuting(gateway, ns, name string) {
@@ -235,14 +243,14 @@ func markCompleted(gateway, ns, name string) {
 
 // ── Phase runners ─────────────────────────────────────────────────────────────
 
-// observerPhase submits n requests, grades each correct, then waits for Advisor.
-func observerPhase(gateway, ns string, n int) {
+// observerPhase submits requests and grades them correct until the agent graduates to Advisor.
+// Graduation happens when accuracy crosses Advisor.accuracy.min — no fixed request count.
+func observerPhase(gateway, ns string) {
 	banner("Phase 1 / 5", "Observer", "Requests graded but not executed. Building accuracy signal.")
 
-	for i := range n {
+	for i := 1; ; i++ {
 		target, reason := nextTarget()
-		snippet := reason[:min(60, len(reason))]
-		fmt.Printf("  %s[%d/%d]%s Submitting observation: %s%s%s\n", dim, i+1, n, reset, dim, snippet, reset)
+		fmt.Printf("  %s[%d]%s Submitting observation: %s%s%s\n", dim, i, reset, dim, reason[:min(60, len(reason))], reset)
 
 		body := map[string]any{
 			"agentIdentity": agentID,
@@ -259,16 +267,28 @@ func observerPhase(gateway, ns string, n int) {
 		phase, _ := out["phase"].(string)
 		fmt.Printf("  %s→ %s (phase: %s)%s\n", dim, name, phase, reset)
 
-		// Wait for AwaitingVerdict, then grade correct.
+		if phase == "Pending" {
+			// Agent graduated before this request was submitted — Observer phase is done.
+			// This request now belongs to the Advisor phase; leave it for humanApprovalPhase.
+			fmt.Printf("  %s↑ Already at Advisor — Observer phase complete%s\n\n", yellow, reset)
+			printLevel("Advisor")
+			return
+		}
+
+		// Wait for AwaitingVerdict then grade correct.
 		pollUntil(gateway, ns, name, "AwaitingVerdict")
 		gradeVerdict(gateway, ns, name)
 		fmt.Printf("  %s✓ Graded correct%s\n", green, reset)
-		time.Sleep(300 * time.Millisecond)
-	}
+		time.Sleep(500 * time.Millisecond)
 
-	fmt.Printf("\n  %s%d correct verdicts submitted. Waiting for Advisor...%s\n\n", yellow, n, reset)
-	waitForLevel(ns, "Advisor")
-	printLevel("Advisor")
+		// Check whether the grade triggered graduation.
+		level, _ := getTrustLevel(ns)
+		if level == "Advisor" {
+			fmt.Printf("\n  %sGraduated to Advisor after %d correct verdict(s).%s\n\n", yellow, i, reset)
+			printLevel("Advisor")
+			return
+		}
+	}
 }
 
 // humanApprovalPhase submits n requests through the Pending→Approved→Completed
@@ -296,9 +316,18 @@ func humanApprovalPhase(gateway, ns, fromLevel, toLevel string, n int) {
 		name, _ := out["name"].(string)
 		fmt.Printf("  %s→ %s → Pending%s\n", dim, name, reset)
 
-		pollUntil(gateway, ns, name, "Pending")
-		fmt.Printf("  %s👤 Reviewer approving...%s\n", yellow, reset)
-		approveRequest(gateway, ns, name)
+		// In open mode the controller may auto-approve before we can observe Pending.
+		// Accept either phase so the poll doesn't stall.
+		pollUntil(gateway, ns, name, "Pending", "Approved")
+		phase, _ := getPhase(gateway, ns, name)
+		if phase == "Pending" {
+			fmt.Printf("  %s👤 Reviewer approving...%s\n", yellow, reset)
+			if err := approveRequest(gateway, ns, name); err != nil {
+				log.Fatalf("approveRequest failed for %s: %v", name, err)
+			}
+		} else {
+			fmt.Printf("  %s👤 Auto-approved (open mode — trust level not yet visible to controller cache)%s\n", yellow, reset)
+		}
 
 		pollUntil(gateway, ns, name, "Approved")
 		markExecuting(gateway, ns, name)
@@ -404,8 +433,8 @@ func main() {
 	fmt.Printf("  %sNote: reviewer approvals at Advisor/Supervised are simulated%s\n", dim, reset)
 	fmt.Printf("  %sbecause the gateway is running in open mode (no auth flags).%s\n\n", dim, reset)
 
-	// Phase 1: Observer — 5 correct verdicts → Advisor
-	observerPhase(*gateway, *ns, 5)
+	// Phase 1: Observer — grade correct until accuracy threshold → Advisor
+	observerPhase(*gateway, *ns)
 
 	// Phase 2: Advisor — 3 human-approved executions → Supervised
 	humanApprovalPhase(*gateway, *ns, "Advisor", "Supervised", 3)
@@ -417,7 +446,6 @@ func main() {
 	autoApprovalPhase(*gateway, *ns, "Trusted", "Autonomous", 4)
 
 	// Phase 5: Autonomous — demonstrate full autonomy
-	banner("Phase 5 / 5", "Autonomous", "Maximum trust level. No human approval, no ceiling.")
 	autoApprovalPhase(*gateway, *ns, "Autonomous", "", 2)
 
 	fmt.Printf("\n%s━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━%s\n", bold, reset)

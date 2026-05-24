@@ -76,6 +76,7 @@ nav:
       - Production Hardening: user-guide/production-hardening.md
       - Demos:
           - Scaledown: user-guide/demos/scaledown.md
+          - Trust Graduation: user-guide/demos/graduation.md
   - Concepts:
       - Agent Graduation Ladder: agent-graduation-ladder.md
       - Trust Gate: trust-gate.md

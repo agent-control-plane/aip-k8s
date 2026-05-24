@@ -85,10 +85,12 @@ func (s *Server) evaluateTrustGate(
 		return trustGateResult{}, nil
 	}
 
-	// Fetch the agent's trust profile.
+	// Fetch the agent's trust profile. Use apiReader to bypass the informer cache —
+	// a recently-deleted profile could otherwise be served stale, causing the wrong
+	// canExecute annotation on the first request of a new demo run.
 	profileName := v1alpha1.ProfileNameForAgent(agentIdentity)
 	var profile v1alpha1.AgentTrustProfile
-	if err := s.client.Get(ctx, types.NamespacedName{Name: profileName, Namespace: ns}, &profile); err != nil {
+	if err := s.apiReader.Get(ctx, types.NamespacedName{Name: profileName, Namespace: ns}, &profile); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return trustGateResult{}, fmt.Errorf("getting AgentTrustProfile %s: %w", profileName, err)
 		}

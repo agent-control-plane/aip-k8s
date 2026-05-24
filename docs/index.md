@@ -50,6 +50,7 @@ and see AIP block an agent operating on stale data.
 | [Dev Mode](./user-guide/dev-mode.md) | What the default install enables and disables |
 | [Production Hardening](./user-guide/production-hardening.md) | OIDC, roles, JWT, and security checklist |
 | [Scaledown Demo](./user-guide/demos/scaledown.md) | End-to-end: agent on stale metrics gets blocked |
+| [Trust Graduation Demo](./user-guide/demos/graduation.md) | Watch an agent progress through all five trust levels |
 
 ## Authentication
 

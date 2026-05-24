@@ -118,8 +118,9 @@ func startTestManager(t *testing.T, cfg *rest.Config) client.Client {
 	}
 
 	err = (&controller.DiagnosticAccuracyReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Scheme:    mgr.GetScheme(),
 	}).SetupWithManager(mgr)
 	if err != nil {
 		t.Fatalf("Failed to setup DiagnosticAccuracyReconciler: %v", err)
