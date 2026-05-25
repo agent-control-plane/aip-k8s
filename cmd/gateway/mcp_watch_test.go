@@ -199,23 +199,24 @@ func TestUpsertMCPServerFromCRD_ResolvesBearerToken(t *testing.T) {
 	g.Expect(srv.Tools[1].ReadOnly).To(gomega.BeTrue())
 }
 
-func TestUpsertMCPServerFromCRD_MissingSecretKey(t *testing.T) {
+// TestUpsertMCPServerFromCRD_EmptySecretNamespace verifies that a CRD with
+// bearerTokenSecretRef set but an empty secretNamespace causes an early return
+// (the Secret cannot be looked up without a namespace), leaving the cache empty.
+func TestUpsertMCPServerFromCRD_EmptySecretNamespace(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	s := setupWatchTestScheme()
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "mcp-secret", Namespace: "default"},
-		Data:       map[string][]byte{"other": []byte("val")},
-	}
-	cl := newFakeClientWithScheme(s, secret)
+	cl := newFakeClientWithScheme(s)
 	cache := newMCPServerCache()
 
 	crd := &v1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "github", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "github"},
 		Spec: v1alpha1.MCPServerSpec{
 			URL: "http://github-mcp",
+			// SecretNamespace intentionally omitted — simulates a CRD that slipped
+			// past CEL validation with bearerTokenSecretRef set but no namespace.
 			BearerTokenSecretRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{Name: "mcp-secret"},
 				Key:                  "token",
@@ -224,9 +225,45 @@ func TestUpsertMCPServerFromCRD_MissingSecretKey(t *testing.T) {
 	}
 
 	upsertMCPServerFromCRD(ctx, crd, cl, cache)
-	// Empty secretNamespace with BearerTokenSecretRef set causes an early return;
-	// no cache entry is created because the Secret cannot be resolved.
+	// Early return: no cache entry is created because the namespace is missing.
 	g.Expect(cache.get("github")).To(gomega.BeNil())
+}
+
+// TestUpsertMCPServerFromCRD_MissingSecretKey verifies that when the referenced
+// Secret exists but does not contain the expected key, upsertMCPServerFromCRD
+// still creates a cache entry with an empty bearer token (auth removed).
+func TestUpsertMCPServerFromCRD_MissingSecretKey(t *testing.T) {
+	g := gomega.NewWithT(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s := setupWatchTestScheme()
+	// Secret exists but only has an unrelated key — the requested "token" key is absent.
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "mcp-secret", Namespace: "default"},
+		Data:       map[string][]byte{"other": []byte("val")},
+	}
+	cl := newFakeClientWithScheme(s, secret)
+	cache := newMCPServerCache()
+
+	crd := &v1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "github"},
+		Spec: v1alpha1.MCPServerSpec{
+			URL:             "http://github-mcp",
+			SecretNamespace: "default",
+			BearerTokenSecretRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "mcp-secret"},
+				Key:                  "token",
+			},
+		},
+	}
+
+	upsertMCPServerFromCRD(ctx, crd, cl, cache)
+	// The server is still cached, but with an empty bearer token because the
+	// key was missing — this matches the "key missing → proceed with empty token" path.
+	srv := cache.get("github")
+	g.Expect(srv).NotTo(gomega.BeNil())
+	g.Expect(srv.BearerToken).To(gomega.BeEmpty())
 }
 
 func TestUpsertMCPServerFromCRD_NoSecretRef(t *testing.T) {

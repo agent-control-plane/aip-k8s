@@ -110,6 +110,11 @@ rules:
   - get
   - list
   - watch
+# create is required by jwtkey_controller which bootstraps the aip-jwt-signing-key
+# Secret on first startup. get/list/watch are needed for the MCPServer controller
+# to resolve bearerTokenSecretRef across all namespaces (cluster-scoped CRD).
+# resourceNames cannot restrict create (the resource does not exist yet at create
+# time); the named-resource rule below restricts patch/update to the signing key.
 - apiGroups:
   - ""
   resources:

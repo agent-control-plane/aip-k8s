@@ -108,6 +108,9 @@ func fetchSchemasForServer(httpClient *http.Client, srv *MCPServer) {
 	listReq.Header.Set("Content-Type", "application/json")
 	listReq.Header.Set("Accept", "application/json, text/event-stream")
 	listReq.Header.Set("Mcp-Session-Id", srv.SessionID)
+	if srv.BearerToken != "" {
+		listReq.Header.Set("Authorization", "Bearer "+srv.BearerToken)
+	}
 
 	resp, err := httpClient.Do(listReq)
 	if err != nil {
