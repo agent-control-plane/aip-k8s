@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"strings"
+	"time"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -346,6 +347,7 @@ func mcpRequestName() string {
 	b := make([]byte, 4)
 	if _, err := rand.Read(b); err != nil {
 		log.Printf("mcpRequestName: rand.Read failed: %v", err)
+		return fmt.Sprintf("mcp-%08x", uint32(time.Now().UnixNano()))
 	}
 	return fmt.Sprintf("mcp-%x", b)
 }

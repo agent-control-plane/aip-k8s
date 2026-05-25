@@ -244,15 +244,10 @@ func (r *AgentTrustProfileReconciler) getOrBootstrapProfile(
 			if !errors.IsAlreadyExists(err) {
 				return profile, err
 			}
-			// Bypass cache — informer may not have the object yet.
-			if err := r.APIReader.Get(ctx, profileNN, &profile); err != nil {
-				return profile, err
-			}
-		} else {
-			// Bypass cache — informer may not have the object yet.
-			if err := r.APIReader.Get(ctx, profileNN, &profile); err != nil {
-				return profile, err
-			}
+		}
+		// Bypass cache — informer may not have the object yet.
+		if err := r.APIReader.Get(ctx, profileNN, &profile); err != nil {
+			return profile, err
 		}
 	}
 	return profile, nil

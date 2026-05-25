@@ -153,8 +153,7 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 		_ = kubectlDelete(govResourceJSON)
 		cmd := exec.Command("kubectl", "delete", "agentrequest", "--all", "-n", reqNamespace, "--ignore-not-found")
 		_, _ = runCmd(cmd)
-		cmd = exec.Command("bash", "-c",
-			fmt.Sprintf("kubectl get lease -n %s -o name 2>/dev/null | grep aip-lock- | xargs -r kubectl delete -n %s", reqNamespace, reqNamespace))
+		cmd = exec.Command("kubectl", "delete", "lease", "-l", "governance.aip.io/managed-by=aip-controller", "-n", reqNamespace, "--ignore-not-found")
 		_, _ = runCmd(cmd)
 	})
 
