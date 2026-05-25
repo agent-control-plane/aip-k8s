@@ -207,8 +207,14 @@ func readSSEDataLine(resp *http.Response) (string, string) {
 }
 
 func (s *Server) handleMCPRegistry(w http.ResponseWriter, r *http.Request) {
-	resp := make([]mcpServerResponse, len(s.mcpServers))
-	for i, srv := range s.mcpServers {
+	servers := s.mcpServers
+	if s.mcpCache != nil {
+		if cached := s.mcpCache.getAll(); len(cached) > 0 {
+			servers = cached
+		}
+	}
+	resp := make([]mcpServerResponse, len(servers))
+	for i, srv := range servers {
 		resp[i] = mcpServerResponse{
 			Name:   srv.Name,
 			Status: srv.Status,

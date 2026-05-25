@@ -44,7 +44,7 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 	var agent, action, requestRef string
 	if !tool.ReadOnly {
 		var authErr error
-		claims, agent, action, requestRef, authErr = s.authorizeWriteTool(r, toolName)
+		claims, agent, action, requestRef, authErr = s.authorizeWriteTool(r, serverName+"/"+toolName)
 		if authErr != nil {
 			switch {
 			case errors.Is(authErr, ErrJWTNotConfigured):
@@ -58,7 +58,7 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		agent = callerSubFromCtx(r.Context())
-		action = toolName
+		action = serverName + "/" + toolName
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
@@ -198,6 +198,13 @@ func enforceResourceClaim(claimsResource string, args map[string]any) string {
 }
 
 func (s *Server) findMCPServer(name string) *MCPServer {
+	// Check CRD-backed cache first.
+	if s.mcpCache != nil {
+		if cached := s.mcpCache.get(name); cached != nil {
+			return cached
+		}
+	}
+	// Fall back to env-var registry.
 	for i := range s.mcpServers {
 		if s.mcpServers[i].Name == name {
 			return &s.mcpServers[i]

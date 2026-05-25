@@ -73,7 +73,13 @@ func (s *Server) handleInitialize(w http.ResponseWriter, req *mcp.JSONRPCRequest
 
 func (s *Server) handleToolsList(w http.ResponseWriter, req *mcp.JSONRPCRequest) {
 	var tools []mcp.MCPToolInfo
-	for _, srv := range s.mcpServers {
+	servers := s.mcpServers
+	if s.mcpCache != nil {
+		if cached := s.mcpCache.getAll(); len(cached) > 0 {
+			servers = cached
+		}
+	}
+	for _, srv := range servers {
 		for _, t := range srv.Tools {
 			schema := t.Schema
 			if schema == nil {
@@ -142,14 +148,15 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *mc
 
 	var claims *jwt.Claims
 	var agent, action, requestRef string
+	prefixedAction := serverName + "/" + toolName
 	if !tool.ReadOnly {
 		var authErr error
 		if aipJWT != "" {
 			// JWT supplied via tool arguments (after aip/await_approval approval).
-			claims, agent, action, requestRef, authErr = s.authorizeWriteToolFromToken(toolName, aipJWT)
+			claims, agent, action, requestRef, authErr = s.authorizeWriteToolFromToken(prefixedAction, aipJWT)
 		} else {
 			// JWT from X-AIP-Authorization header (direct /mcp-proxy callers).
-			claims, agent, action, requestRef, authErr = s.authorizeWriteTool(r, toolName)
+			claims, agent, action, requestRef, authErr = s.authorizeWriteTool(r, prefixedAction)
 		}
 
 		if authErr != nil {
@@ -172,7 +179,7 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *mc
 		}
 	} else {
 		agent = callerSubFromCtx(r.Context())
-		action = toolName
+		action = prefixedAction
 	}
 
 	result, errMsg := s.forwardToolCall(r.Context(), mcpServer, params.Arguments, toolName, req.ID)

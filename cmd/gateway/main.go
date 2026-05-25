@@ -145,6 +145,12 @@ func main() {
 	}
 	// Upstream sessions are initialized lazily on first tools/call.
 
+	mcpCache := newMCPServerCache()
+	for i := range mcpServers {
+		srv := &mcpServers[i]
+		mcpCache.upsert(srv.Name, srv.URL, srv.BearerToken, srv.Tools)
+	}
+
 	server := &Server{
 		client:                  k8sClient,
 		apiReader:               k8sClient,
@@ -157,7 +163,10 @@ func main() {
 		jwtManager:              jwtMgr,
 		httpClient:              &http.Client{Timeout: 30 * time.Second},
 		mcpServers:              mcpServers,
+		mcpCache:                mcpCache,
 	}
+
+	go watchMCPServers(ctx, k8sClient, mcpCache)
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /whoami", server.handleWhoAmI)
