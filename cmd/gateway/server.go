@@ -68,6 +68,7 @@ type Server struct {
 	jwtManager              *jwt.Manager
 	httpClient              *http.Client
 	mcpServers              []MCPServer
+	mcpCache                *mcpServerCache
 }
 
 type affectedTargetBody struct {

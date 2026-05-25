@@ -70,7 +70,7 @@ func TestMCPProxy_FullFlow_ValidJWT(t *testing.T) {
 	mgr, err := jwt.NewManager(keyPath, time.Now)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	token, _, err := mgr.MintToken("agent-1", "get_file_contents", "acme/demo", "req-123")
+	token, _, err := mgr.MintToken("agent-1", "github/get_file_contents", "acme/demo", "req-123")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	mcpServers, err := loadMCPRegistry()
@@ -159,7 +159,9 @@ func TestMCPProxy_UnknownServer(t *testing.T) {
 	mgr, err := jwt.NewManager(keyPath, time.Now)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	token, _, err := mgr.MintToken("agent-1", "get_file_contents", "acme/demo", "req-123")
+	// The "jira" server does not exist in MCP_REGISTRY, so the handler returns 404
+	// before any JWT validation. The action claim is irrelevant to this test.
+	token, _, err := mgr.MintToken("agent-1", "whatever/whatever", "acme/demo", "req-123")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	mcpServers, err := loadMCPRegistry()
@@ -193,7 +195,7 @@ func TestMCPProxy_UnknownTool(t *testing.T) {
 	mgr, err := jwt.NewManager(keyPath, time.Now)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	token, _, err := mgr.MintToken("agent-1", "get_file_contents", "acme/demo", "req-123")
+	token, _, err := mgr.MintToken("agent-1", "github/get_file_contents", "acme/demo", "req-123")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	mcpServers, err := loadMCPRegistry()
@@ -220,7 +222,7 @@ func TestMCPProxy_WriteTool_ActionMismatch(t *testing.T) {
 	mgr, err := jwt.NewManager(keyPath, time.Now)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	token, _, err := mgr.MintToken("agent-1", "list_pull_requests", "acme/demo", "req-123")
+	token, _, err := mgr.MintToken("agent-1", "github/list_pull_requests", "acme/demo", "req-123")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	s := &Server{jwtManager: mgr, httpClient: &http.Client{},

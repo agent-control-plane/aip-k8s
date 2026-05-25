@@ -142,19 +142,6 @@ func TestBuildTargetURI_Empty(t *testing.T) {
 	gomega.NewWithT(t).Expect(uri).To(gomega.Equal("k8s://default"))
 }
 
-func TestBareToolName_WithPrefix(t *testing.T) {
-	gomega.NewWithT(t).Expect(bareToolName("k8s/scale_deployment")).To(gomega.Equal("scale_deployment"))
-}
-
-func TestBareToolName_NoPrefix(t *testing.T) {
-	gomega.NewWithT(t).Expect(bareToolName("scale_deployment")).To(gomega.Equal("scale_deployment"))
-}
-
-func TestBareToolName_MultiSegment(t *testing.T) {
-	// Only the first slash is the server/tool boundary.
-	gomega.NewWithT(t).Expect(bareToolName("ns/sub/tool")).To(gomega.Equal("sub/tool"))
-}
-
 func TestMCPRequestName_Format(t *testing.T) {
 	g := gomega.NewWithT(t)
 	name := mcpRequestName()

@@ -35,7 +35,7 @@ var (
 	"metadata": {"name": "%s"},
 	"spec": {
 		"uriPattern": "github://%s/%s/**",
-		"permittedActions": ["create_pull_request"],
+		"permittedActions": ["github/create_pull_request"],
 		"contextFetcher": "github"
 	}
 }`, govResourceName, githubOwner, githubRepo)
@@ -97,7 +97,7 @@ func submitToGateway(replicas int) gwRequestResponse {
 func submitToGatewayAs(agentIdentity string, replicas int) gwRequestResponse {
 	body := fmt.Sprintf(`{
 		"agentIdentity": "%s",
-		"action": "create_pull_request",
+		"action": "github/create_pull_request",
 		"targetURI": "github://%s/%s/files/%s/%s",
 		"reason": "e2e mcp test",
 		"namespace": "%s",

@@ -241,7 +241,7 @@ func TestMCPHandler_ToolsCall_WriteTool_ValidJWT(t *testing.T) {
 	mgr, err := jwt.NewManager(keyPath, time.Now)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	token, _, err := mgr.MintToken("agent-1", "create_pull_request", "acme/demo", "req-123")
+	token, _, err := mgr.MintToken("agent-1", "github/create_pull_request", "acme/demo", "req-123")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	s := &Server{jwtManager: mgr, httpClient: &http.Client{Timeout: 5 * time.Second},
@@ -591,7 +591,7 @@ func TestMCPHandler_ToolsCall_WriteTool_RepoMismatch(t *testing.T) {
 	mgr, err := jwt.NewManager(keyPath, time.Now)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	token, _, err := mgr.MintToken("agent-1", "create_pull_request", "acme/demo", "req-123")
+	token, _, err := mgr.MintToken("agent-1", "github/create_pull_request", "acme/demo", "req-123")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	s := &Server{jwtManager: mgr, httpClient: &http.Client{},
@@ -630,7 +630,7 @@ func TestMCPHandler_ToolsCall_WriteTool_K8sResourceMismatch(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	// JWT authorizes "other-app"; call targets "payment-api".
-	token, _, err := mgr.MintToken("agent-1", "resources_scale",
+	token, _, err := mgr.MintToken("agent-1", "k8s/resources_scale",
 		"k8s://default/deployment/other-app", "req-456")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 

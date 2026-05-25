@@ -37,6 +37,23 @@ rules:
   - update
   - patch
 - apiGroups:
+  - governance.aip.io
+  resources:
+  - mcpservers
+  verbs:
+  - get
+  - list
+  - watch
+# The gateway resolves bearerTokenSecretRef from MCPServer CRDs.
+# MCPServer is cluster-scoped; users may reference Secrets in any namespace.
+# Only "get" is granted (read-only), matching the minimal privilege needed.
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+- apiGroups:
   - coordination.k8s.io
   resources:
   - leases

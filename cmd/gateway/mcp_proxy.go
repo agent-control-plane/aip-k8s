@@ -44,7 +44,7 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 	var agent, action, requestRef string
 	if !tool.ReadOnly {
 		var authErr error
-		claims, agent, action, requestRef, authErr = s.authorizeWriteTool(r, toolName)
+		claims, agent, action, requestRef, authErr = s.authorizeWriteTool(r, serverName+"/"+toolName)
 		if authErr != nil {
 			switch {
 			case errors.Is(authErr, ErrJWTNotConfigured):
@@ -58,7 +58,7 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		agent = callerSubFromCtx(r.Context())
-		action = toolName
+		action = serverName + "/" + toolName
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
@@ -197,7 +197,17 @@ func enforceResourceClaim(claimsResource string, args map[string]any) string {
 	return ""
 }
 
+// findMCPServer looks up an MCP server by name.
+// The CRD-backed cache is checked first; if the server is not found there,
+// we fall back to the env-var registry.  In production (main.go) env-var
+// servers are pre-loaded into the cache, so the fallback is primarily for
+// tests that construct Server directly without a cache.
 func (s *Server) findMCPServer(name string) *MCPServer {
+	if s.mcpCache != nil {
+		if cached := s.mcpCache.get(name); cached != nil {
+			return cached
+		}
+	}
 	for i := range s.mcpServers {
 		if s.mcpServers[i].Name == name {
 			return &s.mcpServers[i]

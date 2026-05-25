@@ -152,12 +152,9 @@ func (s *Server) aipApprovalResult(ar *v1alpha1.AgentRequest) *mcp.ToolsCallResu
 	case v1alpha1.PhaseApproved:
 		var jwtToken string
 		if s.jwtManager != nil {
-			// JWT action uses bare tool name (strips server prefix) for consistency
-			// with how handleToolsCall validates it via authorizeWriteToolFromToken.
-			action := bareToolName(ar.Spec.Action)
 			tok, _, err := s.jwtManager.MintToken(
 				ar.Spec.AgentIdentity,
-				action,
+				ar.Spec.Action,
 				ar.Spec.Target.URI,
 				ar.Name,
 			)
@@ -350,15 +347,6 @@ func mcpRequestName() string {
 		return fmt.Sprintf("mcp-%08x", uint32(time.Now().UnixNano()))
 	}
 	return fmt.Sprintf("mcp-%x", b)
-}
-
-// bareToolName strips the server prefix from a prefixed tool name.
-// "k8s/scale_deployment" → "scale_deployment", "scale_deployment" → "scale_deployment".
-func bareToolName(prefixed string) string {
-	if _, after, found := strings.Cut(prefixed, "/"); found {
-		return after
-	}
-	return prefixed
 }
 
 // completeAgentRequest advances a JWT-authorized AgentRequest through
