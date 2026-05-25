@@ -284,7 +284,7 @@ func (r *MCPServerReconciler) resolveBearerToken(ctx context.Context, server *go
 
 	secretNS := server.Spec.SecretNamespace
 	if secretNS == "" {
-		secretNS = server.Namespace
+		return "", fmt.Errorf("secretNamespace is required for cluster-scoped MCPServer %s", server.Name)
 	}
 
 	var secret corev1.Secret
@@ -362,7 +362,7 @@ func (r *MCPServerReconciler) mapSecretToMCPServer(ctx context.Context, obj clie
 		}
 		secretNS := srv.Spec.SecretNamespace
 		if secretNS == "" {
-			secretNS = srv.Namespace
+			continue
 		}
 		if srv.Spec.BearerTokenSecretRef.Name == secret.Name &&
 			secretNS == secret.Namespace {

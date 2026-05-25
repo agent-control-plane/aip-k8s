@@ -148,6 +148,7 @@ func main() {
 	mcpCache := newMCPServerCache()
 	for i := range mcpServers {
 		srv := &mcpServers[i]
+		srv.Pinned = true
 		mcpCache.upsert(srv.Name, srv.URL, srv.BearerToken, srv.Tools)
 	}
 

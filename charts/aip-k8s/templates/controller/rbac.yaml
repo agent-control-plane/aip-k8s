@@ -101,6 +101,42 @@ rules:
   - create
   - patch
   - update
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resourceNames:
+  - aip-jwt-signing-key
+  resources:
+  - secrets
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - karpenter.sh
+  resources:
+  - nodepools
+  verbs:
+  - get
+  - list
+  - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

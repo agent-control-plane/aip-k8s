@@ -4,6 +4,7 @@ metadata:
   name: github
 spec:
   url: http://github-mcp-server.aip-k8s-system.svc.cluster.local
+  secretNamespace: aip-k8s-system
   bearerTokenSecretRef:
     name: aip-github-token
     key: token

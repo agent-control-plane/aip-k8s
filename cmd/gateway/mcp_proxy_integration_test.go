@@ -48,6 +48,19 @@ func TestMCPProxy_FullFlow_ValidJWT(t *testing.T) {
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), `"initialize"`) {
+			w.Header().Set("Mcp-Session-Id", "test-session-123")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if strings.Contains(string(body), `"tools/list"`) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			schemaResp := `{"jsonrpc":"2.0","id":2,"result":{"tools":` +
+				`[{"name":"get_file_contents","inputSchema":{"type":"object"}}]}}`
+			_, _ = fmt.Fprintln(w, "data: "+schemaResp)
+			return
+		}
 		g.Expect(string(body)).To(gomega.ContainSubstring(`"jsonrpc":"2.0"`))
 		g.Expect(string(body)).To(gomega.ContainSubstring(`"method":"tools/call"`))
 		g.Expect(string(body)).To(gomega.ContainSubstring(`"params"`))

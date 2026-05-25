@@ -224,7 +224,9 @@ func TestUpsertMCPServerFromCRD_MissingSecretKey(t *testing.T) {
 	}
 
 	upsertMCPServerFromCRD(ctx, crd, cl, cache)
-	g.Expect(cache.get("github").BearerToken).To(gomega.BeEmpty())
+	// Empty secretNamespace with BearerTokenSecretRef set causes an early return;
+	// no cache entry is created because the Secret cannot be resolved.
+	g.Expect(cache.get("github")).To(gomega.BeNil())
 }
 
 func TestUpsertMCPServerFromCRD_NoSecretRef(t *testing.T) {

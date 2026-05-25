@@ -126,7 +126,10 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *mc
 
 	// Lazily establish the upstream session and populate tool schemas on first use.
 	if !mcpServer.ensureSession(s.httpClient) {
-		log.Printf("handleToolsCall: failed to establish session with %s; proceeding anyway", mcpServer.Name)
+		log.Printf("Failed to establish session with %s", mcpServer.Name)
+	}
+	if s.mcpCache != nil {
+		s.mcpCache.commitSession(mcpServer.Name, mcpServer.SessionID, mcpServer.sessionReady, mcpServer.URL)
 	}
 
 	tool := s.findTool(mcpServer, toolName)

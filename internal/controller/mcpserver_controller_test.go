@@ -471,7 +471,7 @@ func TestResolveBearerToken_ClusterScopedNoSecretNamespaceFails(t *testing.T) {
 
 	_, err := r.resolveBearerToken(context.Background(), server)
 	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("any-secret"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("secretNamespace is required"))
 }
 
 func TestMapSecretToMCPServer(t *testing.T) {
