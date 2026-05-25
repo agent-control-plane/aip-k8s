@@ -26,6 +26,7 @@ rules:
   - diagnosticaccuracysummaries/status
   - governedresources
   - governedresources/status
+  - mcpservers
   - safetypolicies
   - agentgraduationpolicies
   - agentgraduationpolicies/status
@@ -36,6 +37,12 @@ rules:
   - create
   - update
   - patch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
 - apiGroups:
   - coordination.k8s.io
   resources:
