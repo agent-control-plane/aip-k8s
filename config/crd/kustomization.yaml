@@ -9,6 +9,7 @@ resources:
 - bases/governance.aip.io_governedresources.yaml
 - bases/governance.aip.io_agentgraduationpolicies.yaml
 - bases/governance.aip.io_agenttrustprofiles.yaml
+- bases/governance.aip.io_mcpservers.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

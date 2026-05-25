@@ -51,6 +51,15 @@ var _ = Describe("OpsLock Renewal", Ordered, func() {
 
 	BeforeAll(func() {
 		// Controller and CRDs are guaranteed by BeforeSuite.
+		By("cleaning up any stale OpsLock leases from previous runs")
+		// Use label selector to avoid touching leader-election leases.
+		// AfterAll only deletes AgentRequests and GovernedResources, not leases, so
+		// stale leases can linger across runs when the Kind cluster is reused.
+		cleanCmd := exec.Command("kubectl", "delete", "leases",
+			"-l", "governance.aip.io/managed-by=aip-controller",
+			"-n", ns, "--ignore-not-found")
+		_, _ = utils.Run(cleanCmd)
+
 		By("creating a GovernedResource")
 		grJSON := fmt.Sprintf(`{
 			"apiVersion": "governance.aip.io/v1alpha1",
@@ -77,6 +86,13 @@ var _ = Describe("OpsLock Renewal", Ordered, func() {
 		// and failures are non-fatal (e.g. resources may already be absent).
 		_, _ = utils.Run(cmd)
 		cmd = exec.Command("kubectl", "delete", "agentrequest", "--all", "-n", ns, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+		// Release OpsLock leases so the next run doesn't encounter a stale lock for the same
+		// target URI. The Kind cluster is reused across runs; without this cleanup the lease
+		// lingers because deleting AgentRequests does not trigger releaseLock (no finalizer).
+		cmd = exec.Command("kubectl", "delete", "leases",
+			"-l", "governance.aip.io/managed-by=aip-controller",
+			"-n", ns, "--ignore-not-found")
 		_, _ = utils.Run(cmd)
 	})
 

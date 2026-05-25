@@ -93,6 +93,8 @@ func main() {
 		"Namespace where the JWT signing key Secret is managed.")
 	jwtKeyRotationTTL := flag.Duration("jwt-key-rotation-ttl", 0,
 		"How long before the JWT signing key is rotated. 0 uses the default (90 days).")
+	mcpServerHTTPTimeout := flag.Duration("mcp-server-http-timeout", 30*time.Second,
+		"HTTP client timeout for MCP server tool-discovery requests.")
 
 	// GC flags — applies to terminal AgentRequests (Completed/Failed/Denied/Expired).
 	gcCfg := gc.DefaultGCConfig()
@@ -261,6 +263,15 @@ func main() {
 		Scheme:    mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentTrustProfile")
+		os.Exit(1)
+	}
+	if err := (&controller.MCPServerReconciler{
+		Client:     mgr.GetClient(),
+		APIReader:  mgr.GetAPIReader(),
+		Scheme:     mgr.GetScheme(),
+		HTTPClient: &http.Client{Timeout: *mcpServerHTTPTimeout},
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "MCPServer")
 		os.Exit(1)
 	}
 	if err := (&controller.JWTKeyReconciler{

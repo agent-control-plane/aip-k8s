@@ -9,17 +9,11 @@ rules:
   resources:
   - nodes
   - pods
+  - secrets
   verbs:
   - get
   - list
   - watch
-- apiGroups:
-  - ""
-  resources:
-  - secrets
-  verbs:
-  - create
-  - get
 - apiGroups:
   - ""
   resourceNames:
@@ -27,6 +21,7 @@ rules:
   resources:
   - secrets
   verbs:
+  - create
   - get
   - patch
   - update
@@ -86,6 +81,7 @@ rules:
   resources:
   - agentrequests/finalizers
   - governedresources/finalizers
+  - mcpservers/finalizers
   - safetypolicies/finalizers
   verbs:
   - update
@@ -97,6 +93,7 @@ rules:
   - auditrecords/status
   - diagnosticaccuracysummaries/status
   - governedresources/status
+  - mcpservers/status
   - safetypolicies/status
   verbs:
   - get
@@ -109,6 +106,16 @@ rules:
   - diagnosticaccuracysummaries
   verbs:
   - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - governance.aip.io
+  resources:
+  - mcpservers
+  verbs:
   - get
   - list
   - patch

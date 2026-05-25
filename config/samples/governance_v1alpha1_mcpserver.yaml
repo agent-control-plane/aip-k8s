@@ -1,0 +1,13 @@
+apiVersion: governance.aip.io/v1alpha1
+kind: MCPServer
+metadata:
+  name: github
+spec:
+  url: http://github-mcp-server.aip-k8s-system.svc.cluster.local
+  bearerTokenSecretRef:
+    name: aip-github-token
+    key: token
+  readOnlyTools:
+    - get_file_contents
+    - list_pull_requests
+    - search_issues

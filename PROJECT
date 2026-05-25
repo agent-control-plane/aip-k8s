@@ -7,7 +7,7 @@ domain: aip.io
 layout:
 - go.kubebuilder.io/v4
 projectName: aip-k8s
-repo: github.com/ravisantoshgudimetla/aip-k8s
+repo: github.com/agent-control-plane/aip-k8s
 resources:
 - api:
     crdVersion: v1
@@ -16,7 +16,7 @@ resources:
   domain: aip.io
   group: governance
   kind: AgentRequest
-  path: github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1
+  path: github.com/agent-control-plane/aip-k8s/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -25,7 +25,7 @@ resources:
   domain: aip.io
   group: governance
   kind: SafetyPolicy
-  path: github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1
+  path: github.com/agent-control-plane/aip-k8s/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -33,7 +33,7 @@ resources:
   domain: aip.io
   group: governance
   kind: AuditRecord
-  path: github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1
+  path: github.com/agent-control-plane/aip-k8s/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -41,7 +41,7 @@ resources:
   domain: aip.io
   group: governance
   kind: AgentDiagnostic
-  path: github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1
+  path: github.com/agent-control-plane/aip-k8s/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -49,6 +49,14 @@ resources:
   domain: aip.io
   group: governance
   kind: DiagnosticAccuracySummary
-  path: github.com/ravisantoshgudimetla/aip-k8s/api/v1alpha1
+  path: github.com/agent-control-plane/aip-k8s/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: false
+  domain: aip.io
+  group: governance
+  kind: MCPServer
+  path: github.com/agent-control-plane/aip-k8s/api/v1alpha1
   version: v1alpha1
 version: "3"
