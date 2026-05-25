@@ -197,14 +197,17 @@ func enforceResourceClaim(claimsResource string, args map[string]any) string {
 	return ""
 }
 
+// findMCPServer looks up an MCP server by name.
+// The CRD-backed cache is checked first; if the server is not found there,
+// we fall back to the env-var registry.  In production (main.go) env-var
+// servers are pre-loaded into the cache, so the fallback is primarily for
+// tests that construct Server directly without a cache.
 func (s *Server) findMCPServer(name string) *MCPServer {
-	// Check CRD-backed cache first.
 	if s.mcpCache != nil {
 		if cached := s.mcpCache.get(name); cached != nil {
 			return cached
 		}
 	}
-	// Fall back to env-var registry.
 	for i := range s.mcpServers {
 		if s.mcpServers[i].Name == name {
 			return &s.mcpServers[i]

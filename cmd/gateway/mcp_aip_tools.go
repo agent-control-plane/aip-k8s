@@ -349,15 +349,6 @@ func mcpRequestName() string {
 	return fmt.Sprintf("mcp-%x", b)
 }
 
-// bareToolName strips the server prefix from a prefixed tool name.
-// "k8s/scale_deployment" → "scale_deployment", "scale_deployment" → "scale_deployment".
-func bareToolName(prefixed string) string {
-	if _, after, found := strings.Cut(prefixed, "/"); found {
-		return after
-	}
-	return prefixed
-}
-
 // completeAgentRequest advances a JWT-authorized AgentRequest through
 // Executing → Completed so the controller releases the OpsLock.
 // Called after a successful MCP tool execution.
