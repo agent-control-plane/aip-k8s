@@ -49,7 +49,19 @@ func (c *mcpServerCache) getAll() []MCPServer {
 	defer c.mu.RUnlock()
 	out := make([]MCPServer, 0, len(c.servers))
 	for _, s := range c.servers {
-		out = append(out, *s)
+		// Copy only the fields that are safe to read without sessionMu.
+		// Session state (SessionID, sessionReady) is written by ensureSession
+		// under sessionMu, which is independent of c.mu — copying those fields
+		// here would be a data race. Callers of getAll (handleToolsList,
+		// handleMCPRegistry) only need Name/URL/BearerToken/Tools/Status/Pinned.
+		out = append(out, MCPServer{
+			Name:        s.Name,
+			Status:      s.Status,
+			URL:         s.URL,
+			BearerToken: s.BearerToken,
+			Tools:       s.Tools,
+			Pinned:      s.Pinned,
+		})
 	}
 	return out
 }
@@ -77,8 +89,13 @@ func (c *mcpServerCache) upsert(name, url, bearerToken string, tools []MCPTool) 
 	var pinned bool
 	if existing, ok := c.servers[name]; ok && existing.URL == url && existing.BearerToken == bearerToken {
 		// Preserve the upstream session when endpoint and auth are unchanged.
+		// sessionMu must be held when reading sessionReady/SessionID to avoid a
+		// data race with ensureSession, which writes those fields under sessionMu
+		// independently of c.mu.
+		existing.sessionMu.Lock()
 		sessionID = existing.SessionID
 		sessionReady = existing.sessionReady
+		existing.sessionMu.Unlock()
 		pinned = existing.Pinned
 	}
 
@@ -115,6 +132,14 @@ func (c *mcpServerCache) commitSession(name, sessionID string, sessionReady bool
 		sessionReady: sessionReady,
 		sessionMu:    srv.sessionMu,
 	}
+}
+
+// resetSession marks the canonical cache entry as session-not-ready so the
+// next ensureSession call re-initializes. Called after a 401 from upstream.
+// expectedURL guards against resetting an entry that was concurrently replaced
+// with a new URL (which would have its own fresh session state).
+func (c *mcpServerCache) resetSession(name, expectedURL string) {
+	c.commitSession(name, "", false, expectedURL)
 }
 
 func (c *mcpServerCache) remove(name string) {

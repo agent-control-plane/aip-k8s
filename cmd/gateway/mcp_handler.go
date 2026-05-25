@@ -354,9 +354,16 @@ func (s *Server) forwardToolCall(
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		// A 401 from upstream means the session expired; reset so the next call re-initializes.
+		// A 401 from upstream means the session expired. Reset both the in-hand
+		// pointer and the canonical cache entry so the next call re-initializes.
+		// resetSession on the pointer alone is insufficient: commitSession already
+		// replaced the map entry with a new snapshot, so the pointer the handler
+		// holds is detached from the canonical entry.
 		if resp.StatusCode == http.StatusUnauthorized {
 			mcpServer.resetSession()
+			if s.mcpCache != nil {
+				s.mcpCache.resetSession(mcpServer.Name, mcpServer.URL)
+			}
 		}
 		return mcpProxyResult{}, fmt.Sprintf("MCP server returned status %d", resp.StatusCode)
 	}
