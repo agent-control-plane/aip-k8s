@@ -89,8 +89,7 @@ spec:
               secretNamespace:
                 description: |-
                   SecretNamespace specifies the namespace of the Secret referenced by
-                  BearerTokenSecretRef. Required when the MCPServer is cluster-scoped.
-                  For namespaced MCPServers, defaults to the server's own namespace.
+                  BearerTokenSecretRef. Required when bearerTokenSecretRef is set.
                 type: string
               url:
                 description: |-
