@@ -170,7 +170,7 @@ func TestUpsertMCPServerFromCRD_ResolvesBearerToken(t *testing.T) {
 	cache := newMCPServerCache()
 
 	crd := &v1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "github", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "github"},
 		Spec: v1alpha1.MCPServerSpec{
 			URL:             "http://github-mcp",
 			SecretNamespace: "default",
@@ -276,7 +276,7 @@ func TestUpsertMCPServerFromCRD_NoSecretRef(t *testing.T) {
 	cache := newMCPServerCache()
 
 	crd := &v1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "github", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "github"},
 		Spec:       v1alpha1.MCPServerSpec{URL: "http://github-mcp"},
 	}
 

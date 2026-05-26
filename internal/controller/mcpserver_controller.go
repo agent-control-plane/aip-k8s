@@ -103,8 +103,11 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	if syncErr != nil {
 		logger.Error(syncErr, "Failed to discover tools from upstream", "name", server.Name)
-		server.Status.Tools = nil
-		server.Status.DiscoveredToolCount = 0
+		// Preserve existing tools on transient failure — don't clobber a prior successful
+		// discovery. Clearing tools would remove them from the gateway watch cache until
+		// the upstream recovers and the controller succeeds on the next requeue.
+		// server.Status.Tools and server.Status.DiscoveredToolCount remain unchanged
+		// from the base copy; the merge patch will include no diff for those fields.
 		meta.SetStatusCondition(&server.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeSynced,
 			Status:             metav1.ConditionFalse,

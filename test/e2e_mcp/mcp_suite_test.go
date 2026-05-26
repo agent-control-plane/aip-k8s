@@ -334,6 +334,17 @@ var _ = BeforeSuite(func() {
 			g.Expect(strings.TrimSpace(out)).To(Equal("ok"))
 		}, 30*time.Second, 1*time.Second).Should(Succeed())
 	}
+
+	By("waiting for gateway to cache MCPServer 'github' with tools")
+	// The gateway watches MCPServer CRDs and populates its tool cache asynchronously.
+	// Poll /mcp-registry until the 'github' server appears with the expected tools so
+	// that Scenario B's /mcp-proxy call does not race against an empty cache.
+	Eventually(func(g Gomega) {
+		cmd := exec.Command("curl", "-sf", fmt.Sprintf("%s/mcp-registry", gwURL))
+		out, err := runCmd(cmd)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(out).To(ContainSubstring(`"create_pull_request"`))
+	}, 30*time.Second, 1*time.Second).Should(Succeed(), "gateway did not cache MCPServer 'github' with tools within 30s")
 })
 
 var _ = AfterSuite(func() {
