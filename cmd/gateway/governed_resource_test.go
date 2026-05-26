@@ -248,6 +248,33 @@ func TestGR_AdmissionSetsGovernedResourceRef(t *testing.T) {
 	g.Expect(req.Spec.GovernedResourceRef.Generation).To(gomega.Equal(int64(42)))
 }
 
+func TestGR_SpecificGR_ActionNotPermitted_AuditTrailCreated(t *testing.T) {
+	g := gomega.NewWithT(t)
+	// Security regression guard: when the most-specific GR matches the URI but not
+	// the action, the handler must deny AND create an AgentRequest with the
+	// gateway-denied annotation (audit trail). A less-specific GR that happens to
+	// permit the action must NOT be used as a fallback — that would allow an agent
+	// to bypass the tighter restriction on the specific GR.
+	s := newTestServer(
+		newGR("specific", "k8s://prod/nodepool/team-a", []string{"agent-sub"}, []string{"scale-up"}),
+		newGR("broad", "k8s://prod/nodepool/*", []string{"agent-sub"}, []string{"scale-up", "delete"}),
+	)
+	s.requireGovernedResource = true
+
+	// "delete" is permitted by "broad" but not by "specific". The specific GR wins
+	// (longer URI pattern), so the request must be denied.
+	w := postCreateCtx(s, "agent-sub", "k8s://prod/nodepool/team-a", "delete", 500*time.Millisecond)
+	g.Expect(w.Code).To(gomega.Equal(http.StatusForbidden))
+	g.Expect(w.Body.String()).To(gomega.ContainSubstring(v1alpha1.DenialCodeActionNotPermitted))
+
+	// An AgentRequest with gateway-denied annotation must have been created for the
+	// audit trail — scope escalation attempts must be visible even when denied.
+	var list v1alpha1.AgentRequestList
+	g.Expect(s.client.List(context.Background(), &list)).To(gomega.Succeed())
+	g.Expect(list.Items).To(gomega.HaveLen(1))
+	g.Expect(list.Items[0].Annotations).To(gomega.HaveKey(v1alpha1.AnnotationGatewayDenied))
+}
+
 func TestGR_NoGRs_RequireFalse_RefIsNil(t *testing.T) {
 	g := gomega.NewWithT(t)
 	s := newTestServer()
