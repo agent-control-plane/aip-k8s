@@ -20,6 +20,10 @@ type MCPServer struct {
 	BearerToken string    `json:"bearer_token,omitempty"`
 	SessionID   string    `json:"-"`
 
+	// Pinned indicates the entry was seeded from the MCP_REGISTRY env var.
+	// Pinned entries are never evicted by the watch goroutine.
+	Pinned bool `json:"-"`
+
 	// sessionMu serializes lazy initialization; nil in test MCPServer literals
 	// that are constructed directly without going through loadMCPRegistry.
 	sessionMu    *sync.Mutex `json:"-"`
@@ -104,6 +108,9 @@ func fetchSchemasForServer(httpClient *http.Client, srv *MCPServer) {
 	listReq.Header.Set("Content-Type", "application/json")
 	listReq.Header.Set("Accept", "application/json, text/event-stream")
 	listReq.Header.Set("Mcp-Session-Id", srv.SessionID)
+	if srv.BearerToken != "" {
+		listReq.Header.Set("Authorization", "Bearer "+srv.BearerToken)
+	}
 
 	resp, err := httpClient.Do(listReq)
 	if err != nil {
@@ -173,6 +180,9 @@ func initUpstreamSession(httpClient *http.Client, srv *MCPServer) (string, bool)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	if srv.BearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+srv.BearerToken)
+	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {

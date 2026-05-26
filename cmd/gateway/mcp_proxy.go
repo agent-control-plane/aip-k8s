@@ -74,6 +74,14 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Lazily establish the upstream session on first use.
+	if !mcpServer.ensureSession(s.httpClient) {
+		log.Printf("Failed to establish session with %s", mcpServer.Name)
+	}
+	if s.mcpCache != nil {
+		s.mcpCache.commitSession(mcpServer.Name, mcpServer.SessionID, mcpServer.sessionReady, mcpServer.URL)
+	}
+
 	if !tool.ReadOnly {
 		if repoErr := enforceRepoClaim(claims.Resource, args); repoErr != "" {
 			writeError(w, http.StatusForbidden, repoErr)

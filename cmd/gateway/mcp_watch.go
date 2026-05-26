@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -33,15 +34,14 @@ func newMCPServerCache() *mcpServerCache {
 	}
 }
 
+// get returns the canonical *MCPServer from the map. Callers must treat the
+// returned pointer as read-only for server fields (URL, BearerToken, Tools).
+// Session state (SessionID, sessionReady) may be written back via
+// commitSession() after a successful ensureSession().
 func (c *mcpServerCache) get(name string) *MCPServer {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	srv, ok := c.servers[name]
-	if !ok {
-		return nil
-	}
-	copy := *srv
-	return &copy
+	return c.servers[name]
 }
 
 func (c *mcpServerCache) getAll() []MCPServer {
@@ -49,7 +49,19 @@ func (c *mcpServerCache) getAll() []MCPServer {
 	defer c.mu.RUnlock()
 	out := make([]MCPServer, 0, len(c.servers))
 	for _, s := range c.servers {
-		out = append(out, *s)
+		// Copy only the fields that are safe to read without sessionMu.
+		// Session state (SessionID, sessionReady) is written by ensureSession
+		// under sessionMu, which is independent of c.mu — copying those fields
+		// here would be a data race. Callers of getAll (handleToolsList,
+		// handleMCPRegistry) only need Name/URL/BearerToken/Tools/Status/Pinned.
+		out = append(out, MCPServer{
+			Name:        s.Name,
+			Status:      s.Status,
+			URL:         s.URL,
+			BearerToken: s.BearerToken,
+			Tools:       s.Tools,
+			Pinned:      s.Pinned,
+		})
 	}
 	return out
 }
@@ -65,6 +77,24 @@ func (c *mcpServerCache) listNames() []string {
 	return out
 }
 
+// seed inserts a pinned MCPServer entry (seeded from the MCP_REGISTRY env var).
+// Pinned entries are never evicted by the CRD watch loop, even when the
+// corresponding MCPServer CRD does not exist. Call this only during startup;
+// subsequent CRD watch events use upsert, which preserves the Pinned flag on
+// matching entries.
+func (c *mcpServerCache) seed(name, url, bearerToken string, tools []MCPTool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.servers[name] = &MCPServer{
+		Name:        name,
+		URL:         url,
+		BearerToken: bearerToken,
+		Tools:       tools,
+		Pinned:      true,
+		sessionMu:   &sync.Mutex{},
+	}
+}
+
 // upsert atomically replaces the cached entry for name with a new MCPServer
 // snapshot. Callers that hold an old pointer continue to see a stable view.
 // The upstream session is preserved when URL and BearerToken are unchanged.
@@ -74,10 +104,17 @@ func (c *mcpServerCache) upsert(name, url, bearerToken string, tools []MCPTool) 
 
 	var sessionID string
 	var sessionReady bool
+	var pinned bool
 	if existing, ok := c.servers[name]; ok && existing.URL == url && existing.BearerToken == bearerToken {
 		// Preserve the upstream session when endpoint and auth are unchanged.
+		// sessionMu must be held when reading sessionReady/SessionID to avoid a
+		// data race with ensureSession, which writes those fields under sessionMu
+		// independently of c.mu.
+		existing.sessionMu.Lock()
 		sessionID = existing.SessionID
 		sessionReady = existing.sessionReady
+		existing.sessionMu.Unlock()
+		pinned = existing.Pinned
 	}
 
 	c.servers[name] = &MCPServer{
@@ -85,10 +122,42 @@ func (c *mcpServerCache) upsert(name, url, bearerToken string, tools []MCPTool) 
 		URL:          url,
 		BearerToken:  bearerToken,
 		Tools:        tools,
+		Pinned:       pinned,
 		SessionID:    sessionID,
 		sessionReady: sessionReady,
 		sessionMu:    &sync.Mutex{},
 	}
+}
+
+// commitSession writes session state back into the canonical cache entry.
+// It replaces the map entry with a new snapshot so readers never see
+// in-place mutations. If the entry no longer exists or its URL differs
+// from expectedURL, the update is skipped.
+func (c *mcpServerCache) commitSession(name, sessionID string, sessionReady bool, expectedURL string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	srv, ok := c.servers[name]
+	if !ok || srv.URL != expectedURL {
+		return
+	}
+	c.servers[name] = &MCPServer{
+		Name:         srv.Name,
+		URL:          srv.URL,
+		BearerToken:  srv.BearerToken,
+		Tools:        srv.Tools,
+		Pinned:       srv.Pinned,
+		SessionID:    sessionID,
+		sessionReady: sessionReady,
+		sessionMu:    srv.sessionMu,
+	}
+}
+
+// resetSession marks the canonical cache entry as session-not-ready so the
+// next ensureSession call re-initializes. Called after a 401 from upstream.
+// expectedURL guards against resetting an entry that was concurrently replaced
+// with a new URL (which would have its own fresh session state).
+func (c *mcpServerCache) resetSession(name, expectedURL string) {
+	c.commitSession(name, "", false, expectedURL)
 }
 
 func (c *mcpServerCache) remove(name string) {
@@ -116,7 +185,7 @@ func watchMCPServers(ctx context.Context, cl client.WithWatch, cache *mcpServerC
 func watchMCPServersOnce(ctx context.Context, cl client.WithWatch, cache *mcpServerCache) error {
 	var initialList v1alpha1.MCPServerList
 	listErr := retry.OnError(retry.DefaultRetry, func(err error) bool {
-		return err != nil
+		return err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 	}, func() error {
 		return cl.List(ctx, &initialList)
 	})
@@ -130,8 +199,13 @@ func watchMCPServersOnce(ctx context.Context, cl client.WithWatch, cache *mcpSer
 		upsertMCPServerFromCRD(ctx, &initialList.Items[i], cl, cache)
 	}
 	// Evict stale entries that existed before the relist but are no longer in the API.
+	// Pinned entries (seeded from MCP_REGISTRY env var) are never evicted.
 	for _, name := range cache.listNames() {
 		if _, ok := present[name]; !ok {
+			srv := cache.get(name)
+			if srv != nil && srv.Pinned {
+				continue
+			}
 			cache.remove(name)
 			log.Printf("Removed stale MCPServer from cache, name=%s", name)
 		}
@@ -183,28 +257,28 @@ func upsertMCPServerFromCRD(ctx context.Context, crd *v1alpha1.MCPServer, cl cli
 		// a misconfigured CRD that slipped past validation.
 		if secretNS == "" {
 			log.Printf("Skipped Secret lookup, mcpServer=%s, reason=secretNamespace is empty for cluster-scoped MCPServer", name)
+			return
+		}
+		ref := crd.Spec.BearerTokenSecretRef
+		key := ref.Key
+		if key == "" {
+			key = "token"
+		}
+		var secret corev1.Secret
+		nn := types.NamespacedName{Name: ref.Name, Namespace: secretNS}
+		if err := cl.Get(ctx, nn, &secret); err != nil {
+			if !apierrors.IsNotFound(err) {
+				// Transient error (network, timeout, etc.) — keep the existing token and
+				// skip updating this entry so a healthy cached server is not corrupted.
+				log.Printf("Failed to get Secret, secret=%s, mcpServer=%s, err=%v", nn.String(), name, err)
+				return
+			}
+			// Secret was deleted — proceed with empty token (auth removed).
+		} else if tokenBytes, ok := secret.Data[key]; ok {
+			bearerToken = string(tokenBytes)
 		} else {
-			ref := crd.Spec.BearerTokenSecretRef
-			key := ref.Key
-			if key == "" {
-				key = "token"
-			}
-			var secret corev1.Secret
-			nn := types.NamespacedName{Name: ref.Name, Namespace: secretNS}
-			if err := cl.Get(ctx, nn, &secret); err != nil {
-				if !apierrors.IsNotFound(err) {
-					// Transient error (network, timeout, etc.) — keep the existing token and
-					// skip updating this entry so a healthy cached server is not corrupted.
-					log.Printf("Failed to get Secret, secret=%s, mcpServer=%s, err=%v", nn.String(), name, err)
-					return
-				}
-				// Secret was deleted — proceed with empty token (auth removed).
-			} else if tokenBytes, ok := secret.Data[key]; ok {
-				bearerToken = string(tokenBytes)
-			} else {
-				// Secret exists but key is missing — proceed with empty token.
-				log.Printf("Secret missing expected key, secret=%s, key=%s, mcpServer=%s", nn.String(), key, name)
-			}
+			// Secret exists but key is missing — proceed with empty token.
+			log.Printf("Secret missing expected key, secret=%s, key=%s, mcpServer=%s", nn.String(), key, name)
 		}
 	}
 

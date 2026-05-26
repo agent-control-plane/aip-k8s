@@ -126,7 +126,10 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *mc
 
 	// Lazily establish the upstream session and populate tool schemas on first use.
 	if !mcpServer.ensureSession(s.httpClient) {
-		log.Printf("handleToolsCall: failed to establish session with %s; proceeding anyway", mcpServer.Name)
+		log.Printf("Failed to establish session with %s", mcpServer.Name)
+	}
+	if s.mcpCache != nil {
+		s.mcpCache.commitSession(mcpServer.Name, mcpServer.SessionID, mcpServer.sessionReady, mcpServer.URL)
 	}
 
 	tool := s.findTool(mcpServer, toolName)
@@ -351,9 +354,16 @@ func (s *Server) forwardToolCall(
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		// A 401 from upstream means the session expired; reset so the next call re-initializes.
+		// A 401 from upstream means the session expired. Reset both the in-hand
+		// pointer and the canonical cache entry so the next call re-initializes.
+		// resetSession on the pointer alone is insufficient: commitSession already
+		// replaced the map entry with a new snapshot, so the pointer the handler
+		// holds is detached from the canonical entry.
 		if resp.StatusCode == http.StatusUnauthorized {
 			mcpServer.resetSession()
+			if s.mcpCache != nil {
+				s.mcpCache.resetSession(mcpServer.Name, mcpServer.URL)
+			}
 		}
 		return mcpProxyResult{}, fmt.Sprintf("MCP server returned status %d", resp.StatusCode)
 	}

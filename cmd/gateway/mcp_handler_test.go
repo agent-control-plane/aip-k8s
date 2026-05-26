@@ -534,7 +534,7 @@ func TestMCPHandler_ToolsCall_EnsureSessionFailureLogged(t *testing.T) {
 	s.handleMCP(rr, req)
 
 	g.Expect(rr.Code).To(gomega.Equal(http.StatusOK))
-	g.Expect(logBuf.String()).To(gomega.ContainSubstring("failed to establish session with k8s"))
+	g.Expect(logBuf.String()).To(gomega.ContainSubstring("Failed to establish session with k8s"))
 	// Handler proceeds and returns the upstream result.
 	g.Expect(rr.Body.String()).To(gomega.ContainSubstring("pod data"))
 }

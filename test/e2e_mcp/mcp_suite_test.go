@@ -20,6 +20,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -46,6 +48,7 @@ const (
 	e2eTestBranch          = "e2e-mcp-scale-17"
 	e2eTestBranch2         = "e2e-mcp-scale-17-v2"
 	e2eTestBranch3         = "e2e-mcp-scale-17-v3"
+	mcpServerCRDName       = "github"
 )
 
 var (
@@ -276,7 +279,33 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred(), "Failed to start kubectl port-forward for MCP")
 	time.Sleep(2 * time.Second)
 
-	mcpRegistry := fmt.Sprintf(`MCP_REGISTRY=[{"name":"github","url":"http://localhost:%s","status":"available","bearer_token":"%s","tools":[{"name":"create_pull_request","read_only":false},{"name":"get_file_contents","read_only":true},{"name":"list_pull_requests","read_only":true}]}]`, mcpPort, githubPAT)
+	By("creating MCPServer CR for the github-mcp server")
+	mcpServerCR := &governancev1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: mcpServerCRDName,
+		},
+		Spec: governancev1alpha1.MCPServerSpec{
+			URL:             fmt.Sprintf("http://localhost:%s", mcpPort),
+			SecretNamespace: namespace,
+			BearerTokenSecretRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: githubTokenSecret},
+				Key:                  "token",
+			},
+		},
+	}
+	Expect(k8sClient.Create(ctx, mcpServerCR)).To(Succeed(), "Failed to create MCPServer CR")
+
+	// The gateway runs locally (not in-cluster) so it uses the port-forwarded URL.
+	// The controller (in-cluster) cannot reach localhost, so we manually populate
+	// status.tools here so the gateway's CRD watch sees a fully configured server.
+	By("patching MCPServer status with discovered tools")
+	mcpServerCR.Status.Tools = []governancev1alpha1.MCPServerTool{
+		{Name: "create_pull_request", ReadOnly: false},
+		{Name: "get_file_contents", ReadOnly: true},
+		{Name: "list_pull_requests", ReadOnly: true},
+	}
+	mcpServerCR.Status.DiscoveredToolCount = 3
+	Expect(k8sClient.Status().Update(ctx, mcpServerCR)).To(Succeed(), "Failed to patch MCPServer status")
 
 	if os.Getenv("GATEWAY_URL") != "" {
 		gwURL = os.Getenv("GATEWAY_URL")
@@ -289,7 +318,6 @@ var _ = BeforeSuite(func() {
 			"--wait-timeout", "90s",
 			"--dedup-window", "5s",
 		)
-		gwCmd.Env = append(os.Environ(), mcpRegistry)
 		gwCmd.Stdout = GinkgoWriter
 		gwCmd.Stderr = GinkgoWriter
 		err = gwCmd.Start()
@@ -306,12 +334,27 @@ var _ = BeforeSuite(func() {
 			g.Expect(strings.TrimSpace(out)).To(Equal("ok"))
 		}, 30*time.Second, 1*time.Second).Should(Succeed())
 	}
+
+	By("waiting for gateway to cache MCPServer 'github' with tools")
+	// The gateway watches MCPServer CRDs and populates its tool cache asynchronously.
+	// Poll /mcp-registry until the 'github' server appears with the expected tools so
+	// that Scenario B's /mcp-proxy call does not race against an empty cache.
+	Eventually(func(g Gomega) {
+		cmd := exec.Command("curl", "-sf", fmt.Sprintf("%s/mcp-registry", gwURL))
+		out, err := runCmd(cmd)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(out).To(ContainSubstring(`"create_pull_request"`))
+	}, 30*time.Second, 1*time.Second).Should(Succeed(), "gateway did not cache MCPServer 'github' with tools within 30s")
 })
 
 var _ = AfterSuite(func() {
 	By("cleaning up github-mcp-server resources")
 	cmd := exec.Command("kubectl", "delete", "-f", filepath.Join(getProjectDir(), "config", "mcp"), "--ignore-not-found", "--wait=false")
 	_, _ = runCmd(cmd)
+
+	By("deleting MCPServer CR")
+	err := k8sClient.Delete(ctx, &governancev1alpha1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: mcpServerCRDName}})
+	Expect(client.IgnoreNotFound(err)).To(Succeed(), "deleting MCPServer %s", mcpServerCRDName)
 
 	By("deleting aip-github-token Secret")
 	cmd = exec.Command("kubectl", "delete", "secret", githubTokenSecret, "-n", namespace, "--ignore-not-found", "--wait=false")
