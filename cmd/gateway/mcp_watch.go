@@ -77,6 +77,24 @@ func (c *mcpServerCache) listNames() []string {
 	return out
 }
 
+// seed inserts a pinned MCPServer entry (seeded from the MCP_REGISTRY env var).
+// Pinned entries are never evicted by the CRD watch loop, even when the
+// corresponding MCPServer CRD does not exist. Call this only during startup;
+// subsequent CRD watch events use upsert, which preserves the Pinned flag on
+// matching entries.
+func (c *mcpServerCache) seed(name, url, bearerToken string, tools []MCPTool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.servers[name] = &MCPServer{
+		Name:        name,
+		URL:         url,
+		BearerToken: bearerToken,
+		Tools:       tools,
+		Pinned:      true,
+		sessionMu:   &sync.Mutex{},
+	}
+}
+
 // upsert atomically replaces the cached entry for name with a new MCPServer
 // snapshot. Callers that hold an old pointer continue to see a stable view.
 // The upstream session is preserved when URL and BearerToken are unchanged.

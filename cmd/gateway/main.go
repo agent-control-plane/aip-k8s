@@ -148,8 +148,9 @@ func main() {
 	mcpCache := newMCPServerCache()
 	for i := range mcpServers {
 		srv := &mcpServers[i]
-		srv.Pinned = true
-		mcpCache.upsert(srv.Name, srv.URL, srv.BearerToken, srv.Tools)
+		// seed sets Pinned=true so the watch eviction loop never removes
+		// env-var-configured servers even when no matching MCPServer CRD exists.
+		mcpCache.seed(srv.Name, srv.URL, srv.BearerToken, srv.Tools)
 	}
 
 	server := &Server{

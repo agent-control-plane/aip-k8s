@@ -353,7 +353,8 @@ var _ = AfterSuite(func() {
 	_, _ = runCmd(cmd)
 
 	By("deleting MCPServer CR")
-	_ = k8sClient.Delete(ctx, &governancev1alpha1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: mcpServerCRDName}})
+	err := k8sClient.Delete(ctx, &governancev1alpha1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: mcpServerCRDName}})
+	Expect(client.IgnoreNotFound(err)).To(Succeed(), "deleting MCPServer %s", mcpServerCRDName)
 
 	By("deleting aip-github-token Secret")
 	cmd = exec.Command("kubectl", "delete", "secret", githubTokenSecret, "-n", namespace, "--ignore-not-found", "--wait=false")
