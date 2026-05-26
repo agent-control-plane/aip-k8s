@@ -25,21 +25,22 @@ func makeGRItem(name, pattern string) v1alpha1.GovernedResource {
 }
 
 func TestMatchGovernedResource_NoItems(t *testing.T) {
-	if matchGovernedResource(nil, "k8s://prod/nodepool/foo") != nil {
+	// action="" skips the permittedActions filter — these tests focus on URI matching.
+	if matchGovernedResource(nil, "k8s://prod/nodepool/foo", "") != nil {
 		t.Fatal("expected nil for empty list")
 	}
 }
 
 func TestMatchGovernedResource_NoMatch(t *testing.T) {
 	items := []v1alpha1.GovernedResource{makeGRItem("a", "k8s://prod/nodepool/*")}
-	if matchGovernedResource(items, "k8s://staging/nodepool/foo") != nil {
+	if matchGovernedResource(items, "k8s://staging/nodepool/foo", "") != nil {
 		t.Fatal("expected nil when no pattern matches")
 	}
 }
 
 func TestMatchGovernedResource_SingleMatch(t *testing.T) {
 	items := []v1alpha1.GovernedResource{makeGRItem("a", "k8s://prod/nodepool/*")}
-	got := matchGovernedResource(items, "k8s://prod/nodepool/team-a")
+	got := matchGovernedResource(items, "k8s://prod/nodepool/team-a", "")
 	if got == nil || got.Name != "a" {
 		t.Fatalf("expected 'a', got %v", got)
 	}
@@ -50,7 +51,7 @@ func TestMatchGovernedResource_MostSpecificWins(t *testing.T) {
 		makeGRItem("broad", "k8s://prod/*"),
 		makeGRItem("specific", "k8s://prod/nodepool/team-a"),
 	}
-	got := matchGovernedResource(items, "k8s://prod/nodepool/team-a")
+	got := matchGovernedResource(items, "k8s://prod/nodepool/team-a", "")
 	if got == nil || got.Name != "specific" {
 		t.Fatalf("expected 'specific', got %v", got)
 	}
@@ -61,7 +62,7 @@ func TestMatchGovernedResource_AlphabeticalTiebreak(t *testing.T) {
 		makeGRItem("zzz", "k8s://prod/nodepool/*"),
 		makeGRItem("aaa", "k8s://prod/nodepool/*"),
 	}
-	got := matchGovernedResource(items, "k8s://prod/nodepool/team-a")
+	got := matchGovernedResource(items, "k8s://prod/nodepool/team-a", "")
 	if got == nil || got.Name != "aaa" {
 		t.Fatalf("expected 'aaa', got %v", got)
 	}
@@ -70,7 +71,7 @@ func TestMatchGovernedResource_AlphabeticalTiebreak(t *testing.T) {
 func TestMatchGovernedResource_StarDoesNotCrossSlash(t *testing.T) {
 	// * does not match /
 	items := []v1alpha1.GovernedResource{makeGRItem("a", "k8s://prod/nodepool/*")}
-	if matchGovernedResource(items, "k8s://prod/nodepool/team-a/extra") != nil {
+	if matchGovernedResource(items, "k8s://prod/nodepool/team-a/extra", "") != nil {
 		t.Fatal("* should not match across a slash")
 	}
 }
@@ -88,13 +89,27 @@ func TestMatchGovernedResource_DoubleStarCrossesSlash(t *testing.T) {
 		{"github://otherorg/infra/files/main/nodepools/file.yaml", false},
 	}
 	for _, tc := range cases {
-		got := matchGovernedResource(items, tc.uri)
+		got := matchGovernedResource(items, tc.uri, "")
 		if tc.match && got == nil {
 			t.Errorf("expected match for %q, got nil", tc.uri)
 		}
 		if !tc.match && got != nil {
 			t.Errorf("expected no match for %q, got %q", tc.uri, got.Name)
 		}
+	}
+}
+
+func TestMatchGovernedResource_ActionFiltered(t *testing.T) {
+	// GR allows only "scale-up"; a request with "delete" should not match even
+	// though the URI pattern fits.
+	items := []v1alpha1.GovernedResource{makeGRItem("a", "k8s://prod/nodepool/*")}
+	// makeGRItem sets PermittedActions: ["update"] — "delete" should be filtered out.
+	if matchGovernedResource(items, "k8s://prod/nodepool/team-a", "delete") != nil {
+		t.Fatal("expected nil when action is not in permittedActions")
+	}
+	// "update" is in the list — should match.
+	if matchGovernedResource(items, "k8s://prod/nodepool/team-a", "update") == nil {
+		t.Fatal("expected match when action is in permittedActions")
 	}
 }
 
@@ -231,6 +246,33 @@ func TestGR_AdmissionSetsGovernedResourceRef(t *testing.T) {
 	g.Expect(req.Spec.GovernedResourceRef).NotTo(gomega.BeNil())
 	g.Expect(req.Spec.GovernedResourceRef.Name).To(gomega.Equal("gr1"))
 	g.Expect(req.Spec.GovernedResourceRef.Generation).To(gomega.Equal(int64(42)))
+}
+
+func TestGR_SpecificGR_ActionNotPermitted_AuditTrailCreated(t *testing.T) {
+	g := gomega.NewWithT(t)
+	// Security regression guard: when the most-specific GR matches the URI but not
+	// the action, the handler must deny AND create an AgentRequest with the
+	// gateway-denied annotation (audit trail). A less-specific GR that happens to
+	// permit the action must NOT be used as a fallback — that would allow an agent
+	// to bypass the tighter restriction on the specific GR.
+	s := newTestServer(
+		newGR("specific", "k8s://prod/nodepool/team-a", []string{"agent-sub"}, []string{"scale-up"}),
+		newGR("broad", "k8s://prod/nodepool/*", []string{"agent-sub"}, []string{"scale-up", "delete"}),
+	)
+	s.requireGovernedResource = true
+
+	// "delete" is permitted by "broad" but not by "specific". The specific GR wins
+	// (longer URI pattern), so the request must be denied.
+	w := postCreateCtx(s, "agent-sub", "k8s://prod/nodepool/team-a", "delete", 500*time.Millisecond)
+	g.Expect(w.Code).To(gomega.Equal(http.StatusForbidden))
+	g.Expect(w.Body.String()).To(gomega.ContainSubstring(v1alpha1.DenialCodeActionNotPermitted))
+
+	// An AgentRequest with gateway-denied annotation must have been created for the
+	// audit trail — scope escalation attempts must be visible even when denied.
+	var list v1alpha1.AgentRequestList
+	g.Expect(s.client.List(context.Background(), &list)).To(gomega.Succeed())
+	g.Expect(list.Items).To(gomega.HaveLen(1))
+	g.Expect(list.Items[0].Annotations).To(gomega.HaveKey(v1alpha1.AnnotationGatewayDenied))
 }
 
 func TestGR_NoGRs_RequireFalse_RefIsNil(t *testing.T) {

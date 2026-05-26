@@ -77,6 +77,8 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 	// Lazily establish the upstream session on first use.
 	if !mcpServer.ensureSession(s.httpClient) {
 		log.Printf("Failed to establish session with %s", mcpServer.Name)
+		writeError(w, http.StatusBadGateway, "Failed to establish upstream MCP session")
+		return
 	}
 	if s.mcpCache != nil {
 		s.mcpCache.commitSession(mcpServer.Name, mcpServer.SessionID, mcpServer.sessionReady, mcpServer.URL)

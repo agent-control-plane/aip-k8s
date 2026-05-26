@@ -275,7 +275,7 @@ func (s *Server) submitAgentRequestForTool(
 	// and so we can stamp trust gate annotations (Observer → AwaitingVerdict routing).
 	var govResources v1alpha1.GovernedResourceList
 	if err := s.client.List(ctx, &govResources); err == nil && len(govResources.Items) > 0 {
-		if gr := matchGovernedResource(govResources.Items, targetURI); gr != nil {
+		if gr := matchGovernedResource(govResources.Items, targetURI, prefixedToolName); gr != nil {
 			ar.Spec.GovernedResourceRef = &v1alpha1.GovernedResourceRef{
 				Name:       gr.Name,
 				Generation: gr.Generation,

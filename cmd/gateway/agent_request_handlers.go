@@ -148,7 +148,12 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		goto admissionPassed
 	}
 
-	matchedGR = matchGovernedResource(govResources.Items, body.TargetURI)
+	// URI-only match here — the action check below (with its audit-trail path) is
+	// the authoritative gate for the HTTP handler. Passing action="" keeps the
+	// most-specific-URI-wins semantics intact across multiple GovernedResources:
+	// a more-specific GR that restricts actions must not be bypassed by falling
+	// back to a less-specific GR that happens to permit the action.
+	matchedGR = matchGovernedResource(govResources.Items, body.TargetURI, "")
 	if matchedGR == nil {
 		writeError(w, http.StatusForbidden, v1alpha1.DenialCodeActionNotPermitted)
 		return
