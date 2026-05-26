@@ -9,8 +9,23 @@ actions, trust gates, human approval) apply seamlessly to AI-driven operations.
 
 ## Add AIP Gateway to Claude Code
 
-Create or edit `~/.config/claude/claude_desktop_config.json` (or `.claude.json`
-in dev mode):
+**Option A — CLI (recommended)**
+
+```bash
+claude mcp add aip --transport http --url http://localhost:8080/mcp
+```
+
+If the gateway requires OIDC authentication, pass the token as a header:
+
+```bash
+claude mcp add aip --transport http \
+  --url http://localhost:8080/mcp \
+  --header "Authorization: Bearer <your-oidc-token>"
+```
+
+**Option B — config file**
+
+Add an entry to `~/.claude.json`:
 
 ```json
 {
