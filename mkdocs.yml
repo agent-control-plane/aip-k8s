@@ -74,6 +74,8 @@ nav:
   - User Guide:
       - Dev Mode: user-guide/dev-mode.md
       - Production Hardening: user-guide/production-hardening.md
+      - MCP Server Registration: user-guide/mcp-server-registration.md
+      - Claude Code Integration: user-guide/claude-code-integration.md
       - Demos:
           - Scaledown: user-guide/demos/scaledown.md
           - Trust Graduation: user-guide/demos/graduation.md

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"sync"
 
 	"github.com/gobwas/glob"
@@ -28,13 +29,22 @@ type trustGateResult struct {
 }
 
 // matchGovernedResource returns the most specific GovernedResource whose URIPattern
-// matches targetURI using gobwas/glob semantics (** crosses separators, * does not).
+// matches targetURI and whose permittedActions (if non-empty) includes action.
+// Uses gobwas/glob semantics (** crosses separators, * does not).
 // Most specific = longest pattern; ties broken alphabetically by name.
 // Returns nil if no pattern matches.
-func matchGovernedResource(items []v1alpha1.GovernedResource, targetURI string) *v1alpha1.GovernedResource {
+// Pass action="" to skip the permittedActions filter (e.g. in tests).
+func matchGovernedResource(items []v1alpha1.GovernedResource, targetURI, action string) *v1alpha1.GovernedResource {
 	var best *v1alpha1.GovernedResource
 	for i := range items {
 		gr := &items[i]
+
+		// If the GovernedResource declares permittedActions and the requested action
+		// is not in the list, this resource does not govern this operation.
+		if action != "" && len(gr.Spec.PermittedActions) > 0 &&
+			!slices.Contains(gr.Spec.PermittedActions, action) {
+			continue
+		}
 
 		globMu.RLock()
 		g, ok := globCache[gr.Spec.URIPattern]

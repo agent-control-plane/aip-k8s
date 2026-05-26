@@ -25,21 +25,22 @@ func makeGRItem(name, pattern string) v1alpha1.GovernedResource {
 }
 
 func TestMatchGovernedResource_NoItems(t *testing.T) {
-	if matchGovernedResource(nil, "k8s://prod/nodepool/foo") != nil {
+	// action="" skips the permittedActions filter — these tests focus on URI matching.
+	if matchGovernedResource(nil, "k8s://prod/nodepool/foo", "") != nil {
 		t.Fatal("expected nil for empty list")
 	}
 }
 
 func TestMatchGovernedResource_NoMatch(t *testing.T) {
 	items := []v1alpha1.GovernedResource{makeGRItem("a", "k8s://prod/nodepool/*")}
-	if matchGovernedResource(items, "k8s://staging/nodepool/foo") != nil {
+	if matchGovernedResource(items, "k8s://staging/nodepool/foo", "") != nil {
 		t.Fatal("expected nil when no pattern matches")
 	}
 }
 
 func TestMatchGovernedResource_SingleMatch(t *testing.T) {
 	items := []v1alpha1.GovernedResource{makeGRItem("a", "k8s://prod/nodepool/*")}
-	got := matchGovernedResource(items, "k8s://prod/nodepool/team-a")
+	got := matchGovernedResource(items, "k8s://prod/nodepool/team-a", "")
 	if got == nil || got.Name != "a" {
 		t.Fatalf("expected 'a', got %v", got)
 	}
@@ -50,7 +51,7 @@ func TestMatchGovernedResource_MostSpecificWins(t *testing.T) {
 		makeGRItem("broad", "k8s://prod/*"),
 		makeGRItem("specific", "k8s://prod/nodepool/team-a"),
 	}
-	got := matchGovernedResource(items, "k8s://prod/nodepool/team-a")
+	got := matchGovernedResource(items, "k8s://prod/nodepool/team-a", "")
 	if got == nil || got.Name != "specific" {
 		t.Fatalf("expected 'specific', got %v", got)
 	}
@@ -61,7 +62,7 @@ func TestMatchGovernedResource_AlphabeticalTiebreak(t *testing.T) {
 		makeGRItem("zzz", "k8s://prod/nodepool/*"),
 		makeGRItem("aaa", "k8s://prod/nodepool/*"),
 	}
-	got := matchGovernedResource(items, "k8s://prod/nodepool/team-a")
+	got := matchGovernedResource(items, "k8s://prod/nodepool/team-a", "")
 	if got == nil || got.Name != "aaa" {
 		t.Fatalf("expected 'aaa', got %v", got)
 	}
@@ -70,7 +71,7 @@ func TestMatchGovernedResource_AlphabeticalTiebreak(t *testing.T) {
 func TestMatchGovernedResource_StarDoesNotCrossSlash(t *testing.T) {
 	// * does not match /
 	items := []v1alpha1.GovernedResource{makeGRItem("a", "k8s://prod/nodepool/*")}
-	if matchGovernedResource(items, "k8s://prod/nodepool/team-a/extra") != nil {
+	if matchGovernedResource(items, "k8s://prod/nodepool/team-a/extra", "") != nil {
 		t.Fatal("* should not match across a slash")
 	}
 }
@@ -88,13 +89,27 @@ func TestMatchGovernedResource_DoubleStarCrossesSlash(t *testing.T) {
 		{"github://otherorg/infra/files/main/nodepools/file.yaml", false},
 	}
 	for _, tc := range cases {
-		got := matchGovernedResource(items, tc.uri)
+		got := matchGovernedResource(items, tc.uri, "")
 		if tc.match && got == nil {
 			t.Errorf("expected match for %q, got nil", tc.uri)
 		}
 		if !tc.match && got != nil {
 			t.Errorf("expected no match for %q, got %q", tc.uri, got.Name)
 		}
+	}
+}
+
+func TestMatchGovernedResource_ActionFiltered(t *testing.T) {
+	// GR allows only "scale-up"; a request with "delete" should not match even
+	// though the URI pattern fits.
+	items := []v1alpha1.GovernedResource{makeGRItem("a", "k8s://prod/nodepool/*")}
+	// makeGRItem sets PermittedActions: ["update"] — "delete" should be filtered out.
+	if matchGovernedResource(items, "k8s://prod/nodepool/team-a", "delete") != nil {
+		t.Fatal("expected nil when action is not in permittedActions")
+	}
+	// "update" is in the list — should match.
+	if matchGovernedResource(items, "k8s://prod/nodepool/team-a", "update") == nil {
+		t.Fatal("expected match when action is in permittedActions")
 	}
 }
 

@@ -148,7 +148,7 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		goto admissionPassed
 	}
 
-	matchedGR = matchGovernedResource(govResources.Items, body.TargetURI)
+	matchedGR = matchGovernedResource(govResources.Items, body.TargetURI, body.Action)
 	if matchedGR == nil {
 		writeError(w, http.StatusForbidden, v1alpha1.DenialCodeActionNotPermitted)
 		return

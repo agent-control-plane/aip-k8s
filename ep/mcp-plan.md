@@ -192,7 +192,7 @@ Same agent behaviour, two surfaces — AIP governs the whole system.
 
 ---
 
-## Phase 5 — Controller-Side GitHub MCP Fetcher 🔍 IN REVIEW (PR #196)
+## Phase 5 — Controller-Side GitHub MCP Fetcher ✅ DONE (PR #196)
 
 **Gap from Phase 2 was completed here.** The `github://` URI context fetcher now calls the
 in-cluster GitHub MCP server instead of the GitHub REST API directly.
@@ -551,29 +551,84 @@ Every tool call goes through AIP governance automatically. No agent code changes
 Extract the MCP proxy out of the gateway binary into its own `cmd/aip-mcp` binary.
 
 **Why deferred:** Proxy in gateway is fine for demo. This is an operational concern, not a
-correctness concern. Split before Phase 7 CRDs are wired in — easier to refactor the boundary
+correctness concern. Split before Phase 8 CRDs are wired in — easier to refactor the boundary
 clean than retrofit it later.
 
 **TODO comment to add in Phase 3 code:**
 ```go
-// TODO(Phase 6): extract handleMCPProxy into cmd/aip-mcp binary
+// TODO(Phase 7): extract handleMCPProxy into cmd/aip-mcp binary
 ```
 
 ---
 
-## Phase 7 — `AgentRegistration` + `AgentPolicy` CRDs ❌ NOT STARTED (design locked, deferred)
+## Phase 8 — `AgentRegistration` + Scoped External Credentials 📋 EP COMPLETE
+
+**Full design:** `ep/agent-registration.md`
+(currently at `/Users/ravisantosh/ep-agent-registration.md` — move to repo when work begins)
+
+**Start condition:** Phase 5 (PR #196) merged.
+
+Addresses three compounding gaps:
+
+1. **Unregistered agents act freely.** Any identity string can submit `AgentRequest`s. Even
+   with OIDC enabled, the gateway validates the token but never checks whether this agent
+   was provisioned by an operator.
+
+2. **Shared downstream credentials lose agent identity.** Every agent uses the MCPServer's
+   single `BearerTokenSecretRef`. GitHub audit log, Azure activity log, AWS CloudTrail all
+   show the gateway's service identity, not the acting agent's. K8s audit logs have the same
+   problem: every API call is `system:serviceaccount:aip-system:aip-gateway`.
+
+3. **Agent identity config has no home.** `AgentTrustProfile` is a controller-managed
+   measurement object. Its spec is write-once with one field (`agentIdentity`). Outbound
+   credentials, OIDC subject bindings, and K8s impersonation config have nowhere to live.
 
 **Design decisions (locked):**
-- Platform team creates `AgentRegistration` (identity) — agents cannot self-register
-- Operators create `AgentPolicy`, platform team approves — two-party authorization
-- Read-only MCP tool calls pass through without an `AgentRequest`
-- Write tool calls require a matching approved `AgentRequest` (enforced in proxy)
-- `MCPServer` registry becomes a CRD (not env var) with constraint: policy may only reference
-  servers listed in the registry
-- Scaling playbook for Jira/Salesforce: same pattern — register MCP server, write policy,
-  reads pass through, writes governed
 
-**Full K8s AuditRecord emission for every proxy call** (replaces stdout-only `emitMCPLog`).
+- `AgentRegistration` is the single operator-owned source of truth for agent identity config:
+  OIDC inbound validation, outbound credential bindings, and K8s impersonation config.
+- `AgentTrustProfile` remains a pure controller-managed measurement object. No identity
+  config lives on ATP. The gateway maintains a separate `registrationCache` watch/cache
+  (same pattern as `mcpServerCache` for MCPServer CRDs) — no mirroring between objects.
+- Three outbound credential types:
+  - `StaticSecret` — GitHub PAT stored in a K8s Secret
+  - `AzureWorkloadIdentity` — **client_credentials + Federated Identity Credential** (NOT OBO).
+    Agent's Keycloak token is the `client_assertion`. Azure returns a token as the agent's
+    own app registration identity, not as the gateway acting on behalf of a user.
+  - `AWSWebIdentity` — `AssumeRoleWithWebIdentity`. Agent's Keycloak token is the
+    `WebIdentityToken`. STS returns temp creds scoped to the agent's IAM role.
+- Token cache: output token keyed on stable identity `(agentIdentity, service)`, NOT on the
+  input OIDC token. Lazy refresh within buffer. Singleflight prevents thundering herd on
+  cache cold start. No background refresh — input OIDC token only present during requests.
+- `--unregistered-agent-policy=allow|warn|strict` flag; `allow` is the default for backward
+  compatibility. `warn` annotates `AgentRequest` with `governance.aip.io/unregistered=true`,
+  enabling SafetyPolicy rules to require approval. `strict` returns 403.
+- K8s impersonation: when `spec.k8sImpersonation` is set, K8s API calls use
+  `Impersonate-User: aip:<agentIdentity>`. Gateway SA requires `impersonate` verb scoped to
+  the `aip:` prefix.
+- AWS Bedrock uses SigV4, not Bearer tokens. The gateway stays credential-model-uniform via
+  a thin proxy layer in front of Bedrock — gateway does not sign AWS requests.
+- `AgentPolicy` CRD: **dropped**. Admission policy is handled by existing
+  `GovernedResource.spec.permittedAgents` + `SafetyPolicy`. No new CRD needed.
+- `MCPServer registry becomes a CRD`: ✅ **already done in Phase 3.**
+
+**Implementation sub-phases:**
+
+| Sub-phase | Content |
+|---|---|
+| 8.1 | `AgentRegistration` CRD + controller: pre-create ATP on Registration create/update |
+| 8.2 | Gateway `registrationCache` + `--unregistered-agent-policy` + OIDC subject validation (fix 400→403) |
+| 8.3 | `CredentialProvider` interface + `StaticSecretProvider`, `AzureWorkloadIdentityProvider`, `AWSWebIdentityProvider` + MCP credential selection |
+| 8.4 | K8s impersonation: per-agent impersonating REST client; Helm/RBAC `impersonate` verb |
+| 8.5 | E2e: per-agent Keycloak credentials for GitHub MCP; stub-server token exchange; cloud suite skeletons (`azure_e2e`, `aws_e2e` build tags) |
+
+**Open questions (resolve before coding):**
+
+1. Namespace scope of `AgentRegistration`: Namespaced (matches ATP, default) vs Cluster-scoped
+   (cleaner for agents that span namespaces, but requires cluster-admin to provision).
+2. Relationship to `ep/agent_identity.md` (inbound API-key auth for non-OIDC agents): merge
+   into one CRD or keep separate with a cross-reference.
+3. AWS SigV4 proxy API contract: follow-up EP/ADR required before sub-phase 8.3.
 
 ---
 
@@ -584,6 +639,6 @@ clean than retrofit it later.
 | 184 | MCP registry + GitHub MCP integration | ⚠️ Partial — fetcher gap done in Phase 5 |
 | 185 | MCP proxy with JWT validation | ✅ Done |
 | 186 | GitHub PR governance demo agent | Phase 4 — redesigned (see demo/github/) |
-| 64  | Capability-based enforcement / scoped tokens | Phase 7 |
-| 118 | GovernedResource binding + enforcement plugins | Phase 7 |
-| 34  | Git repository state context fetcher | Phase 7 |
+| 64  | Capability-based enforcement / scoped tokens | Phase 8 |
+| 118 | GovernedResource binding + enforcement plugins | Phase 8 |
+| 34  | Git repository state context fetcher | Phase 8 |

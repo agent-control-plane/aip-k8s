@@ -74,10 +74,15 @@ func (r *AgentTrustProfileReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	ns := profile.Namespace
 
 	// Read DiagnosticAccuracySummary.
+	// Use APIReader (direct API call) instead of the cached client to avoid a
+	// race where the summary status patch and the AgentRequest completion event
+	// both enqueue the same profile reconcile key — controller-runtime deduplicates
+	// them into a single reconcile that can run before the informer cache reflects
+	// the summary update, causing totalReviewed to be read one cycle behind.
 	var summary governancev1alpha1.DiagnosticAccuracySummary
 	summaryNN := types.NamespacedName{Name: summaryNameForAgent(agentID), Namespace: ns}
 	var hasSummary bool
-	if err := r.Get(ctx, summaryNN, &summary); err != nil {
+	if err := r.APIReader.Get(ctx, summaryNN, &summary); err != nil {
 		if !errors.IsNotFound(err) {
 			return ctrl.Result{}, err
 		}
