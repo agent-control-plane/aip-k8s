@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/onsi/gomega"
+	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -103,24 +103,26 @@ func TestMCPServerCache_SessionPreservedOnNoopUpdate(t *testing.T) {
 func TestMCPServerCache_ConcurrentAccess(t *testing.T) {
 	g := gomega.NewWithT(t)
 	cache := newMCPServerCache()
-	var wg sync.WaitGroup
+	var eg errgroup.Group
 
 	// Concurrent writes
 	for range 10 {
-		wg.Go(func() {
+		eg.Go(func() error {
 			cache.upsert("srv", "url", "tok", []MCPTool{{Name: "t"}})
+			return nil
 		})
 	}
 
 	// Concurrent reads
 	for range 10 {
-		wg.Go(func() {
+		eg.Go(func() error {
 			_ = cache.get("srv")
 			_ = cache.getAll()
+			return nil
 		})
 	}
 
-	wg.Wait()
+	_ = eg.Wait()
 	g.Expect(cache.get("srv")).NotTo(gomega.BeNil())
 }
 

@@ -19,11 +19,11 @@ import (
 )
 
 const (
-	kcPort     = "18091"
-	kcBase     = "http://localhost:" + kcPort
-	kcRealm    = "aip"
-	kc8GWPort  = "18085"
-	kcIssuer   = kcBase + "/realms/" + kcRealm
+	kcPort    = "18091"
+	kcBase    = "http://localhost:" + kcPort
+	kcRealm   = "aip"
+	kc8GWPort = "18085"
+	kcIssuer  = kcBase + "/realms/" + kcRealm
 )
 
 var _ = Describe("Phase 8: Gateway Keycloak OIDC Integration", Ordered, func() {
@@ -232,14 +232,14 @@ func kcCreateClient(port, adminToken, realm, clientID, secret string) string {
 	kcDo("POST",
 		fmt.Sprintf("http://localhost:%s/admin/realms/%s/clients", port, realm),
 		adminToken, map[string]interface{}{
-			"clientId":                clientID,
-			"enabled":                 true,
-			"publicClient":            false,
-			"serviceAccountsEnabled":  true,
-			"standardFlowEnabled":     false,
+			"clientId":                  clientID,
+			"enabled":                   true,
+			"publicClient":              false,
+			"serviceAccountsEnabled":    true,
+			"standardFlowEnabled":       false,
 			"directAccessGrantsEnabled": false,
-			"clientAuthenticatorType": "client-secret",
-			"secret":                  secret,
+			"clientAuthenticatorType":   "client-secret",
+			"secret":                    secret,
 		})
 
 	// Fetch internal ID (needed for mapper endpoints)

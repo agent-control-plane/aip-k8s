@@ -169,6 +169,23 @@ spec:
                   - service
                   - type
                   type: object
+                  x-kubernetes-validations:
+                  - message: staticSecret must be set when type is StaticSecret and
+                      unset otherwise
+                    rule: 'self.type == ''StaticSecret'' ? has(self.staticSecret)
+                      : !has(self.staticSecret)'
+                  - message: azureWorkloadIdentity must be set when type is AzureWorkloadIdentity
+                      and unset otherwise
+                    rule: 'self.type == ''AzureWorkloadIdentity'' ? has(self.azureWorkloadIdentity)
+                      : !has(self.azureWorkloadIdentity)'
+                  - message: awsWebIdentity must be set when type is AWSWebIdentity
+                      and unset otherwise
+                    rule: 'self.type == ''AWSWebIdentity'' ? has(self.awsWebIdentity)
+                      : !has(self.awsWebIdentity)'
+                  - message: kubernetesOIDC must be set when type is KubernetesOIDC
+                      and unset otherwise
+                    rule: 'self.type == ''KubernetesOIDC'' ? has(self.kubernetesOIDC)
+                      : !has(self.kubernetesOIDC)'
                 type: array
               oidc:
                 description: |-
@@ -265,7 +282,12 @@ spec:
                 - type
                 x-kubernetes-list-type: map
             type: object
+        required:
+        - spec
         type: object
+        x-kubernetes-validations:
+        - message: spec.agentIdentity is required
+          rule: has(self.spec) && has(self.spec.agentIdentity)
     served: true
     storage: true
     subresources:

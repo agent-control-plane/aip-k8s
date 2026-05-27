@@ -120,6 +120,10 @@ type KubernetesOIDCCredential struct {
 
 // ExternalIdentityBinding maps an MCP server to the credential provider for
 // this agent on that service.
+// +kubebuilder:validation:XValidation:rule="self.type == 'StaticSecret' ? has(self.staticSecret) : !has(self.staticSecret)",message="staticSecret must be set when type is StaticSecret and unset otherwise"
+// +kubebuilder:validation:XValidation:rule="self.type == 'AzureWorkloadIdentity' ? has(self.azureWorkloadIdentity) : !has(self.azureWorkloadIdentity)",message="azureWorkloadIdentity must be set when type is AzureWorkloadIdentity and unset otherwise"
+// +kubebuilder:validation:XValidation:rule="self.type == 'AWSWebIdentity' ? has(self.awsWebIdentity) : !has(self.awsWebIdentity)",message="awsWebIdentity must be set when type is AWSWebIdentity and unset otherwise"
+// +kubebuilder:validation:XValidation:rule="self.type == 'KubernetesOIDC' ? has(self.kubernetesOIDC) : !has(self.kubernetesOIDC)",message="kubernetesOIDC must be set when type is KubernetesOIDC and unset otherwise"
 type ExternalIdentityBinding struct {
 	// Service matches MCPServer.metadata.name (e.g. "github", "k8s-mcp-server").
 	// +kubebuilder:validation:MinLength=1
@@ -195,11 +199,13 @@ type AgentRegistrationStatus struct {
 // AgentRegistration is the operator-managed source of truth for an agent's
 // identity configuration: OIDC inbound validation and per-service outbound
 // credential bindings.
+// +kubebuilder:validation:XValidation:rule="has(self.spec) && has(self.spec.agentIdentity)",message="spec.agentIdentity is required"
 type AgentRegistration struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   AgentRegistrationSpec   `json:"spec,omitempty"`
+	// +kubebuilder:validation:Required
+	Spec   AgentRegistrationSpec   `json:"spec"`
 	Status AgentRegistrationStatus `json:"status,omitempty"`
 }
 

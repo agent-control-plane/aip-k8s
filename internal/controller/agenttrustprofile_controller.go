@@ -188,10 +188,8 @@ func (r *AgentTrustProfileReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, nil
 }
 
-// computeDemotionAccuracy computes accuracy over DemotionPolicy.WindowSize for demotion
-// evaluation. Falls back to recentAccuracy if WindowSize is unset or the computation fails.
 // getOrBootstrapProfile finds the AgentTrustProfile by name or bootstraps
-// a new one from DiagnosticAccuracySummary or terminal AgentRequests.
+// a new one from AgentRegistration, DiagnosticAccuracySummary, or terminal AgentRequests.
 func (r *AgentTrustProfileReconciler) getOrBootstrapProfile(
 	ctx context.Context, profileNN types.NamespacedName,
 ) (governancev1alpha1.AgentTrustProfile, error) {
@@ -204,18 +202,23 @@ func (r *AgentTrustProfileReconciler) getOrBootstrapProfile(
 		var agentID string
 
 		// Priority 1: AgentRegistration (proactive, operator-declared).
+		// Use the field index for O(1) lookup in production. When the index is
+		// not registered (unit tests without a full manager), fall back to a
+		// full-namespace scan. The fallback is only triggered on List error —
+		// zero results from the index means no match, not a missing index.
 		var regList governancev1alpha1.AgentRegistrationList
-		if err := r.List(ctx, &regList,
+		if indexErr := r.List(ctx, &regList,
 			client.InNamespace(profileNN.Namespace),
 			client.MatchingFields{"spec.agentProfileName": profileNN.Name},
-		); err == nil && len(regList.Items) > 0 {
-			agentID = regList.Items[0].Spec.AgentIdentity
-		}
-		if agentID == "" {
-			// Fallback when field index is not registered (e.g. unit tests):
-			// list all registrations in the namespace and match by profile name.
+		); indexErr == nil {
+			if len(regList.Items) > 0 {
+				agentID = regList.Items[0].Spec.AgentIdentity
+			}
+			// else: index is registered and returned no match — skip full scan.
+		} else {
+			// Index not registered (e.g. unit tests) — fall back to full scan.
 			var allRegs governancev1alpha1.AgentRegistrationList
-			if err := r.List(ctx, &allRegs, client.InNamespace(profileNN.Namespace)); err == nil {
+			if err2 := r.List(ctx, &allRegs, client.InNamespace(profileNN.Namespace)); err2 == nil {
 				for _, reg := range allRegs.Items {
 					if governancev1alpha1.ProfileNameForAgent(reg.Spec.AgentIdentity) == profileNN.Name {
 						agentID = reg.Spec.AgentIdentity
@@ -286,6 +289,8 @@ func (r *AgentTrustProfileReconciler) getOrBootstrapProfile(
 	return profile, nil
 }
 
+// computeDemotionAccuracy computes accuracy over DemotionPolicy.WindowSize for demotion
+// evaluation. Falls back to recentAccuracy if WindowSize is unset or the computation fails.
 func (r *AgentTrustProfileReconciler) computeDemotionAccuracy(
 	ctx context.Context,
 	ns, agentID string,
