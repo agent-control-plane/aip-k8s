@@ -201,6 +201,148 @@ var _ = Describe("AgentTrustProfile Controller", Ordered, func() {
 		Expect(k8sClient.Status().Patch(ctx, profile, client.MergeFrom(base))).To(Succeed())
 	}
 
+	Context("AgentRegistration bootstrap", func() {
+		var ns string
+
+		BeforeEach(func() {
+			ns = createNamespace("tp-areg")
+		})
+
+		It("bootstraps ATP when AgentRegistration is created before any AgentRequest", func() {
+			agentID := "payment-bot"
+			profileName := summaryNameForAgent(agentID)
+
+			reg := &governancev1alpha1.AgentRegistration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "payment-bot-reg",
+					Namespace: ns,
+				},
+				Spec: governancev1alpha1.AgentRegistrationSpec{
+					AgentIdentity: agentID,
+				},
+			}
+			Expect(k8sClient.Create(ctx, reg)).To(Succeed())
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, reg))).To(Succeed())
+			})
+
+			// Trigger reconcile manually (no real manager in envtest unit tests).
+			r := newReconciler()
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: profileName, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var atp governancev1alpha1.AgentTrustProfile
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: profileName, Namespace: ns}, &atp)).To(Succeed())
+			Expect(atp.Spec.AgentIdentity).To(Equal(agentID))
+		})
+
+		It("uses AgentRegistration identity over DiagnosticAccuracySummary when both exist", func() {
+			agentID := "reg-wins-agent"
+			differentID := "das-agent-different"
+			profileName := summaryNameForAgent(agentID)
+
+			// Create a DAS with a different identity that maps to the same profile name.
+			// (contrived, but verifies priority ordering.)
+			das := &governancev1alpha1.DiagnosticAccuracySummary{
+				ObjectMeta: metav1.ObjectMeta{Name: profileName, Namespace: ns},
+				Spec:       governancev1alpha1.DiagnosticAccuracySummarySpec{AgentIdentity: differentID},
+			}
+			Expect(k8sClient.Create(ctx, das)).To(Succeed())
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, das))).To(Succeed())
+			})
+
+			reg := &governancev1alpha1.AgentRegistration{
+				ObjectMeta: metav1.ObjectMeta{Name: "reg-wins", Namespace: ns},
+				Spec:       governancev1alpha1.AgentRegistrationSpec{AgentIdentity: agentID},
+			}
+			Expect(k8sClient.Create(ctx, reg)).To(Succeed())
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, reg))).To(Succeed())
+			})
+
+			r := newReconciler()
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: profileName, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var atp governancev1alpha1.AgentTrustProfile
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: profileName, Namespace: ns}, &atp)).To(Succeed())
+			// AgentRegistration identity wins.
+			Expect(atp.Spec.AgentIdentity).To(Equal(agentID))
+		})
+
+		It("falls back to AgentRequest bootstrap when no AgentRegistration exists", func() {
+			agentID := "legacy-agent-no-reg"
+			profileName := summaryNameForAgent(agentID)
+
+			ar := &governancev1alpha1.AgentRequest{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ar-bootstrap",
+					Namespace: ns,
+					Labels:    map[string]string{"aip.io/profileName": profileName},
+				},
+				Spec: governancev1alpha1.AgentRequestSpec{
+					AgentIdentity: agentID,
+					Action:        "test",
+					Reason:        "test",
+					Target:        governancev1alpha1.Target{URI: "k8s://x"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ar)).To(Succeed())
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, ar))).To(Succeed())
+			})
+
+			r := newReconciler()
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: profileName, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var atp governancev1alpha1.AgentTrustProfile
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: profileName, Namespace: ns}, &atp)).To(Succeed())
+			Expect(atp.Spec.AgentIdentity).To(Equal(agentID))
+		})
+
+		It("preserves ATP when AgentRegistration is deleted", func() {
+			agentID := "preserved-agent"
+			profileName := summaryNameForAgent(agentID)
+
+			reg := &governancev1alpha1.AgentRegistration{
+				ObjectMeta: metav1.ObjectMeta{Name: "to-delete-reg", Namespace: ns},
+				Spec:       governancev1alpha1.AgentRegistrationSpec{AgentIdentity: agentID},
+			}
+			Expect(k8sClient.Create(ctx, reg)).To(Succeed())
+
+			// Bootstrap the ATP.
+			r := newReconciler()
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: profileName, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var atp governancev1alpha1.AgentTrustProfile
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: profileName, Namespace: ns}, &atp)).To(Succeed())
+
+			// Delete Registration.
+			Expect(k8sClient.Delete(ctx, reg)).To(Succeed())
+
+			// ATP must still exist — verify it persists for several seconds, not just at
+			// a single point in time (guards against a controller GC'ing it on reg delete).
+			Consistently(func() error {
+				var current governancev1alpha1.AgentTrustProfile
+				return k8sClient.Get(ctx, types.NamespacedName{Name: profileName, Namespace: ns}, &current)
+			}, 5*time.Second, 200*time.Millisecond).Should(Succeed())
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &atp))).To(Succeed())
+			})
+		})
+	})
+
 	It("should bootstrap AgentTrustProfile from DiagnosticAccuracySummary", func() {
 		ns := createNamespace("tp-bootstrap")
 		agentID := "agent-bootstrap"

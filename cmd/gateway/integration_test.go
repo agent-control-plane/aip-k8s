@@ -130,7 +130,7 @@ func startTestManager(t *testing.T, cfg *rest.Config) client.Client {
 		Client:    mgr.GetClient(),
 		APIReader: mgr.GetAPIReader(),
 		Scheme:    mgr.GetScheme(),
-	}).SetupWithManager(mgr)
+	}).SetupWithManager(context.Background(), mgr)
 	if err != nil {
 		t.Fatalf("Failed to setup AgentTrustProfileReconciler: %v", err)
 	}

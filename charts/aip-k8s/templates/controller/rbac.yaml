@@ -94,6 +94,14 @@ rules:
   - update
   - watch
 - apiGroups:
+  - governance.aip.io
+  resources:
+  - agentregistrations
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - ""
   resources:
   - events

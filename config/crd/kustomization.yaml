@@ -8,6 +8,7 @@ resources:
 - bases/governance.aip.io_diagnosticaccuracysummaries.yaml
 - bases/governance.aip.io_governedresources.yaml
 - bases/governance.aip.io_agentgraduationpolicies.yaml
+- bases/governance.aip.io_agentregistrations.yaml
 - bases/governance.aip.io_agenttrustprofiles.yaml
 - bases/governance.aip.io_mcpservers.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
