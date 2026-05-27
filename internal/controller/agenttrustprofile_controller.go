@@ -30,6 +30,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -218,12 +219,13 @@ func (r *AgentTrustProfileReconciler) getOrBootstrapProfile(
 		} else {
 			// Index not registered (e.g. unit tests) — fall back to full scan.
 			var allRegs governancev1alpha1.AgentRegistrationList
-			if err2 := r.List(ctx, &allRegs, client.InNamespace(profileNN.Namespace)); err2 == nil {
-				for _, reg := range allRegs.Items {
-					if governancev1alpha1.ProfileNameForAgent(reg.Spec.AgentIdentity) == profileNN.Name {
-						agentID = reg.Spec.AgentIdentity
-						break
-					}
+			if err2 := r.List(ctx, &allRegs, client.InNamespace(profileNN.Namespace)); err2 != nil {
+				return profile, fmt.Errorf("listing AgentRegistration fallback scan in namespace %s: %w", profileNN.Namespace, err2)
+			}
+			for _, reg := range allRegs.Items {
+				if governancev1alpha1.ProfileNameForAgent(reg.Spec.AgentIdentity) == profileNN.Name {
+					agentID = reg.Spec.AgentIdentity
+					break
 				}
 			}
 		}
@@ -571,15 +573,30 @@ func (r *AgentTrustProfileReconciler) SetupWithManager(ctx context.Context, mgr 
 		return true
 	})
 
-	arPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
-		ar, ok := obj.(*governancev1alpha1.AgentRequest)
-		if !ok {
-			return false
-		}
-		return ar.Status.Phase == governancev1alpha1.PhaseCompleted ||
-			ar.Status.Phase == governancev1alpha1.PhaseFailed ||
-			ar.Status.Phase == governancev1alpha1.PhaseDenied
-	})
+	// arPredicate fires on:
+	//   - CREATE: so a brand-new AgentRequest (no gateway-managed phase yet) immediately
+	//             bootstraps an ATP for the agent.  This is needed for the reactive
+	//             bootstrap path (Priority 3 in getOrBootstrapProfile).
+	//   - UPDATE: only when the request reaches a terminal phase so graduation tracking
+	//             is updated without flooding the queue on every intermediate transition.
+	//   - DELETE/Generic: ignored — ATP graduation history must be preserved.
+	arPredicate := predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			_, ok := e.Object.(*governancev1alpha1.AgentRequest)
+			return ok
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			ar, ok := e.ObjectNew.(*governancev1alpha1.AgentRequest)
+			if !ok {
+				return false
+			}
+			return ar.Status.Phase == governancev1alpha1.PhaseCompleted ||
+				ar.Status.Phase == governancev1alpha1.PhaseFailed ||
+				ar.Status.Phase == governancev1alpha1.PhaseDenied
+		},
+		DeleteFunc:  func(event.DeleteEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+	}
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&governancev1alpha1.AgentTrustProfile{}).

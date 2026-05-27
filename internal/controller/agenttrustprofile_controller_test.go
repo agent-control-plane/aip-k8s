@@ -331,8 +331,12 @@ var _ = Describe("AgentTrustProfile Controller", Ordered, func() {
 			// Delete Registration.
 			Expect(k8sClient.Delete(ctx, reg)).To(Succeed())
 
-			// ATP must still exist.
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: profileName, Namespace: ns}, &atp)).To(Succeed())
+			// ATP must still exist — verify it persists for several seconds, not just at
+			// a single point in time (guards against a controller GC'ing it on reg delete).
+			Consistently(func() error {
+				var current governancev1alpha1.AgentTrustProfile
+				return k8sClient.Get(ctx, types.NamespacedName{Name: profileName, Namespace: ns}, &current)
+			}, 5*time.Second, 200*time.Millisecond).Should(Succeed())
 			DeferCleanup(func() {
 				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &atp))).To(Succeed())
 			})

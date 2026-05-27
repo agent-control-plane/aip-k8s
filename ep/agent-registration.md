@@ -66,7 +66,7 @@ no object to read for identity policy; it can only read trust measurements.
 
 ## Object Ownership: the invariant
 
-```
+```text
 AgentRegistration   operator-owned   identity config, outbound credentials, OIDC bindings
 AgentTrustProfile   controller-owned trust measurements (level, accuracy, executions)
 ```
@@ -75,7 +75,7 @@ These are independent objects. `AgentRegistration` is never mirrored onto
 `AgentTrustProfile`. The gateway maintains a separate watch/cache for each and reads
 them for different purposes:
 
-```
+```text
 handleCreateAgentRequest:
   reads AgentRegistration → OIDC subject validation, unregistered-agent policy
 
@@ -96,7 +96,7 @@ The `AgentTrustProfileReconciler.getOrBootstrapProfile` fires when a
 `DiagnosticAccuracySummary` is updated or an `AgentRequest` reaches a terminal phase.
 It performs a cascading lookup:
 
-```
+```text
 1. Get(AgentTrustProfile by name) → not found
 2. Get(DiagnosticAccuracySummary by same name) → not found
 3. List(AgentRequests with label aip.io/profileName=<name>)
@@ -109,7 +109,7 @@ is no pre-provisioning path.
 
 ### Current admission pipeline in handleCreateAgentRequest
 
-```
+```text
 1. OIDC token validation        (only when --oidc-issuer-url configured)
 2. requireRole(roleAgent)       (only when --agent-subjects configured)
 3. agentIdentity != sub → 400   (only when authRequired=true; 400 not 403)
@@ -375,7 +375,7 @@ Uses the **Client Credentials flow with Federated Identity Credential** — the 
 pattern for machine-to-machine Azure authentication. This is distinct from On-Behalf-Of
 (OBO), which requires delegated user tokens and is not appropriate for agents.
 
-```
+```http
 POST https://login.microsoftonline.com/{tenantID}/oauth2/v2.0/token
   grant_type=client_credentials
   client_id={payment-bot app registration clientID}
@@ -399,7 +399,7 @@ Calls `STS.AssumeRoleWithWebIdentity` with the agent's Keycloak token as the
 `WebIdentityToken`. STS validates the token against the registered IAM OIDC Identity
 Provider and issues temporary credentials scoped to the role's permission policy.
 
-```
+```http
 POST https://sts.{region}.amazonaws.com/
   Action=AssumeRoleWithWebIdentity
   RoleArn={roleARN}
@@ -443,7 +443,7 @@ The gateway service account requires no additional privileges.
 **Exchange mode** (`tokenExchangeURL` set):
 
 Posts an RFC 8693 token exchange request:
-```
+```http
 POST {tokenExchangeURL}
   grant_type=urn:ietf:params:oauth:grant-type:token-exchange
   subject_token={agentOIDCToken}
@@ -612,7 +612,7 @@ MCP server, the agent's own OIDC token is used as the Bearer credential for K8s 
 calls. K8s RBAC is enforced under the agent's actual identity, and the audit log records
 the agent directly:
 
-```
+```text
 user: payment-bot          ← agent's actual OIDC sub claim
 verb: patch
 resource: deployments/scale
@@ -624,7 +624,7 @@ etc.) — not for agent tool calls that target the K8s MCP server.
 
 ### 6. `--unregistered-agent-policy` flag
 
-```
+```text
 --unregistered-agent-policy string
     allow   Current behaviour; any agent identity is accepted. (default)
     warn    Request proceeds; AgentRequest annotated with
@@ -654,7 +654,7 @@ rules:
 Extends `test/e2e/gateway_keycloak_test.go` (existing Phase 8) with a new Context.
 No new suite file. Requires `AIP_E2E_GITHUB_PAT_AGENT1` and `AIP_E2E_GITHUB_PAT_AGENT2`.
 
-```
+```text
 BeforeAll:
   - Register aip-agent-2 in Keycloak (new client, reuses kcSetup helpers)
   - Create per-agent PAT Secrets (agent1, agent2)
@@ -686,7 +686,7 @@ It "--unregistered-agent-policy=strict rejects unknown agent":
 Tests `AzureWorkloadIdentityProvider` and `AWSWebIdentityProvider` without real Azure or
 AWS accounts. Uses `httptest.NewServer` stubs. Lives in `gateway_keycloak_test.go`.
 
-```
+```text
 It "AzureWorkloadIdentity uses client_credentials + federated identity, not OBO":
   - Stub Azure token endpoint: validates grant_type=client_credentials,
     client_assertion == agent OIDC token, returns synthetic Azure AD token
@@ -709,7 +709,7 @@ It "token cache: second request for same agent within TTL skips re-exchange":
 
 ### Cloud e2e suites (env-var gated, separate suite files)
 
-```
+```text
 test/e2e_azure/gateway_azure_entra_test.go
   Build tag: azure_e2e
   Skips unless: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_FEDERATED_KEYCLOAK_ISSUER

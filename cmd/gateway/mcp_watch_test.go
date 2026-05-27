@@ -122,7 +122,7 @@ func TestMCPServerCache_ConcurrentAccess(t *testing.T) {
 		})
 	}
 
-	_ = eg.Wait()
+	g.Expect(eg.Wait()).To(gomega.Succeed())
 	g.Expect(cache.get("srv")).NotTo(gomega.BeNil())
 }
 

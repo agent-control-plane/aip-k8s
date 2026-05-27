@@ -187,6 +187,9 @@ spec:
                     rule: 'self.type == ''KubernetesOIDC'' ? has(self.kubernetesOIDC)
                       : !has(self.kubernetesOIDC)'
                 type: array
+                x-kubernetes-list-map-keys:
+                - service
+                x-kubernetes-list-type: map
               oidc:
                 description: |-
                   OIDC declares which OIDC tokens prove this agent's identity.

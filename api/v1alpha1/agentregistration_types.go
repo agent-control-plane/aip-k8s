@@ -178,6 +178,8 @@ type AgentRegistrationSpec struct {
 	// When the gateway forwards a tool call to service X, it uses the matching
 	// binding instead of the MCPServer shared token.
 	// +optional
+	// +listType=map
+	// +listMapKey=service
 	ExternalIdentities []ExternalIdentityBinding `json:"externalIdentities,omitempty"`
 }
 

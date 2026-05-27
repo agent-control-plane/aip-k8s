@@ -71,7 +71,7 @@ That IS the binary smoke test.
 
 ### Restructured file shape
 
-```
+```text
 Describe("Phase 6: Gateway API") {
   BeforeAll  // build + start binary subprocess
   AfterAll   // kill subprocess + cleanup

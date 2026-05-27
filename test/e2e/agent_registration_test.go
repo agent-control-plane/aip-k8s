@@ -32,6 +32,8 @@ var _ = Describe("AgentRegistration", Ordered, func() {
 			client.InNamespace(ns))).To(Succeed())
 		Expect(k8sClient.DeleteAllOf(ctx, &governancev1alpha1.AgentTrustProfile{},
 			client.InNamespace(ns))).To(Succeed())
+		Expect(k8sClient.DeleteAllOf(ctx, &governancev1alpha1.AgentRequest{},
+			client.InNamespace(ns))).To(Succeed())
 		Expect(k8sClient.Delete(ctx, &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{Name: ns},
 		})).To(Succeed())
