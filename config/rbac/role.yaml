@@ -64,6 +64,7 @@ rules:
   - governance.aip.io
   resources:
   - agentgraduationpolicies
+  - agentregistrations
   verbs:
   - get
   - list
