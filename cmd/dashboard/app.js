@@ -151,6 +151,7 @@ window.clearToken = function() {
 
 const state = {
     requests: [],
+    allRequests: [],    // unfiltered data from last fetch
     selectedRequest: null,
     auditRecords: [],
     namespace: 'default',
@@ -212,7 +213,6 @@ async function fetchRequests() {
     }
     const ns = document.getElementById('req-ns-input')?.value?.trim() || 'default';
     const classification = document.getElementById('req-classification-input')?.value?.trim() || '';
-    const searchQuery = document.getElementById('req-search-input')?.value?.trim().toLowerCase() || '';
 
     let url = `/api/agent-requests?namespace=${encodeURIComponent(ns)}`;
     if (classification) {
@@ -231,41 +231,46 @@ async function fetchRequests() {
         const reqGen = ++state.requestsGen;
         fetchRequestSummaries(reqGen, ns);
 
-        let data = await response.json();
-        data = data.sort((a, b) => new Date(b.metadata.creationTimestamp) - new Date(a.metadata.creationTimestamp));
-
-        // Client-side search on parameters (pod name, namespace, controller, etc.)
-        if (searchQuery) {
-            data = data.filter(req => {
-                const params = req.spec.parameters;
-                if (!params) return false;
-                const paramsStr = JSON.stringify(params).toLowerCase();
-                return paramsStr.includes(searchQuery);
-            });
-        }
-
-        state.requests = data;
-        renderList();
-
-        if (state.requests.length === 0) {
-            state.selectedRequest = null;
-            state.auditRecords = [];
-            renderDetails();
-        } else if (!state.selectedRequest) {
-            selectRequest(state.requests[0]);
-        } else {
-            const stillExists = state.requests.find(r => r.metadata.name === state.selectedRequest.metadata.name);
-            if (!stillExists) {
-                state.selectedRequest = null;
-                state.auditRecords = [];
-                renderDetails();
-            } else {
-                state.selectedRequest = stillExists;
-                await fetchAuditRecords(stillExists.metadata.name);
-            }
-        }
+        const data = await response.json();
+        state.allRequests = data.sort((a, b) => new Date(b.metadata.creationTimestamp) - new Date(a.metadata.creationTimestamp));
+        applySearchFilter();
     } catch (err) {
         console.error('Failed to fetch requests:', err);
+    }
+}
+
+// applySearchFilter filters state.allRequests by the search input (client-side).
+// Called after fetch and on search input changes (no API call needed).
+function applySearchFilter() {
+    const searchQuery = document.getElementById('req-search-input')?.value?.trim().toLowerCase() || '';
+
+    let filtered = state.allRequests;
+    if (searchQuery) {
+        filtered = filtered.filter(req => {
+            // Search in parameters JSON
+            const params = req.spec.parameters;
+            if (params && JSON.stringify(params).toLowerCase().includes(searchQuery)) return true;
+            // Also search in target URI and reason for broader matching
+            if (req.spec.target?.uri?.toLowerCase().includes(searchQuery)) return true;
+            if (req.spec.reason?.toLowerCase().includes(searchQuery)) return true;
+            return false;
+        });
+    }
+
+    state.requests = filtered;
+    renderList();
+
+    if (state.requests.length === 0) {
+        state.selectedRequest = null;
+        state.auditRecords = [];
+        renderDetails();
+    } else if (!state.selectedRequest) {
+        selectRequest(state.requests[0]);
+    } else {
+        const stillExists = state.requests.find(r => r.metadata.name === state.selectedRequest.metadata.name);
+        if (!stillExists) {
+            selectRequest(state.requests[0]);
+        }
     }
 }
 
