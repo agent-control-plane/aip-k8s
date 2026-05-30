@@ -45,14 +45,24 @@
                 <div id="requests-accuracy-chip-container" style="padding: 0 1rem; margin-bottom: 0.5rem; display: none;"></div>
                 <div class="dashboard-grid">
                     <aside class="card">
-                        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;">
+                        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;flex-wrap:wrap;">
                             <h3 style="margin:0;">Agent Requests</h3>
-                            <div style="display:flex;align-items:center;gap:0.4rem;">
-                                <label for="req-ns-input" style="font-size:0.78rem;color:var(--text-secondary);white-space:nowrap;">Namespace</label>
-                                <input id="req-ns-input" type="text" value="default"
-                                    style="font-size:0.78rem;padding:0.25rem 0.5rem;background:var(--surface-color);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);width:110px;"
+                            <div style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap;">
+                                <label for="req-ns-input" style="font-size:0.78rem;color:var(--text-secondary);white-space:nowrap;">NS</label>
+                                <input id="req-ns-input" type="text" value="default" placeholder="namespace"
+                                    style="font-size:0.78rem;padding:0.25rem 0.5rem;background:var(--surface-color);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);width:90px;"
                                     onchange="fetchRequests()"
                                     onkeydown="if(event.key==='Enter')fetchRequests()" />
+                                <input id="req-classification-input" type="text" placeholder="classification"
+                                    title="Filter by classification (e.g., nodepool/at-capacity, priority/head-of-queue-blocked)"
+                                    style="font-size:0.78rem;padding:0.25rem 0.5rem;background:var(--surface-color);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);width:140px;"
+                                    onchange="fetchRequests()"
+                                    onkeydown="if(event.key==='Enter')fetchRequests()" />
+                                <input id="req-search-input" type="text" placeholder="search params..."
+                                    title="Search within parameters (pod name, namespace, controller, etc.)"
+                                    style="font-size:0.78rem;padding:0.25rem 0.5rem;background:var(--surface-color);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);width:130px;"
+                                    oninput="applySearchFilter()"
+                                    onkeydown="if(event.key==='Enter')applySearchFilter()" />
                             </div>
                         </div>
                         <div id="request-list" class="request-list">

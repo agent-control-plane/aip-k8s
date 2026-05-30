@@ -107,6 +107,9 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 	if body.CorrelationID != "" {
 		reqLabels["aip.io/correlationID"] = sanitizeLabelValue(body.CorrelationID)
 	}
+	if body.Classification != "" {
+		reqLabels["aip.io/classification"] = sanitizeLabelValue(body.Classification)
+	}
 
 	agentReq := &v1alpha1.AgentRequest{
 		ObjectMeta: metav1.ObjectMeta{
@@ -119,6 +122,7 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 			Action:         body.Action,
 			Target:         v1alpha1.Target{URI: body.TargetURI},
 			Reason:         body.Reason,
+			Classification: body.Classification,
 			CascadeModel:   buildCascadeModel(&body),
 			ReasoningTrace: buildReasoningTrace(&body),
 			Parameters:     parameters,
@@ -531,6 +535,7 @@ func (s *Server) handleListAgentRequests(w http.ResponseWriter, r *http.Request)
 
 	agentID := r.URL.Query().Get("agentIdentity")
 	correlID := r.URL.Query().Get("correlationID")
+	classification := r.URL.Query().Get("classification")
 	limitStr := r.URL.Query().Get("limit")
 	continueToken := r.URL.Query().Get("continue")
 
@@ -541,6 +546,9 @@ func (s *Server) handleListAgentRequests(w http.ResponseWriter, r *http.Request)
 	}
 	if correlID != "" {
 		matchLabels["aip.io/correlationID"] = sanitizeLabelValue(correlID)
+	}
+	if classification != "" {
+		matchLabels["aip.io/classification"] = sanitizeLabelValue(classification)
 	}
 	if len(matchLabels) > 0 {
 		listOpts = append(listOpts, client.MatchingLabels(matchLabels))

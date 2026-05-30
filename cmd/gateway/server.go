@@ -96,6 +96,7 @@ type createAgentRequestBody struct {
 	Reason         string                `json:"reason"`
 	Namespace      string                `json:"namespace"`
 	CorrelationID  string                `json:"correlationID,omitempty"`
+	Classification string                `json:"classification,omitempty"`
 	CascadeModel   *cascadeModelBody     `json:"cascadeModel,omitempty"`
 	ReasoningTrace *reasoningTraceBody   `json:"reasoningTrace,omitempty"`
 	Parameters     json.RawMessage       `json:"parameters,omitempty"`

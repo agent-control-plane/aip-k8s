@@ -151,6 +151,7 @@ window.clearToken = function() {
 
 const state = {
     requests: [],
+    allRequests: [],    // unfiltered data from last fetch
     selectedRequest: null,
     auditRecords: [],
     namespace: 'default',
@@ -211,8 +212,15 @@ async function fetchRequests() {
         showBanner('Not authenticated — paste a Bearer token to continue.', 'warn');
     }
     const ns = document.getElementById('req-ns-input')?.value?.trim() || 'default';
+    const classification = document.getElementById('req-classification-input')?.value?.trim() || '';
+
+    let url = `/api/agent-requests?namespace=${encodeURIComponent(ns)}`;
+    if (classification) {
+        url += `&classification=${encodeURIComponent(classification)}`;
+    }
+
     try {
-        const response = await apiFetch(`/api/agent-requests?namespace=${encodeURIComponent(ns)}`);
+        const response = await apiFetch(url);
         if (!response.ok) {
             if (response.status !== 401) {
                 showBanner('Failed to load requests (HTTP ' + response.status + ').', 'error');
@@ -224,28 +232,45 @@ async function fetchRequests() {
         fetchRequestSummaries(reqGen, ns);
 
         const data = await response.json();
-        state.requests = data.sort((a, b) => new Date(b.metadata.creationTimestamp) - new Date(a.metadata.creationTimestamp));
-        renderList();
-
-        if (state.requests.length === 0) {
-            state.selectedRequest = null;
-            state.auditRecords = [];
-            renderDetails();
-        } else if (!state.selectedRequest) {
-            selectRequest(state.requests[0]);
-        } else {
-            const stillExists = state.requests.find(r => r.metadata.name === state.selectedRequest.metadata.name);
-            if (!stillExists) {
-                state.selectedRequest = null;
-                state.auditRecords = [];
-                renderDetails();
-            } else {
-                state.selectedRequest = stillExists;
-                await fetchAuditRecords(stillExists.metadata.name);
-            }
-        }
+        state.allRequests = data.sort((a, b) => new Date(b.metadata.creationTimestamp) - new Date(a.metadata.creationTimestamp));
+        applySearchFilter();
     } catch (err) {
         console.error('Failed to fetch requests:', err);
+    }
+}
+
+// applySearchFilter filters state.allRequests by the search input (client-side).
+// Called after fetch and on search input changes (no API call needed).
+function applySearchFilter() {
+    const searchQuery = document.getElementById('req-search-input')?.value?.trim().toLowerCase() || '';
+
+    let filtered = state.allRequests;
+    if (searchQuery) {
+        filtered = filtered.filter(req => {
+            // Search in parameters JSON
+            const params = req.spec.parameters;
+            if (params && JSON.stringify(params).toLowerCase().includes(searchQuery)) return true;
+            // Also search in target URI and reason for broader matching
+            if (req.spec.target?.uri?.toLowerCase().includes(searchQuery)) return true;
+            if (req.spec.reason?.toLowerCase().includes(searchQuery)) return true;
+            return false;
+        });
+    }
+
+    state.requests = filtered;
+    renderList();
+
+    if (state.requests.length === 0) {
+        state.selectedRequest = null;
+        state.auditRecords = [];
+        renderDetails();
+    } else if (!state.selectedRequest) {
+        selectRequest(state.requests[0]);
+    } else {
+        const stillExists = state.requests.find(r => r.metadata.name === state.selectedRequest.metadata.name);
+        if (!stillExists) {
+            selectRequest(state.requests[0]);
+        }
     }
 }
 
@@ -369,6 +394,7 @@ function renderList() {
                 <div class="meta">
                     <span class="badge badge-${escapeHtml(phase.toLowerCase())}">${escapeHtml(phase)}</span>
                     ${verdictBadge}
+                    ${req.spec.classification ? `<span class="badge" style="background:rgba(99,102,241,0.15);color:#818cf8;font-size:0.7rem;">${escapeHtml(req.spec.classification)}</span>` : ''}
                     <span>${time}</span>
                 </div>
                 <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.4rem;">
