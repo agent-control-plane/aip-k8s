@@ -211,8 +211,16 @@ async function fetchRequests() {
         showBanner('Not authenticated — paste a Bearer token to continue.', 'warn');
     }
     const ns = document.getElementById('req-ns-input')?.value?.trim() || 'default';
+    const classification = document.getElementById('req-classification-input')?.value?.trim() || '';
+    const searchQuery = document.getElementById('req-search-input')?.value?.trim().toLowerCase() || '';
+
+    let url = `/api/agent-requests?namespace=${encodeURIComponent(ns)}`;
+    if (classification) {
+        url += `&classification=${encodeURIComponent(classification)}`;
+    }
+
     try {
-        const response = await apiFetch(`/api/agent-requests?namespace=${encodeURIComponent(ns)}`);
+        const response = await apiFetch(url);
         if (!response.ok) {
             if (response.status !== 401) {
                 showBanner('Failed to load requests (HTTP ' + response.status + ').', 'error');
@@ -223,8 +231,20 @@ async function fetchRequests() {
         const reqGen = ++state.requestsGen;
         fetchRequestSummaries(reqGen, ns);
 
-        const data = await response.json();
-        state.requests = data.sort((a, b) => new Date(b.metadata.creationTimestamp) - new Date(a.metadata.creationTimestamp));
+        let data = await response.json();
+        data = data.sort((a, b) => new Date(b.metadata.creationTimestamp) - new Date(a.metadata.creationTimestamp));
+
+        // Client-side search on parameters (pod name, namespace, controller, etc.)
+        if (searchQuery) {
+            data = data.filter(req => {
+                const params = req.spec.parameters;
+                if (!params) return false;
+                const paramsStr = JSON.stringify(params).toLowerCase();
+                return paramsStr.includes(searchQuery);
+            });
+        }
+
+        state.requests = data;
         renderList();
 
         if (state.requests.length === 0) {
@@ -369,6 +389,7 @@ function renderList() {
                 <div class="meta">
                     <span class="badge badge-${escapeHtml(phase.toLowerCase())}">${escapeHtml(phase)}</span>
                     ${verdictBadge}
+                    ${req.spec.classification ? `<span class="badge" style="background:rgba(99,102,241,0.15);color:#818cf8;font-size:0.7rem;">${escapeHtml(req.spec.classification)}</span>` : ''}
                     <span>${time}</span>
                 </div>
                 <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.4rem;">
