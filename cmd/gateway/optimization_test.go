@@ -191,3 +191,72 @@ func TestListAuditRecords_LabelFilteringAndPagination(t *testing.T) {
 	g.Expect(json.Unmarshal(w.Body.Bytes(), &paginated)).To(gomega.Succeed())
 	g.Expect(paginated.Items).NotTo(gomega.BeNil())
 }
+
+func TestListAgentRequests_PhaseFilter(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	objs := []client.Object{}
+	for _, o := range []struct {
+		name, agentID string
+		phase         string
+		mod           func(*v1alpha1.AgentRequest)
+	}{
+		{"req-1-pend", "agent-1", v1alpha1.PhasePending, nil},
+		{"req-2-appr", "agent-1", v1alpha1.PhaseApproved, nil},
+		{"req-3-deni", "agent-2", v1alpha1.PhaseDenied, nil},
+		{"req-4-comp", "agent-2", v1alpha1.PhaseCompleted, nil},
+	} {
+		ar := pendingAgentRequest(o.name, "default", o.agentID)
+		ar.Labels = map[string]string{"aip.io/agentIdentity": o.agentID}
+		ar.Status.Phase = o.phase
+		objs = append(objs, ar)
+	}
+	s := newTestServer(objs...)
+
+	// 1. Single phase filter.
+	req := httptest.NewRequest(http.MethodGet, "/agent-requests?phase=Pending", nil)
+	req = req.WithContext(withCallerSub(req.Context(), "reviewer-sub"))
+	w := httptest.NewRecorder()
+	s.handleListAgentRequests(w, req)
+	g.Expect(w.Code).To(gomega.Equal(http.StatusOK))
+	var items []v1alpha1.AgentRequest
+	g.Expect(json.Unmarshal(w.Body.Bytes(), &items)).To(gomega.Succeed())
+	g.Expect(items).To(gomega.HaveLen(1))
+	g.Expect(items[0].Status.Phase).To(gomega.Equal(v1alpha1.PhasePending))
+
+	// 2. Multi-phase filter.
+	req = httptest.NewRequest(http.MethodGet, "/agent-requests?phase=Approved,Pending", nil)
+	req = req.WithContext(withCallerSub(req.Context(), "reviewer-sub"))
+	w = httptest.NewRecorder()
+	s.handleListAgentRequests(w, req)
+	g.Expect(w.Code).To(gomega.Equal(http.StatusOK))
+	g.Expect(json.Unmarshal(w.Body.Bytes(), &items)).To(gomega.Succeed())
+	g.Expect(items).To(gomega.HaveLen(2))
+
+	// 3. No phase filter — all items returned.
+	req = httptest.NewRequest(http.MethodGet, "/agent-requests", nil)
+	req = req.WithContext(withCallerSub(req.Context(), "reviewer-sub"))
+	w = httptest.NewRecorder()
+	s.handleListAgentRequests(w, req)
+	g.Expect(w.Code).To(gomega.Equal(http.StatusOK))
+	g.Expect(json.Unmarshal(w.Body.Bytes(), &items)).To(gomega.Succeed())
+	g.Expect(items).To(gomega.HaveLen(4))
+
+	// 4. Invalid phase returns 400.
+	req = httptest.NewRequest(http.MethodGet, "/agent-requests?phase=InvalidPhase", nil)
+	req = req.WithContext(withCallerSub(req.Context(), "reviewer-sub"))
+	w = httptest.NewRecorder()
+	s.handleListAgentRequests(w, req)
+	g.Expect(w.Code).To(gomega.Equal(http.StatusBadRequest))
+	g.Expect(w.Body.String()).To(gomega.ContainSubstring("invalid phase"))
+	g.Expect(w.Body.String()).To(gomega.ContainSubstring("Approved"))
+
+	// 5. Combined with agentIdentity.
+	req = httptest.NewRequest(http.MethodGet, "/agent-requests?agentIdentity=agent-1&phase=Pending", nil)
+	req = req.WithContext(withCallerSub(req.Context(), "reviewer-sub"))
+	w = httptest.NewRecorder()
+	s.handleListAgentRequests(w, req)
+	g.Expect(w.Code).To(gomega.Equal(http.StatusOK))
+	g.Expect(json.Unmarshal(w.Body.Bytes(), &items)).To(gomega.Succeed())
+	g.Expect(items).To(gomega.HaveLen(1))
+}
