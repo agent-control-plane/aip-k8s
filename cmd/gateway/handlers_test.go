@@ -39,6 +39,13 @@ func newTestServer(objs ...client.Object) *Server {
 		WithScheme(scheme).
 		WithObjects(objs...).
 		WithStatusSubresource(&v1alpha1.AgentRequest{}).
+		WithIndex(&v1alpha1.AgentRequest{}, "status.phase", func(obj client.Object) []string {
+			ar, ok := obj.(*v1alpha1.AgentRequest)
+			if !ok || ar.Status.Phase == "" {
+				return nil
+			}
+			return []string{ar.Status.Phase}
+		}).
 		Build()
 	return &Server{
 		client:       fc,

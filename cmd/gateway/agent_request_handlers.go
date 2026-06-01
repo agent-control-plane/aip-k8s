@@ -23,6 +23,10 @@ import (
 	"github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 )
 
+// const agentRequestPhaseIndexKey is the field index key for status.phase on AgentRequest.
+// Used in both the manager IndexField registration and the MatchingFields list call.
+const agentRequestPhaseIndexKey = "status.phase"
+
 // validPhases is the set of known AgentRequest phases for client-side filtering.
 // Kept in sync with the constants in api/v1alpha1/agentrequest_types.go.
 var validPhases = map[string]bool{
@@ -590,6 +594,10 @@ func (s *Server) handleListAgentRequests(w http.ResponseWriter, r *http.Request)
 	if len(matchLabels) > 0 {
 		listOpts = append(listOpts, client.MatchingLabels(matchLabels))
 	}
+	// Single-phase: use field indexer — server-side, pagination-correct.
+	if len(requestedPhases) == 1 {
+		listOpts = append(listOpts, client.MatchingFields{agentRequestPhaseIndexKey: requestedPhases[0]})
+	}
 	if limitStr != "" {
 		limit, err := strconv.ParseInt(limitStr, 10, 64)
 		if err != nil || limit <= 0 {
@@ -617,7 +625,9 @@ func (s *Server) handleListAgentRequests(w http.ResponseWriter, r *http.Request)
 		items = []v1alpha1.AgentRequest{}
 	}
 
-	if len(requestedPhases) > 0 {
+	// Multi-phase (>1) fallback: client-side filter after the K8s List.
+	// Single-phase uses the field indexer (server-side) above.
+	if len(requestedPhases) > 1 {
 		filtered := make([]v1alpha1.AgentRequest, 0, len(items))
 		for _, item := range items {
 			if slices.Contains(requestedPhases, item.Status.Phase) {
