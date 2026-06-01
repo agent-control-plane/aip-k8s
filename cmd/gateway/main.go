@@ -117,13 +117,7 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 
 	// Register status.phase field indexer for server-side phase filtering.
 	if err := mgr.GetFieldIndexer().IndexField(ctx, &v1alpha1.AgentRequest{}, agentRequestPhaseIndexKey,
-		func(obj client.Object) []string {
-			ar, ok := obj.(*v1alpha1.AgentRequest)
-			if !ok || ar.Status.Phase == "" {
-				return nil
-			}
-			return []string{ar.Status.Phase}
-		}); err != nil {
+		agentRequestPhaseIndexFunc); err != nil {
 		log.Fatalf("Failed to register status.phase field indexer: %v", err)
 	}
 

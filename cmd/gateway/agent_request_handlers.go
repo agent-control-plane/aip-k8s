@@ -27,6 +27,17 @@ import (
 // Used in both the manager IndexField registration and the MatchingFields list call.
 const agentRequestPhaseIndexKey = "status.phase"
 
+// agentRequestPhaseIndexFunc is the shared indexer function used by both the
+// manager's IndexField registration (main.go) and the fake client in tests.
+// Keeping a single definition ensures they index on the same field.
+func agentRequestPhaseIndexFunc(obj client.Object) []string {
+	ar, ok := obj.(*v1alpha1.AgentRequest)
+	if !ok || ar.Status.Phase == "" {
+		return nil
+	}
+	return []string{ar.Status.Phase}
+}
+
 // validPhases is the set of known AgentRequest phases for client-side filtering.
 // Kept in sync with the constants in api/v1alpha1/agentrequest_types.go.
 var validPhases = map[string]bool{
