@@ -149,6 +149,7 @@ func TestStreamTimeout(t *testing.T) {
 		Build()
 	s := &Server{
 		client:       fc,
+		apiReader:    fc,
 		watchClient:  fc,
 		dedupWindow:  0,
 		waitTimeout:  500 * time.Millisecond,
@@ -180,6 +181,7 @@ func TestContentNegotiationSSE(t *testing.T) {
 		Build()
 	s := &Server{
 		client:       fc,
+		apiReader:    fc,
 		watchClient:  fc,
 		dedupWindow:  0,
 		waitTimeout:  500 * time.Millisecond,
@@ -216,6 +218,7 @@ func TestContentNegotiationJSON(t *testing.T) {
 		Build()
 	s := &Server{
 		client:       fc,
+		apiReader:    fc,
 		watchClient:  fc,
 		dedupWindow:  0,
 		waitTimeout:  500 * time.Millisecond,
