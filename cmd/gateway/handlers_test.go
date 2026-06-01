@@ -39,6 +39,7 @@ func newTestServer(objs ...client.Object) *Server {
 		WithScheme(scheme).
 		WithObjects(objs...).
 		WithStatusSubresource(&v1alpha1.AgentRequest{}).
+		WithIndex(&v1alpha1.AgentRequest{}, agentRequestPhaseIndexKey, agentRequestPhaseIndexFunc).
 		Build()
 	return &Server{
 		client:       fc,

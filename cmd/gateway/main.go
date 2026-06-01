@@ -14,7 +14,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 	"github.com/agent-control-plane/aip-k8s/internal/jwt"
@@ -66,7 +68,7 @@ const (
 	shutdownTimeout         = 5 * time.Second
 )
 
-func main() {
+func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 	flag.Parse()
 
 	// Load KubeConfig — use the standard loading rules which handle
@@ -92,10 +94,43 @@ func main() {
 		log.Fatalf("Failed to add v1alpha1 to scheme: %v", err)
 	}
 
-	// Create Controller-Runtime Client
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Create Controller-Runtime Client (direct watch-capable client).
 	k8sClient, err := client.NewWithWatch(cfg, client.Options{Scheme: scheme})
 	if err != nil {
-		log.Fatalf("Failed to create client: %v", err)
+		log.Fatalf("Failed to create watch client: %v", err)
+	}
+
+	// Create manager for cached reads + field indexers.
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme:                 scheme,
+		LeaderElection:         false,
+		HealthProbeBindAddress: "",
+		// "0" disables the metrics listener; "" would default to :8080, conflicting with the gateway.
+		Metrics: metricsserver.Options{BindAddress: "0"},
+	})
+	if err != nil {
+		log.Fatalf("Failed to create manager: %v", err)
+	}
+
+	// Register status.phase field indexer for server-side phase filtering.
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &v1alpha1.AgentRequest{}, agentRequestPhaseIndexKey,
+		agentRequestPhaseIndexFunc); err != nil {
+		log.Fatalf("Failed to register status.phase field indexer: %v", err)
+	}
+
+	// Start manager cache in background.
+	go func() {
+		if err := mgr.Start(ctx); err != nil {
+			log.Fatalf("Manager failed: %v", err)
+		}
+	}()
+
+	// Wait for cache to sync before serving requests.
+	if !mgr.GetCache().WaitForCacheSync(ctx) {
+		log.Fatalf("Manager cache failed to sync")
 	}
 
 	rc := newRoleConfig(*agentSubjects, *reviewerSubjects, *adminSubjects, *agentGroups, *reviewerGroups, *adminGroups)
@@ -116,9 +151,6 @@ func main() {
 		wt = 90 * time.Second
 		log.Printf("--wait-timeout must be positive; using default %v", wt)
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	var jwtMgr *jwt.Manager
 	switch {
@@ -154,9 +186,9 @@ func main() {
 	}
 
 	server := &Server{
-		client:                  k8sClient,
-		apiReader:               k8sClient,
-		watchClient:             k8sClient,
+		client:                  mgr.GetClient(),    // cached — field indexers work here
+		apiReader:               mgr.GetAPIReader(), // direct — bypass cache for consistency-sensitive reads
+		watchClient:             k8sClient,          // raw watch — keep using direct client
 		dedupWindow:             *dedupWindow,
 		waitTimeout:             wt,
 		roles:                   rc,

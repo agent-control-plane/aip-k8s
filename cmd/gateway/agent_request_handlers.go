@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -21,6 +22,35 @@ import (
 
 	"github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 )
+
+// agentRequestPhaseIndexKey is the field index key for status.phase on AgentRequest.
+// Used in both the manager IndexField registration and the MatchingFields list call.
+const agentRequestPhaseIndexKey = "status.phase"
+
+// agentRequestPhaseIndexFunc is the shared indexer function used by both the
+// manager's IndexField registration (main.go) and the fake client in tests.
+// Keeping a single definition ensures they index on the same field.
+func agentRequestPhaseIndexFunc(obj client.Object) []string {
+	ar, ok := obj.(*v1alpha1.AgentRequest)
+	if !ok || ar.Status.Phase == "" {
+		return nil
+	}
+	return []string{ar.Status.Phase}
+}
+
+// validPhases is the set of known AgentRequest phases for client-side filtering.
+// Kept in sync with the constants in api/v1alpha1/agentrequest_types.go.
+var validPhases = map[string]bool{
+	v1alpha1.PhasePending:         true,
+	v1alpha1.PhaseApproved:        true,
+	v1alpha1.PhaseDenied:          true,
+	v1alpha1.PhaseExecuting:       true,
+	v1alpha1.PhaseCompleted:       true,
+	v1alpha1.PhaseFailed:          true,
+	v1alpha1.PhaseAwaitingVerdict: true,
+	v1alpha1.PhaseExpired:         true,
+	v1alpha1.PhaseObserved:        true,
+}
 
 // checkDuplicate returns a non-nil error and writes a 409 if an active request
 // for the same (agentIdentity, action, targetURI) exists within the dedup window.
@@ -536,8 +566,30 @@ func (s *Server) handleListAgentRequests(w http.ResponseWriter, r *http.Request)
 	agentID := r.URL.Query().Get("agentIdentity")
 	correlID := r.URL.Query().Get("correlationID")
 	classification := r.URL.Query().Get("classification")
+	phaseParam := r.URL.Query().Get("phase")
 	limitStr := r.URL.Query().Get("limit")
 	continueToken := r.URL.Query().Get("continue")
+
+	var requestedPhases []string
+	if phaseParam != "" {
+		for p := range strings.SplitSeq(phaseParam, ",") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			if !validPhases[p] {
+				valid := make([]string, 0, len(validPhases))
+				for ph := range validPhases {
+					valid = append(valid, ph)
+				}
+				slices.Sort(valid)
+				writeError(w, http.StatusBadRequest,
+					fmt.Sprintf("invalid phase %q: must be one of %s", p, strings.Join(valid, ", ")))
+				return
+			}
+			requestedPhases = append(requestedPhases, p)
+		}
+	}
 
 	listOpts := []client.ListOption{client.InNamespace(ns)}
 	matchLabels := map[string]string{}
@@ -552,6 +604,10 @@ func (s *Server) handleListAgentRequests(w http.ResponseWriter, r *http.Request)
 	}
 	if len(matchLabels) > 0 {
 		listOpts = append(listOpts, client.MatchingLabels(matchLabels))
+	}
+	// Single-phase: use field indexer — server-side, pagination-correct.
+	if len(requestedPhases) == 1 {
+		listOpts = append(listOpts, client.MatchingFields{agentRequestPhaseIndexKey: requestedPhases[0]})
 	}
 	if limitStr != "" {
 		limit, err := strconv.ParseInt(limitStr, 10, 64)
@@ -578,6 +634,18 @@ func (s *Server) handleListAgentRequests(w http.ResponseWriter, r *http.Request)
 	items := list.Items
 	if items == nil {
 		items = []v1alpha1.AgentRequest{}
+	}
+
+	// Multi-phase (>1) fallback: client-side filter after the K8s List.
+	// Single-phase uses the field indexer (server-side) above.
+	if len(requestedPhases) > 1 {
+		filtered := make([]v1alpha1.AgentRequest, 0, len(items))
+		for _, item := range items {
+			if slices.Contains(requestedPhases, item.Status.Phase) {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
 	}
 
 	if limitStr != "" || continueToken != "" {

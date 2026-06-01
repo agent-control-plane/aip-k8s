@@ -47,6 +47,9 @@ rules:
 # The gateway resolves bearerTokenSecretRef from MCPServer CRDs.
 # MCPServer is cluster-scoped; users may reference Secrets in any namespace.
 # Only "get" is granted (read-only), matching the minimal privilege needed.
+# Security: MCPServer CRD creation must be restricted to admins. The MCPServer
+# controller validates bearerTokenSecretRef; a compromised gateway could read
+# any secret but cannot write them. Audit-log gateway secret access in production.
 - apiGroups:
   - ""
   resources:
