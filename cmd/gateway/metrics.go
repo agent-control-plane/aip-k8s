@@ -25,12 +25,22 @@ var (
 		},
 		[]string{"method", "path", "status_code"},
 	)
+	// sseAPIReaderGetTotal counts direct (uncached) API server reads at SSE stream
+	// start. Each SSE connection triggers one read to close the create-vs-watch race.
+	// Monitor this to detect API-server read hotspots under high SSE fan-out.
+	sseAPIReaderGetTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "aip_gateway_sse_apireader_get_total",
+			Help: "Total direct API-server reads performed at SSE stream start (bypasses informer cache).",
+		},
+	)
 )
 
 func init() {
 	prometheus.MustRegister(
 		gatewayRequestTotal,
 		gatewayRequestDuration,
+		sseAPIReaderGetTotal,
 	)
 }
 

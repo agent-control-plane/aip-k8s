@@ -89,6 +89,8 @@ func main() {
 	opsLockDuration := flag.Duration("ops-lock-duration", 5*time.Minute, "TTL for OpsLock leases")
 	opsLockWaitTimeout := flag.Duration("ops-lock-wait-timeout", 60*time.Second,
 		"Maximum time a Pending AgentRequest waits to acquire the OpsLock Lease before being Denied with LOCK_TIMEOUT.")
+	approvedTimeout := flag.Duration("approved-timeout", 5*time.Minute,
+		"Maximum time an Approved AgentRequest waits for the agent to signal execution before being timed out to Failed.")
 	jwtKeyNamespace := flag.String("jwt-key-namespace", "aip-k8s-system",
 		"Namespace where the JWT signing key Secret is managed.")
 	jwtKeyRotationTTL := flag.Duration("jwt-key-rotation-ttl", 0,
@@ -228,6 +230,7 @@ func main() {
 		Scheme:               mgr.GetScheme(),
 		OpsLockDuration:      *opsLockDuration,
 		LockWaitDuration:     *opsLockWaitTimeout,
+		ApprovedTimeout:      *approvedTimeout,
 		Evaluator:            eval,
 		TargetContextFetcher: &evaluation.KubernetesTargetContextFetcher{Client: mgr.GetAPIReader()},
 		GitHubMCPFetcher:     fetchers.DefaultGitHubMCPFetcher(),

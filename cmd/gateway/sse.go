@@ -102,8 +102,14 @@ func (s *Server) streamAgentRequestPhase(
 	// start the watch from that point. This closes the race between Create()
 	// returning and the watch being established — the watch picks up exactly
 	// where the Get left off with no gap and no duplicates.
+	// apiReader bypasses the informer cache to guarantee the just-created object
+	// is visible; each SSE stream start costs one direct API-server read.
+	// TODO: if aip_gateway_sse_apireader_get_total shows high QPS under fan-out,
+	// consider a shared initial read, a short-lived local cache, or rate-limiting
+	// concurrent SSE connections per agent identity.
+	sseAPIReaderGetTotal.Inc()
 	var current v1alpha1.AgentRequest
-	if err := s.client.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &current); err != nil {
+	if err := s.apiReader.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &current); err != nil {
 		writeSSEError(w, rc, fmt.Sprintf("failed to get AgentRequest: %v", err))
 		return
 	}

@@ -68,6 +68,7 @@ func TestGovernedResourceRef_DeletedGR_DeniesRequest(t *testing.T) {
 		Client:               fc,
 		Scheme:               scheme,
 		OpsLockDuration:      testOpsLockDuration,
+		ApprovedTimeout:      5 * time.Minute,
 		Evaluator:            eval,
 		TargetContextFetcher: &evaluation.KubernetesTargetContextFetcher{Client: fc},
 	}
@@ -111,6 +112,7 @@ func TestGovernedResourceRef_ExistingGR_NoEffect(t *testing.T) {
 		Client:               fc,
 		Scheme:               scheme,
 		OpsLockDuration:      testOpsLockDuration,
+		ApprovedTimeout:      5 * time.Minute,
 		Evaluator:            eval,
 		TargetContextFetcher: &evaluation.KubernetesTargetContextFetcher{Client: fc},
 	}

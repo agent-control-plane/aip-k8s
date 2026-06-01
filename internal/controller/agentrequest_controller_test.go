@@ -135,6 +135,7 @@ var _ = Describe("AgentRequest Controller", func() {
 				APIReader:       k8sClient,
 				Scheme:          k8sClient.Scheme(),
 				OpsLockDuration: testOpsLockDuration,
+				ApprovedTimeout: 5 * time.Minute,
 				Evaluator:       eval,
 			}
 
@@ -217,6 +218,7 @@ var _ = Describe("AgentRequest Controller", func() {
 				APIReader:       k8sClient,
 				Scheme:          k8sClient.Scheme(),
 				OpsLockDuration: testOpsLockDuration,
+				ApprovedTimeout: 5 * time.Minute,
 				Evaluator:       eval,
 				Clock:           func() time.Time { return frozenFuture },
 			}
@@ -256,6 +258,50 @@ var _ = Describe("AgentRequest Controller", func() {
 					hasAuditRecord(ctx, resourceName, governancev1alpha1.AuditEventRequestFailed)
 			}, time.Second*5, time.Millisecond*500).Should(BeTrue())
 		})
+
+		It("should time out in Approved phase using the configured ApprovedTimeout, not the default", func() {
+			const customTimeout = 2 * time.Minute
+
+			// Place the request in PhaseApproved with the Approved condition
+			// timestamped 3 minutes ago — past a 2m timeout but within the 5m default.
+			approvedAt := time.Now().Add(-3 * time.Minute)
+			var fetchedReq governancev1alpha1.AgentRequest
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &fetchedReq)).To(Succeed())
+			fetchedReq.Status.Phase = governancev1alpha1.PhaseApproved
+			meta.SetStatusCondition(&fetchedReq.Status.Conditions, metav1.Condition{
+				Type:               governancev1alpha1.ConditionApproved,
+				Status:             metav1.ConditionTrue,
+				Reason:             "HumanApproved",
+				Message:            "Approved by reviewer",
+				LastTransitionTime: metav1.NewTime(approvedAt),
+			})
+			Expect(k8sClient.Status().Update(ctx, &fetchedReq)).To(Succeed())
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &fetchedReq)).To(Succeed())
+
+			eval, err := evaluation.NewEvaluator()
+			Expect(err).NotTo(HaveOccurred())
+
+			controllerReconciler := &AgentRequestReconciler{
+				Client:          k8sClient,
+				APIReader:       k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				OpsLockDuration: testOpsLockDuration,
+				ApprovedTimeout: customTimeout,
+				Evaluator:       eval,
+				Clock:           func() time.Time { return time.Now() },
+			}
+
+			_, err = controllerReconciler.reconcileApproved(ctx, &fetchedReq)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fetchedReq.Status.Phase).To(Equal(governancev1alpha1.PhaseFailed))
+			Expect(fetchedReq.Status.Denial).NotTo(BeNil())
+			Expect(fetchedReq.Status.Denial.Code).To(Equal(governancev1alpha1.DenialCodeLockTimeout))
+			// Message must reference the configured timeout (2m0s), not the 5m default.
+			Expect(fetchedReq.Status.Denial.Message).To(ContainSubstring("2m0s"))
+			Expect(fetchedReq.Status.Denial.Message).NotTo(ContainSubstring("5m0s"))
+		})
+
 		It("should deny AgentRequest when a matching SafetyPolicy triggers Deny and emit policy.evaluated AuditRecord", func() {
 			policyName := "deny-prod-delete"
 			policy := &governancev1alpha1.SafetyPolicy{
@@ -320,6 +366,7 @@ var _ = Describe("AgentRequest Controller", func() {
 				APIReader:       k8sClient,
 				Scheme:          k8sClient.Scheme(),
 				OpsLockDuration: testOpsLockDuration,
+				ApprovedTimeout: 5 * time.Minute,
 				Evaluator:       eval,
 			}
 
@@ -391,6 +438,7 @@ var _ = Describe("AgentRequest Controller", func() {
 				APIReader:       k8sClient,
 				Scheme:          k8sClient.Scheme(),
 				OpsLockDuration: testOpsLockDuration,
+				ApprovedTimeout: 5 * time.Minute,
 				Evaluator:       eval,
 			}
 

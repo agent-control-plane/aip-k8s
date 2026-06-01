@@ -518,9 +518,10 @@ var _ = Describe("AgentTrustProfile Controller", Ordered, func() {
 		Expect(k8sClient.Create(ctx, ar)).To(Succeed())
 
 		arReconciler := &AgentRequestReconciler{
-			Client:    k8sClient,
-			APIReader: k8sClient,
-			Scheme:    k8sClient.Scheme(),
+			Client:          k8sClient,
+			APIReader:       k8sClient,
+			Scheme:          k8sClient.Scheme(),
+			ApprovedTimeout: 5 * time.Minute,
 		}
 		req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ar.Name, Namespace: ns}}
 		_, err := arReconciler.Reconcile(ctx, req)

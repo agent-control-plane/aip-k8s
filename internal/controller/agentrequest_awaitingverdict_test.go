@@ -42,6 +42,7 @@ var _ = Describe("AgentRequest AwaitingVerdict reconciliation", func() {
 			APIReader:       k8sClient,
 			Scheme:          k8sClient.Scheme(),
 			OpsLockDuration: testOpsLockDuration,
+			ApprovedTimeout: 5 * time.Minute,
 			Evaluator:       eval,
 		}
 		if clock != nil {
