@@ -44,6 +44,7 @@ make build-gateway
 | `POST` | `/mcp` | Proxy MCP tool calls via JSON-RPC 2.0 (native MCP protocol) |
 | `POST` | `/mcp-proxy/{server}/{tool}` | Proxy MCP tool calls via REST (legacy, for non-MCP clients) |
 | `GET` | `/mcp-registry` | List available MCP servers and their tools |
+| `PUT` | `/agent-requests/{name}/result` | Record execution result for an AgentRequest |
 | `POST` | `/agent-requests/recompute-accuracy` | Trigger accuracy recomputation |
 | `PUT` | `/agent-graduation-policies/{name}` | Replace an AgentGraduationPolicy |
 | `PUT` | `/governed-resources/{name}` | Replace a GovernedResource |
@@ -110,6 +111,7 @@ The gateway supports OIDC/JWT authentication. When enabled, every non-healthz re
 | `POST /agent-requests` | `agent` |
 | `POST /agent-requests/{name}/executing` | `agent` (creator only) |
 | `POST /agent-requests/{name}/completed` | `agent` (creator only) |
+| `PUT /agent-requests/{name}/result` | `agent` (creator only) |
 | `POST /agent-requests/{name}/approve` | `reviewer` |
 | `POST /agent-requests/{name}/deny` | `reviewer` |
 | `PATCH /agent-requests/{name}/verdict` | `reviewer` |

@@ -294,6 +294,13 @@ func (r *AgentRequestReconciler) checkGovernedResourceIntegrity(ctx context.Cont
 func (r *AgentRequestReconciler) checkAgentTransitions(ctx context.Context, agentReq *governancev1alpha1.AgentRequest) (bool, error) {
 	// Agent completed successfully
 	if meta.IsStatusConditionTrue(agentReq.Status.Conditions, governancev1alpha1.ConditionCompleted) && agentReq.Status.Phase != governancev1alpha1.PhaseCompleted {
+		// Re-read via APIReader to ensure MergeFrom(base) does not zero out
+		// Status.Result written by the gateway between the initial reconcile
+		// fetch and this patch.
+		var fresh governancev1alpha1.AgentRequest
+		if err := r.APIReader.Get(ctx, types.NamespacedName{Name: agentReq.Name, Namespace: agentReq.Namespace}, &fresh); err == nil {
+			agentReq.Status.Result = fresh.Status.Result
+		}
 		fromPhase := agentReq.Status.Phase
 		base := agentReq.DeepCopy()
 		agentReq.Status.Phase = governancev1alpha1.PhaseCompleted
@@ -1229,6 +1236,14 @@ func (r *AgentRequestReconciler) emitAuditRecord(ctx context.Context, req *gover
 			audit.Spec.Annotations = make(map[string]string, len(extraAnnotations[0]))
 		}
 		maps.Copy(audit.Spec.Annotations, extraAnnotations[0])
+	}
+
+	// Populate Spec.Details with Status.Result on request.completed.
+	if eventType == governancev1alpha1.AuditEventRequestCompleted && req.Status.Result != nil {
+		resultJSON, err := json.Marshal(req.Status.Result)
+		if err == nil {
+			audit.Spec.Details = &apiextensionsv1.JSON{Raw: resultJSON}
+		}
 	}
 
 	// Set OwnerReference for garbage collection

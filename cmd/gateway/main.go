@@ -223,6 +223,7 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 	mux.HandleFunc("GET /agent-requests/{name}/watch", server.handleWatchAgentRequest)
 	mux.HandleFunc("POST /agent-requests/{name}/executing", server.handleExecutingAgentRequest)
 	mux.HandleFunc("POST /agent-requests/{name}/completed", server.handleCompletedAgentRequest)
+	mux.HandleFunc("PUT /agent-requests/{name}/result", server.handlePutAgentRequestResult)
 	mux.HandleFunc("POST /agent-requests/{name}/approve", server.handleApproveAgentRequest)
 	mux.HandleFunc("POST /agent-requests/{name}/deny", server.handleDenyAgentRequest)
 	mux.HandleFunc("PATCH /agent-requests/{name}/verdict", server.handleVerdictAgentRequest)

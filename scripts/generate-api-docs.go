@@ -22,6 +22,7 @@ var handlerDescriptions = map[string]string{
 	"WatchAgentRequest":           "Watch an AgentRequest via SSE",
 	"ExecutingAgentRequest":       "Signal agent started executing",
 	"CompletedAgentRequest":       "Signal agent completed the action",
+	"PutAgentRequestResult":       "Record execution result for an AgentRequest",
 	"ApproveAgentRequest":         "Approve an AgentRequest",
 	"DenyAgentRequest":            "Deny an AgentRequest",
 	"VerdictAgentRequest":         "Submit a verdict (correct/incorrect)",

@@ -424,6 +424,7 @@ func (s *Server) handleGetAgentRequest(w http.ResponseWriter, r *http.Request) {
 		"conditions":               current.Status.Conditions,
 		"controlPlaneVerification": current.Status.ControlPlaneVerification,
 		"auditEvents":              auditEvents,
+		"result":                   current.Status.Result,
 	})
 }
 
@@ -514,6 +515,71 @@ func (s *Server) handleCompletedAgentRequest(w http.ResponseWriter, r *http.Requ
 		"ActionSuccess", "Agent successfully completed the action")
 }
 
+//nolint:dupl // structurally similar to handleCompletedAgentRequest
+func (s *Server) handlePutAgentRequestResult(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
+
+	sub := callerSubFromCtx(r.Context())
+	if s.authRequired && sub == "" {
+		writeError(w, http.StatusUnauthorized, "caller identity required")
+		return
+	}
+	if !requireRole(s.roles, roleAgent, sub, callerGroupsFromCtx(r.Context()), w) {
+		return
+	}
+
+	name := r.PathValue("name")
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		ns = defaultNamespace
+	}
+
+	var body struct {
+		URL     string `json:"url"`
+		Summary string `json:"summary"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if body.URL == "" || !strings.HasPrefix(body.URL, "https://") {
+		writeError(w, http.StatusBadRequest, "url must be a valid https URL")
+		return
+	}
+	if len(body.Summary) > 512 {
+		writeError(w, http.StatusBadRequest, "summary must be at most 512 characters")
+		return
+	}
+
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current v1alpha1.AgentRequest
+		if err := s.apiReader.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &current); err != nil {
+			return err
+		}
+
+		if current.Status.Phase != v1alpha1.PhaseExecuting {
+			return fmt.Errorf("request is in phase %q — can only record result in Executing", current.Status.Phase)
+		}
+
+		base := current.DeepCopy()
+		current.Status.Result = &v1alpha1.AgentRequestResult{
+			URL:     body.URL,
+			Summary: body.Summary,
+		}
+		return s.client.Status().Patch(r.Context(), &current, client.MergeFrom(base))
+	}); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "AgentRequest not found")
+		} else {
+			writeError(w, http.StatusConflict, err.Error())
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "result recorded"})
+}
+
 func (s *Server) patchAgentRequestCondition(
 	w http.ResponseWriter, r *http.Request, conditionType, reason, message string,
 ) {
@@ -529,6 +595,7 @@ func (s *Server) patchAgentRequestCondition(
 			return err
 		}
 
+		base := current.DeepCopy()
 		meta.SetStatusCondition(&current.Status.Conditions, metav1.Condition{
 			Type:    conditionType,
 			Status:  metav1.ConditionTrue,
@@ -536,7 +603,7 @@ func (s *Server) patchAgentRequestCondition(
 			Message: message,
 		})
 
-		return s.client.Status().Update(r.Context(), &current)
+		return s.client.Status().Patch(r.Context(), &current, client.MergeFrom(base))
 	}); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "AgentRequest not found")
