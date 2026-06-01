@@ -23,7 +23,7 @@ import (
 	"github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 )
 
-// const agentRequestPhaseIndexKey is the field index key for status.phase on AgentRequest.
+// agentRequestPhaseIndexKey is the field index key for status.phase on AgentRequest.
 // Used in both the manager IndexField registration and the MatchingFields list call.
 const agentRequestPhaseIndexKey = "status.phase"
 

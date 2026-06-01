@@ -108,7 +108,7 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 		Scheme:                 scheme,
 		LeaderElection:         false,
 		HealthProbeBindAddress: "",
-		Metrics:                metricsserver.Options{BindAddress: "0"},
+		Metrics:                metricsserver.Options{BindAddress: ""},
 	})
 	if err != nil {
 		log.Fatalf("Failed to create manager: %v", err)
