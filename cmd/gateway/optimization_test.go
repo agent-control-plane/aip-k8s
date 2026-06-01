@@ -232,6 +232,9 @@ func TestListAgentRequests_PhaseFilter(t *testing.T) {
 	g.Expect(w.Code).To(gomega.Equal(http.StatusOK))
 	g.Expect(json.Unmarshal(w.Body.Bytes(), &items)).To(gomega.Succeed())
 	g.Expect(items).To(gomega.HaveLen(2))
+	for _, item := range items {
+		g.Expect(item.Status.Phase).To(gomega.BeElementOf(v1alpha1.PhaseApproved, v1alpha1.PhasePending))
+	}
 
 	// 3. No phase filter — all items returned.
 	req = httptest.NewRequest(http.MethodGet, "/agent-requests", nil)
@@ -249,7 +252,12 @@ func TestListAgentRequests_PhaseFilter(t *testing.T) {
 	s.handleListAgentRequests(w, req)
 	g.Expect(w.Code).To(gomega.Equal(http.StatusBadRequest))
 	g.Expect(w.Body.String()).To(gomega.ContainSubstring("invalid phase"))
-	g.Expect(w.Body.String()).To(gomega.ContainSubstring("Approved"))
+	for _, phase := range []string{
+		"Approved", "AwaitingVerdict", "Completed", "Denied",
+		"Executing", "Expired", "Failed", "Observed", "Pending",
+	} {
+		g.Expect(w.Body.String()).To(gomega.ContainSubstring(phase))
+	}
 
 	// 5. Combined with agentIdentity.
 	req = httptest.NewRequest(http.MethodGet, "/agent-requests?agentIdentity=agent-1&phase=Pending", nil)
@@ -259,4 +267,6 @@ func TestListAgentRequests_PhaseFilter(t *testing.T) {
 	g.Expect(w.Code).To(gomega.Equal(http.StatusOK))
 	g.Expect(json.Unmarshal(w.Body.Bytes(), &items)).To(gomega.Succeed())
 	g.Expect(items).To(gomega.HaveLen(1))
+	g.Expect(items[0].Name).To(gomega.Equal("req-1-pend"))
+	g.Expect(items[0].Status.Phase).To(gomega.Equal(v1alpha1.PhasePending))
 }
