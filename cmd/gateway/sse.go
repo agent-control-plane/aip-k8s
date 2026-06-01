@@ -103,7 +103,7 @@ func (s *Server) streamAgentRequestPhase(
 	// returning and the watch being established — the watch picks up exactly
 	// where the Get left off with no gap and no duplicates.
 	var current v1alpha1.AgentRequest
-	if err := s.client.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &current); err != nil {
+	if err := s.apiReader.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &current); err != nil {
 		writeSSEError(w, rc, fmt.Sprintf("failed to get AgentRequest: %v", err))
 		return
 	}
