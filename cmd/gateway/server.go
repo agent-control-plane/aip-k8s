@@ -197,3 +197,52 @@ func sanitizeLabelValue(s string) string {
 	s = strings.Trim(s, "-_.")
 	return s
 }
+
+// normalizeClassification coerces a free-form "category/subcategory" string into
+// the canonical form the AgentRequest CRD schema requires
+// (^[a-z][a-z0-9-]*/[a-z][a-z0-9-]*$): each segment lowercased, with runs of
+// non-alphanumeric characters collapsed to a single hyphen.
+//
+// In particular, a subcategory that itself contains a slash (e.g.
+// "Config/Missing Secret/ConfigMap") would otherwise yield a value with more
+// than one slash and be rejected by the CRD validation with HTTP 400, silently
+// failing to record the AgentRequest. Splitting on the first slash and slugifying
+// each side guarantees exactly one slash. Already-valid values pass through
+// unchanged; empty input is returned unchanged (the field is optional).
+func normalizeClassification(s string) string {
+	if s == "" {
+		return ""
+	}
+	category, sub, found := strings.Cut(s, "/")
+	if !found {
+		// No slash: cannot form category/subcategory. Slugify as a single
+		// segment and let CRD validation reject if still non-conformant.
+		return slugifyClassificationSegment(s)
+	}
+	return slugifyClassificationSegment(category) + "/" + slugifyClassificationSegment(sub)
+}
+
+// slugifyClassificationSegment lowercases s and collapses every run of
+// non-alphanumeric characters to a single hyphen, trims hyphens, and ensures the
+// result starts with a letter (the CRD segment pattern requires a leading [a-z]).
+func slugifyClassificationSegment(s string) string {
+	var b strings.Builder
+	lastHyphen := false
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastHyphen = false
+		} else if !lastHyphen && b.Len() > 0 {
+			b.WriteByte('-')
+			lastHyphen = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return ""
+	}
+	if out[0] < 'a' || out[0] > 'z' {
+		out = "x-" + out
+	}
+	return out
+}

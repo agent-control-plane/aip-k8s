@@ -122,7 +122,7 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 			Action:         body.Action,
 			Target:         v1alpha1.Target{URI: body.TargetURI},
 			Reason:         body.Reason,
-			Classification: body.Classification,
+			Classification: normalizeClassification(body.Classification),
 			CascadeModel:   buildCascadeModel(&body),
 			ReasoningTrace: buildReasoningTrace(&body),
 			Parameters:     parameters,
