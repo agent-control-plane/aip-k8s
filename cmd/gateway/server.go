@@ -219,7 +219,19 @@ func normalizeClassification(s string) string {
 		// segment and let CRD validation reject if still non-conformant.
 		return slugifyClassificationSegment(s)
 	}
-	return slugifyClassificationSegment(category) + "/" + slugifyClassificationSegment(sub)
+	cat := slugifyClassificationSegment(category)
+	subSlug := slugifyClassificationSegment(sub)
+	// A trailing/leading slash or an all-separator segment (e.g. "config/")
+	// leaves one side empty and can't form a two-part classification — return
+	// whichever side is non-empty rather than emitting a dangling slash that
+	// would itself fail CRD validation.
+	if cat == "" {
+		return subSlug
+	}
+	if subSlug == "" {
+		return cat
+	}
+	return cat + "/" + subSlug
 }
 
 // slugifyClassificationSegment lowercases s and collapses every run of
