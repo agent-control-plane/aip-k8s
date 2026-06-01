@@ -82,7 +82,8 @@ type AgentRequestReconciler struct {
 	// ApprovedTimeout is the maximum time a request can stay in Approved phase before
 	// the controller times it out to PhaseFailed (agent never started execution).
 	// Zero or negative falls back to 5 minutes.
-	ApprovedTimeout      time.Duration
+	ApprovedTimeout time.Duration
+
 	Evaluator            evaluation.Evaluator
 	TargetContextFetcher evaluation.TargetContextFetcher
 	GitHubMCPFetcher     *fetchers.GitHubMCPFetcher
@@ -932,7 +933,8 @@ func (r *AgentRequestReconciler) reconcileApproved(ctx context.Context, agentReq
 		return ctrl.Result{}, nil
 	}
 
-	deadline := approvedCond.LastTransitionTime.Add(r.approvedTimeoutOrDefault())
+	approvedTimeout := r.approvedTimeoutOrDefault()
+	deadline := approvedCond.LastTransitionTime.Add(approvedTimeout)
 	now := r.now()
 
 	if now.After(deadline) {
@@ -978,12 +980,12 @@ func (r *AgentRequestReconciler) reconcileApproved(ctx context.Context, agentReq
 		Type:    governancev1alpha1.ConditionFailed,
 		Status:  metav1.ConditionTrue,
 		Reason:  governancev1alpha1.DenialCodeLockTimeout,
-		Message: fmt.Sprintf("Timed out after %v in Approved phase without starting execution", r.approvedTimeoutOrDefault()),
+		Message: fmt.Sprintf("Timed out after %v in Approved phase without starting execution", approvedTimeout),
 	})
 	agentReq.Status.Phase = governancev1alpha1.PhaseFailed
 	agentReq.Status.Denial = &governancev1alpha1.DenialResponse{
 		Code:    governancev1alpha1.DenialCodeLockTimeout,
-		Message: fmt.Sprintf("Timed out after %v in Approved phase without starting execution", r.approvedTimeoutOrDefault()),
+		Message: fmt.Sprintf("Timed out after %v in Approved phase without starting execution", approvedTimeout),
 	}
 
 	agentRequestActive.Dec()
