@@ -102,6 +102,7 @@ func startTestManager(t *testing.T, cfg *rest.Config) client.Client {
 		APIReader:            mgr.GetAPIReader(),
 		Scheme:               mgr.GetScheme(),
 		OpsLockDuration:      5 * time.Minute,
+		ApprovedTimeout:      5 * time.Minute,
 		Evaluator:            eval,
 		TargetContextFetcher: &evaluation.KubernetesTargetContextFetcher{Client: mgr.GetAPIReader()},
 	}).SetupWithManager(mgr)

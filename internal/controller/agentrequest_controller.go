@@ -53,9 +53,6 @@ const (
 	// defaultLockWaitTimeout is the fallback maximum time a request will wait in
 	// Pending to acquire the OpsLock Lease when no LockWaitDuration is configured.
 	defaultLockWaitTimeout = 60 * time.Second
-	// ApprovedTimeout is the maximum time a request can stay in Approved phase before
-	// the controller times it out to PhaseFailed (agent never started execution).
-	ApprovedTimeout = 5 * time.Minute
 	// awaitingVerdictTTL is the maximum time an ungraded AwaitingVerdict request
 	// remains active before the controller expires it. Expired requests are excluded
 	// from accuracy counts (graduation ladder spec §4.2).
@@ -81,7 +78,11 @@ type AgentRequestReconciler struct {
 	// OpsLock Lease before being Denied with LOCK_TIMEOUT. Zero falls back to
 	// defaultLockWaitTimeout (60s). Configurable so e2e tests can use a shorter value
 	// (e.g. 20s) to ensure the test completes well before the GC hard-TTL window.
-	LockWaitDuration     time.Duration
+	LockWaitDuration time.Duration
+	// ApprovedTimeout is the maximum time a request can stay in Approved phase before
+	// the controller times it out to PhaseFailed (agent never started execution).
+	// Zero or negative falls back to 5 minutes.
+	ApprovedTimeout      time.Duration
 	Evaluator            evaluation.Evaluator
 	TargetContextFetcher evaluation.TargetContextFetcher
 	GitHubMCPFetcher     *fetchers.GitHubMCPFetcher
@@ -114,12 +115,20 @@ func deterministicAuditName(resourceName, eventType, stateA, stateB string) stri
 }
 
 const defaultOpsLockDuration = 5 * time.Minute
+const defaultApprovedTimeout = 5 * time.Minute
 
 func (r *AgentRequestReconciler) opsLockDurationOrDefault() time.Duration {
 	if r.OpsLockDuration <= 0 {
 		return defaultOpsLockDuration
 	}
 	return r.OpsLockDuration
+}
+
+func (r *AgentRequestReconciler) approvedTimeoutOrDefault() time.Duration {
+	if r.ApprovedTimeout <= 0 {
+		return defaultApprovedTimeout
+	}
+	return r.ApprovedTimeout
 }
 
 // +kubebuilder:rbac:groups=governance.aip.io,resources=agentrequests,verbs=get;list;watch;create;update;patch;delete
@@ -923,7 +932,7 @@ func (r *AgentRequestReconciler) reconcileApproved(ctx context.Context, agentReq
 		return ctrl.Result{}, nil
 	}
 
-	deadline := approvedCond.LastTransitionTime.Add(ApprovedTimeout)
+	deadline := approvedCond.LastTransitionTime.Add(r.approvedTimeoutOrDefault())
 	now := r.now()
 
 	if now.After(deadline) {
@@ -969,12 +978,12 @@ func (r *AgentRequestReconciler) reconcileApproved(ctx context.Context, agentReq
 		Type:    governancev1alpha1.ConditionFailed,
 		Status:  metav1.ConditionTrue,
 		Reason:  governancev1alpha1.DenialCodeLockTimeout,
-		Message: fmt.Sprintf("Timed out after %v in Approved phase without starting execution", ApprovedTimeout),
+		Message: fmt.Sprintf("Timed out after %v in Approved phase without starting execution", r.approvedTimeoutOrDefault()),
 	})
 	agentReq.Status.Phase = governancev1alpha1.PhaseFailed
 	agentReq.Status.Denial = &governancev1alpha1.DenialResponse{
 		Code:    governancev1alpha1.DenialCodeLockTimeout,
-		Message: fmt.Sprintf("Timed out after %v in Approved phase without starting execution", ApprovedTimeout),
+		Message: fmt.Sprintf("Timed out after %v in Approved phase without starting execution", r.approvedTimeoutOrDefault()),
 	}
 
 	agentRequestActive.Dec()

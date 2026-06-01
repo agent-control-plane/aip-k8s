@@ -135,6 +135,7 @@ var _ = Describe("AgentRequest Controller", func() {
 				APIReader:       k8sClient,
 				Scheme:          k8sClient.Scheme(),
 				OpsLockDuration: testOpsLockDuration,
+				ApprovedTimeout: 5 * time.Minute,
 				Evaluator:       eval,
 			}
 
@@ -217,6 +218,7 @@ var _ = Describe("AgentRequest Controller", func() {
 				APIReader:       k8sClient,
 				Scheme:          k8sClient.Scheme(),
 				OpsLockDuration: testOpsLockDuration,
+				ApprovedTimeout: 5 * time.Minute,
 				Evaluator:       eval,
 				Clock:           func() time.Time { return frozenFuture },
 			}
@@ -320,6 +322,7 @@ var _ = Describe("AgentRequest Controller", func() {
 				APIReader:       k8sClient,
 				Scheme:          k8sClient.Scheme(),
 				OpsLockDuration: testOpsLockDuration,
+				ApprovedTimeout: 5 * time.Minute,
 				Evaluator:       eval,
 			}
 
@@ -391,6 +394,7 @@ var _ = Describe("AgentRequest Controller", func() {
 				APIReader:       k8sClient,
 				Scheme:          k8sClient.Scheme(),
 				OpsLockDuration: testOpsLockDuration,
+				ApprovedTimeout: 5 * time.Minute,
 				Evaluator:       eval,
 			}
 
