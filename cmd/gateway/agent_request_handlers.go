@@ -34,6 +34,7 @@ var validPhases = map[string]bool{
 	v1alpha1.PhaseFailed:          true,
 	v1alpha1.PhaseAwaitingVerdict: true,
 	v1alpha1.PhaseExpired:         true,
+	v1alpha1.PhaseObserved:        true,
 }
 
 // checkDuplicate returns a non-nil error and writes a 409 if an active request
