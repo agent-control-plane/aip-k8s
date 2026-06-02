@@ -302,6 +302,69 @@ var _ = Describe("AgentRequest Controller", func() {
 			}, time.Second*5, time.Millisecond*500).Should(BeTrue())
 		})
 
+		It("should NOT renew the OpsLock lease (dead-agent detection #228)", func() {
+			// Regression test: the controller must NOT update the lease's RenewTime.
+			// Before the fix, every reconcile pass bumped RenewTime to r.now(), making
+			// the lease immortal and preventing dead-agent detection (#228).
+			//
+			// Strategy: set the clock to T0+1min (lease not yet expired — 1min < 5min
+			// duration). After reconcile, re-fetch the lease and verify RenewTime is
+			// still T0, i.e. the controller did NOT write back a newer timestamp.
+			t0 := time.Now().Truncate(time.Second) // truncate for comparison stability
+
+			eval, err := evaluation.NewEvaluator()
+			Expect(err).NotTo(HaveOccurred())
+
+			controllerReconciler := &AgentRequestReconciler{
+				Client:          k8sClient,
+				APIReader:       k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				OpsLockDuration: testOpsLockDuration,
+				ApprovedTimeout: 5 * time.Minute,
+				Evaluator:       eval,
+				Clock:           func() time.Time { return t0.Add(1 * time.Minute) },
+			}
+
+			// Force the AgentRequest into Executing phase
+			var fetchedReq governancev1alpha1.AgentRequest
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &fetchedReq)).To(Succeed())
+			fetchedReq.Status.Phase = governancev1alpha1.PhaseExecuting
+			Expect(k8sClient.Status().Update(ctx, &fetchedReq)).To(Succeed())
+
+			// Create a Lease with RenewTime = T0, duration 300s.
+			// At clock T0+1min the lease has NOT expired (60s < 300s).
+			leaseName := generateLeaseName(fetchedReq.Spec.Target.URI)
+			holderIdentity := fetchedReq.Spec.AgentIdentity + "/" + fetchedReq.Name
+			lease := &coordinationv1.Lease{
+				ObjectMeta: metav1.ObjectMeta{Name: leaseName, Namespace: "default"},
+				Spec: coordinationv1.LeaseSpec{
+					HolderIdentity:       ptr.To(holderIdentity),
+					LeaseDurationSeconds: ptr.To(int32(300)),
+					AcquireTime:          &metav1.MicroTime{Time: t0},
+					RenewTime:            &metav1.MicroTime{Time: t0},
+				},
+			}
+			Expect(k8sClient.Create(ctx, lease)).To(Succeed())
+
+			// Re-fetch request so we have the latest resource version
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &fetchedReq)).To(Succeed())
+
+			// Reconcile — lease is not expired so we expect a requeue, not a failure
+			_, err = controllerReconciler.reconcileExecuting(ctx, &fetchedReq)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Request must still be Executing (not Failed)
+			Expect(fetchedReq.Status.Phase).To(Equal(governancev1alpha1.PhaseExecuting))
+
+			// KEY ASSERTION: re-fetch the lease and confirm RenewTime was NOT bumped.
+			// With the old code r.now() == T0+1min would have been written back.
+			var updatedLease coordinationv1.Lease
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: leaseName, Namespace: "default"}, &updatedLease)).To(Succeed())
+			Expect(updatedLease.Spec.RenewTime).NotTo(BeNil())
+			Expect(updatedLease.Spec.RenewTime.Time).To(BeTemporally("~", t0, time.Second),
+				"controller must not renew the lease; RenewTime should remain T0, not advance to T0+1min")
+		})
+
 		It("should time out in Approved phase using the configured ApprovedTimeout, not the default", func() {
 			const customTimeout = 2 * time.Minute
 

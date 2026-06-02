@@ -1107,17 +1107,12 @@ func (r *AgentRequestReconciler) reconcileExecuting(ctx context.Context, agentRe
 			return ctrl.Result{}, nil
 		}
 
-		// Patch RenewTime to heartbeat the lease
-		log.FromContext(ctx).Info("Heartbeating lease", "lease", leaseName, "duration", *lease.Spec.LeaseDurationSeconds)
-		base := lease.DeepCopy()
-		lease.Spec.RenewTime = ptr.To(metav1.NewMicroTime(r.now()))
-		if err := r.Patch(ctx, lease, client.MergeFrom(base)); err != nil {
-			return ctrl.Result{}, fmt.Errorf("heartbeating lease %s: %w", leaseName, err)
-		}
-
-		// Requeue at half the lease duration
+		// The controller does NOT renew the lease — the lease is the agent's
+		// execution budget (sized by --ops-lock-duration). Renewing here
+		// unconditionally made the lease immortal and prevented dead-agent
+		// detection: a crashed agent's request never timed out (#228). Only the
+		// agent should extend the lease. Requeue so expiry is re-checked.
 		requeueAfter := time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second / 2
-		log.FromContext(ctx).Info("Requeueing after heartbeat", "requeueAfter", requeueAfter)
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
