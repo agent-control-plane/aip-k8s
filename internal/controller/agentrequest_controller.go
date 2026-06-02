@@ -1097,7 +1097,7 @@ func (r *AgentRequestReconciler) reconcileExecuting(ctx context.Context, agentRe
 				log.FromContext(ctx).Error(err, "Failed to delete expired lease", "lease", leaseName)
 			}
 
-			if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventLockExpired, fromPhase, governancev1alpha1.PhaseFailed); err != nil {
+			if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventHeartbeatTimeout, fromPhase, governancev1alpha1.PhaseFailed); err != nil {
 				return ctrl.Result{}, err
 			}
 			if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventRequestFailed, fromPhase, governancev1alpha1.PhaseFailed); err != nil {

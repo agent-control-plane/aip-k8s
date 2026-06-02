@@ -297,7 +297,7 @@ var _ = Describe("AgentRequest Controller", func() {
 			Expect(fetchedReq.Status.Phase).To(Equal(governancev1alpha1.PhaseFailed))
 
 			Eventually(func() bool {
-				return hasAuditRecord(ctx, resourceName, governancev1alpha1.AuditEventLockExpired) &&
+				return hasAuditRecord(ctx, resourceName, governancev1alpha1.AuditEventHeartbeatTimeout) &&
 					hasAuditRecord(ctx, resourceName, governancev1alpha1.AuditEventRequestFailed)
 			}, time.Second*5, time.Millisecond*500).Should(BeTrue())
 		})
@@ -331,15 +331,15 @@ var _ = Describe("AgentRequest Controller", func() {
 			fetchedReq.Status.Phase = governancev1alpha1.PhaseExecuting
 			Expect(k8sClient.Status().Update(ctx, &fetchedReq)).To(Succeed())
 
-			// Create a Lease with RenewTime = T0, duration 300s.
-			// At clock T0+1min the lease has NOT expired (60s < 300s).
+			// Create a Lease with RenewTime = T0, duration derived from testOpsLockDuration.
+			// At clock T0+1min the lease has NOT expired (60s < testOpsLockDuration).
 			leaseName := generateLeaseName(fetchedReq.Spec.Target.URI)
 			holderIdentity := fetchedReq.Spec.AgentIdentity + "/" + fetchedReq.Name
 			lease := &coordinationv1.Lease{
 				ObjectMeta: metav1.ObjectMeta{Name: leaseName, Namespace: "default"},
 				Spec: coordinationv1.LeaseSpec{
 					HolderIdentity:       ptr.To(holderIdentity),
-					LeaseDurationSeconds: ptr.To(int32(300)),
+					LeaseDurationSeconds: ptr.To(int32(testOpsLockDuration / time.Second)),
 					AcquireTime:          &metav1.MicroTime{Time: t0},
 					RenewTime:            &metav1.MicroTime{Time: t0},
 				},
