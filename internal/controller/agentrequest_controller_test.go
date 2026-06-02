@@ -280,7 +280,7 @@ var _ = Describe("AgentRequest Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: leaseName, Namespace: "default"},
 				Spec: coordinationv1.LeaseSpec{
 					HolderIdentity:       ptr.To(holderIdentity),
-					LeaseDurationSeconds: ptr.To(int32(300)),
+					LeaseDurationSeconds: ptr.To(int32(testOpsLockDuration / time.Second)),
 					AcquireTime:          &metav1.MicroTime{Time: time.Now()},
 					RenewTime:            &metav1.MicroTime{Time: time.Now()},
 				},
