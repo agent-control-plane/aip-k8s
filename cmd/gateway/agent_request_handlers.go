@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -529,6 +530,24 @@ func (s *Server) handlePutAgentRequestResult(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Validate input before any K8s API call so malformed requests are rejected cheaply.
+	var body struct {
+		URL     string `json:"url"`
+		Summary string `json:"summary"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if body.URL == "" || !strings.HasPrefix(body.URL, "https://") || len(body.URL) < 9 {
+		writeError(w, http.StatusBadRequest, "url must be a valid https URL")
+		return
+	}
+	if utf8.RuneCountInString(body.Summary) > 512 {
+		writeError(w, http.StatusBadRequest, "summary must be at most 512 characters")
+		return
+	}
+
 	name := r.PathValue("name")
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
@@ -548,24 +567,6 @@ func (s *Server) handlePutAgentRequestResult(w http.ResponseWriter, r *http.Requ
 	// Only the creating agent can record a result.
 	if s.authRequired && req.Spec.AgentIdentity != sub {
 		writeError(w, http.StatusForbidden, "forbidden: only the creating agent may record a result")
-		return
-	}
-
-	var body struct {
-		URL     string `json:"url"`
-		Summary string `json:"summary"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-
-	if body.URL == "" || !strings.HasPrefix(body.URL, "https://") || len(body.URL) < 9 {
-		writeError(w, http.StatusBadRequest, "url must be a valid https URL")
-		return
-	}
-	if len(body.Summary) > 512 {
-		writeError(w, http.StatusBadRequest, "summary must be at most 512 characters")
 		return
 	}
 

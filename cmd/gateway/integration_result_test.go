@@ -17,6 +17,7 @@ import (
 func runResultTests(t *testing.T, mgrClient, directClient client.Client, ctx context.Context) {
 	t.Run("PUT /result -> POST /completed -> status.result survives on completed object", func(t *testing.T) {
 		gm := gomega.NewWithT(t)
+		t.Cleanup(func() { cleanup(ctx, gm, directClient) })
 		s := &Server{
 			client:       directClient,
 			apiReader:    directClient,
@@ -143,11 +144,11 @@ func runResultTests(t *testing.T, mgrClient, directClient client.Client, ctx con
 			return false
 		}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
 
-		cleanup(ctx, gm, directClient)
 	})
 
 	t.Run("PUT /result by non-owner agent returns 403", func(t *testing.T) {
 		gm := gomega.NewWithT(t)
+		t.Cleanup(func() { cleanup(ctx, gm, directClient) })
 		// Both testAgentSub and "rogue-agent" have the agent role, so requireRole
 		// passes for both. Only the ownership check distinguishes them.
 		s := &Server{
@@ -214,11 +215,11 @@ func runResultTests(t *testing.T, mgrClient, directClient client.Client, ctx con
 		gm.Expect(directClient.Get(ctx, key, &ar)).To(gomega.Succeed())
 		gm.Expect(ar.Status.Result).To(gomega.BeNil())
 
-		cleanup(ctx, gm, directClient)
 	})
 
 	t.Run("PUT /result on non-Executing phase returns 409", func(t *testing.T) {
 		gm := gomega.NewWithT(t)
+		t.Cleanup(func() { cleanup(ctx, gm, directClient) })
 		s := &Server{
 			client:       directClient,
 			apiReader:    directClient,
@@ -274,11 +275,11 @@ func runResultTests(t *testing.T, mgrClient, directClient client.Client, ctx con
 		gm.Expect(directClient.Get(ctx, key, &ar)).To(gomega.Succeed())
 		gm.Expect(ar.Status.Result).To(gomega.BeNil())
 
-		cleanup(ctx, gm, directClient)
 	})
 
 	t.Run("PUT /result is idempotent -- last write wins", func(t *testing.T) {
 		gm := gomega.NewWithT(t)
+		t.Cleanup(func() { cleanup(ctx, gm, directClient) })
 		s := &Server{
 			client:       directClient,
 			apiReader:    directClient,
@@ -360,13 +361,13 @@ func runResultTests(t *testing.T, mgrClient, directClient client.Client, ctx con
 		gm.Expect(ar.Status.Result.URL).To(gomega.Equal("https://github.com/org/repo/pull/2"))
 		gm.Expect(ar.Status.Result.Summary).To(gomega.Equal("PR #2"))
 
-		cleanup(ctx, gm, directClient)
 	})
 
 	// Issue #223: if /completed fires before /result the URL must not be silently
 	// lost. Accepting PhaseCompleted in PUT /result closes this ordering race.
 	t.Run("PUT /result after POST /completed succeeds -- late result recording", func(t *testing.T) {
 		gm := gomega.NewWithT(t)
+		t.Cleanup(func() { cleanup(ctx, gm, directClient) })
 		s := &Server{
 			client:       mgrClient,
 			apiReader:    directClient, // direct — bypasses cache for phase check
@@ -456,11 +457,11 @@ func runResultTests(t *testing.T, mgrClient, directClient client.Client, ctx con
 		gm.Expect(ar.Status.Result).NotTo(gomega.BeNil())
 		gm.Expect(ar.Status.Result.URL).To(gomega.Equal("https://github.com/org/repo/pull/1"))
 
-		cleanup(ctx, gm, directClient)
 	})
 
 	t.Run("PUT /result with non-https URL returns 400", func(t *testing.T) {
 		gm := gomega.NewWithT(t)
+		t.Cleanup(func() { cleanup(ctx, gm, directClient) })
 		s := &Server{
 			client:       directClient,
 			apiReader:    directClient,
@@ -536,6 +537,5 @@ func runResultTests(t *testing.T, mgrClient, directClient client.Client, ctx con
 		gm.Expect(directClient.Get(ctx, key, &ar)).To(gomega.Succeed())
 		gm.Expect(ar.Status.Result).To(gomega.BeNil())
 
-		cleanup(ctx, gm, directClient)
 	})
 }

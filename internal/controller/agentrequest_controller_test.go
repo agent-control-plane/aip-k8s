@@ -186,12 +186,9 @@ var _ = Describe("AgentRequest Controller", func() {
 					hasAuditRecord(ctx, resourceName, governancev1alpha1.AuditEventRequestExecuting)
 			}, time.Second*5, time.Millisecond*500).Should(BeTrue())
 
-			// STEP 4: Agent signals Completed, also record a result (simulating PUT /result).
+			// STEP 4a: Agent signals /completed BEFORE /result (simulating the ordering race).
+			// Only ConditionCompleted is set; Status.Result is intentionally left nil.
 			Expect(k8sClient.Get(ctx, typeNamespacedName, &fetchedReq)).To(Succeed())
-			fetchedReq.Status.Result = &governancev1alpha1.AgentRequestResult{
-				URL:     "https://github.com/example/pr/1",
-				Summary: "Test PR",
-			}
 			meta.SetStatusCondition(&fetchedReq.Status.Conditions, metav1.Condition{
 				Type:    governancev1alpha1.ConditionCompleted,
 				Status:  metav1.ConditionTrue,
@@ -205,17 +202,39 @@ var _ = Describe("AgentRequest Controller", func() {
 
 			Expect(k8sClient.Get(ctx, typeNamespacedName, &fetchedReq)).To(Succeed())
 			Expect(fetchedReq.Status.Phase).To(Equal(governancev1alpha1.PhaseCompleted))
-			// Verify the result was preserved through the completed patch (Step 4 fix).
-			Expect(fetchedReq.Status.Result).NotTo(BeNil())
-			Expect(fetchedReq.Status.Result.URL).To(Equal("https://github.com/example/pr/1"))
 
 			Eventually(func() bool {
 				return hasAuditRecord(ctx, resourceName, governancev1alpha1.AuditEventRequestCompleted) &&
 					hasAuditRecord(ctx, resourceName, governancev1alpha1.AuditEventLockReleased)
 			}, time.Second*5, time.Millisecond*500).Should(BeTrue())
 
-			// Verify the completed AuditRecord has details matching Status.Result.
+			// AuditRecord emitted without Details because Status.Result was nil at transition time.
 			var auditList governancev1alpha1.AuditRecordList
+			Expect(k8sClient.List(ctx, &auditList, client.InNamespace("default"))).To(Succeed())
+			for _, a := range auditList.Items {
+				if a.Spec.Event == governancev1alpha1.AuditEventRequestCompleted {
+					Expect(a.Spec.Details).To(BeNil(), "Details should be nil before late PUT /result")
+				}
+			}
+
+			// STEP 4b: Agent calls PUT /result after /completed (the race scenario).
+			// This simulates the gateway writing Status.Result on a Completed request.
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &fetchedReq)).To(Succeed())
+			fetchedReq.Status.Result = &governancev1alpha1.AgentRequestResult{
+				URL:     "https://github.com/example/pr/1",
+				Summary: "Test PR",
+			}
+			Expect(k8sClient.Status().Update(ctx, &fetchedReq)).To(Succeed())
+
+			// Reconcile sees PhaseCompleted + non-nil Result → triggers AuditRecord backfill.
+			_, err = controllerReconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &fetchedReq)).To(Succeed())
+			Expect(fetchedReq.Status.Result).NotTo(BeNil())
+			Expect(fetchedReq.Status.Result.URL).To(Equal("https://github.com/example/pr/1"))
+
+			// AuditRecord must now have Details backfilled.
 			Expect(k8sClient.List(ctx, &auditList, client.InNamespace("default"))).To(Succeed())
 			var found bool
 			for _, a := range auditList.Items {
@@ -228,7 +247,7 @@ var _ = Describe("AgentRequest Controller", func() {
 					}
 				}
 			}
-			Expect(found).To(BeTrue(), "completed AuditRecord should have details matching Status.Result")
+			Expect(found).To(BeTrue(), "completed AuditRecord should have Details backfilled after late PUT /result")
 		})
 
 		It("should handle execution timeout properly", func() {

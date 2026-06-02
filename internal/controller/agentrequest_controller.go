@@ -166,8 +166,18 @@ func (r *AgentRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// concurrent spec write (e.g. dashboard setting humanApproval) has changed
 	// the resourceVersion since our Get.
 
-	if agentReq.Status.Phase == governancev1alpha1.PhaseCompleted ||
-		agentReq.Status.Phase == governancev1alpha1.PhaseFailed ||
+	if agentReq.Status.Phase == governancev1alpha1.PhaseCompleted {
+		// Backfill: a late PUT /result may have written Status.Result after the
+		// request.completed AuditRecord was already emitted (with no Details).
+		// Patch the existing record so the audit trail is complete.
+		if agentReq.Status.Result != nil {
+			if err := r.backfillCompletedAuditResult(ctx, &agentReq); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+	if agentReq.Status.Phase == governancev1alpha1.PhaseFailed ||
 		agentReq.Status.Phase == governancev1alpha1.PhaseDenied ||
 		agentReq.Status.Phase == governancev1alpha1.PhaseExpired ||
 		agentReq.Status.Phase == governancev1alpha1.PhaseObserved {
@@ -1261,6 +1271,37 @@ func (r *AgentRequestReconciler) emitAuditRecord(ctx context.Context, req *gover
 		return err
 	}
 
+	return nil
+}
+
+// backfillCompletedAuditResult patches the request.completed AuditRecord's
+// Spec.Details when a late PUT /result writes Status.Result after the record
+// was already emitted (with nil Details). Idempotent: records that already
+// have Details are left unchanged. Uses label lookup because the fromPhase
+// component of the deterministic name is not known at backfill time.
+func (r *AgentRequestReconciler) backfillCompletedAuditResult(ctx context.Context, req *governancev1alpha1.AgentRequest) error {
+	var list governancev1alpha1.AuditRecordList
+	if err := r.List(ctx, &list,
+		client.InNamespace(req.Namespace),
+		client.MatchingLabels{"aip.io/agentRequestRef": req.Name},
+	); err != nil {
+		return err
+	}
+	resultJSON, err := json.Marshal(req.Status.Result)
+	if err != nil {
+		return fmt.Errorf("marshalling result for audit backfill: %w", err)
+	}
+	for i := range list.Items {
+		ar := &list.Items[i]
+		if ar.Spec.Event != governancev1alpha1.AuditEventRequestCompleted || ar.Spec.Details != nil {
+			continue
+		}
+		base := ar.DeepCopy()
+		ar.Spec.Details = &apiextensionsv1.JSON{Raw: resultJSON}
+		if err := r.Patch(ctx, ar, client.MergeFrom(base)); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
