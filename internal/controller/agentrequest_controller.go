@@ -959,9 +959,12 @@ func (r *AgentRequestReconciler) reconcileApproved(ctx context.Context, agentReq
 		logger.Info("AgentRequest timed out in Approved phase (agent never started execution)", "name", agentReq.Name)
 	} else {
 		// Heartbeat the OpsLock lease so it stays alive until the agent picks up
-		// the JWT and transitions to Executing. reconcileExecuting takes over
-		// heartbeating once execution begins; this covers the gap between lock
-		// acquisition and execution start. Without renewal, a short
+		// the JWT and transitions to Executing. This Approved-phase heartbeat
+		// covers only the gap between lock acquisition and execution start, and
+		// is bounded by ApprovedTimeout. Once the request reaches Executing the
+		// controller stops renewing — the lease becomes the agent's execution
+		// budget and its expiry is the dead-agent backstop (#228; agent heartbeat
+		// follow-up #230). Without this pre-execution heartbeat, a short
 		// ops-lock-duration (e.g. 15s in tests) would let the lease lapse before
 		// the agent ever starts, allowing another AR to take over prematurely.
 		leaseDuration := r.opsLockDurationOrDefault()
@@ -1097,7 +1100,7 @@ func (r *AgentRequestReconciler) reconcileExecuting(ctx context.Context, agentRe
 				log.FromContext(ctx).Error(err, "Failed to delete expired lease", "lease", leaseName)
 			}
 
-			if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventLockExpired, fromPhase, governancev1alpha1.PhaseFailed); err != nil {
+			if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventHeartbeatTimeout, fromPhase, governancev1alpha1.PhaseFailed); err != nil {
 				return ctrl.Result{}, err
 			}
 			if err := r.emitAuditRecord(ctx, agentReq, governancev1alpha1.AuditEventRequestFailed, fromPhase, governancev1alpha1.PhaseFailed); err != nil {
@@ -1107,17 +1110,14 @@ func (r *AgentRequestReconciler) reconcileExecuting(ctx context.Context, agentRe
 			return ctrl.Result{}, nil
 		}
 
-		// Patch RenewTime to heartbeat the lease
-		log.FromContext(ctx).Info("Heartbeating lease", "lease", leaseName, "duration", *lease.Spec.LeaseDurationSeconds)
-		base := lease.DeepCopy()
-		lease.Spec.RenewTime = ptr.To(metav1.NewMicroTime(r.now()))
-		if err := r.Patch(ctx, lease, client.MergeFrom(base)); err != nil {
-			return ctrl.Result{}, fmt.Errorf("heartbeating lease %s: %w", leaseName, err)
-		}
-
-		// Requeue at half the lease duration
+		// During Executing the controller does NOT renew the lease: the lease is
+		// the agent's execution budget (sized by --ops-lock-duration), and its
+		// expiry is how a dead agent is detected. Renewing here unconditionally
+		// made the lease immortal, so a crashed agent's request never timed out
+		// (#228). Only the agent may extend the lease during execution (heartbeat
+		// follow-up: #230). Pre-execution, reconcileApproved heartbeats the lease,
+		// bounded separately by ApprovedTimeout. Requeue so expiry is re-checked.
 		requeueAfter := time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second / 2
-		log.FromContext(ctx).Info("Requeueing after heartbeat", "requeueAfter", requeueAfter)
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
