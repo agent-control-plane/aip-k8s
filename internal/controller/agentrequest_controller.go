@@ -298,9 +298,10 @@ func (r *AgentRequestReconciler) checkAgentTransitions(ctx context.Context, agen
 		// Status.Result written by the gateway between the initial reconcile
 		// fetch and this patch.
 		var fresh governancev1alpha1.AgentRequest
-		if err := r.APIReader.Get(ctx, types.NamespacedName{Name: agentReq.Name, Namespace: agentReq.Namespace}, &fresh); err == nil {
-			agentReq.Status.Result = fresh.Status.Result
+		if err := r.APIReader.Get(ctx, types.NamespacedName{Name: agentReq.Name, Namespace: agentReq.Namespace}, &fresh); err != nil {
+			return false, fmt.Errorf("re-reading AgentRequest for Result: %w", err)
 		}
+		agentReq.Status.Result = fresh.Status.Result
 		fromPhase := agentReq.Status.Phase
 		base := agentReq.DeepCopy()
 		agentReq.Status.Phase = governancev1alpha1.PhaseCompleted

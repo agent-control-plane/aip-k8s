@@ -364,6 +364,7 @@ func (s *Server) pollAgentRequestPhase(
 					"denial":                   current.Status.Denial,
 					"conditions":               current.Status.Conditions,
 					"controlPlaneVerification": current.Status.ControlPlaneVerification,
+					"result":                   current.Status.Result,
 				})
 				return
 			}
@@ -534,6 +535,27 @@ func (s *Server) handlePutAgentRequestResult(w http.ResponseWriter, r *http.Requ
 		ns = defaultNamespace
 	}
 
+	var req v1alpha1.AgentRequest
+	if err := s.apiReader.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &req); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "AgentRequest not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	// Only the creating agent can record a result.
+	if req.Spec.AgentIdentity != sub {
+		writeError(w, http.StatusForbidden, "caller is not the creating agent")
+		return
+	}
+	if req.Status.Phase != v1alpha1.PhaseExecuting {
+		writeError(w, http.StatusConflict,
+			fmt.Sprintf("request is in phase %q — can only record result in Executing", req.Status.Phase))
+		return
+	}
+
 	var body struct {
 		URL     string `json:"url"`
 		Summary string `json:"summary"`
@@ -558,10 +580,6 @@ func (s *Server) handlePutAgentRequestResult(w http.ResponseWriter, r *http.Requ
 			return err
 		}
 
-		if current.Status.Phase != v1alpha1.PhaseExecuting {
-			return fmt.Errorf("request is in phase %q — can only record result in Executing", current.Status.Phase)
-		}
-
 		base := current.DeepCopy()
 		current.Status.Result = &v1alpha1.AgentRequestResult{
 			URL:     body.URL,
@@ -572,7 +590,8 @@ func (s *Server) handlePutAgentRequestResult(w http.ResponseWriter, r *http.Requ
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "AgentRequest not found")
 		} else {
-			writeError(w, http.StatusConflict, err.Error())
+			writeError(w, http.StatusInternalServerError,
+				fmt.Sprintf("failed to record result: %v", err))
 		}
 		return
 	}

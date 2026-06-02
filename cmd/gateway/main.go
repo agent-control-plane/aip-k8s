@@ -133,6 +133,14 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 		log.Fatalf("Manager cache failed to sync")
 	}
 
+	// Create a direct (non-cached) client for bypassing the informer cache.
+	// The informer-backed client (k8sClient) can return stale reads; use
+	// directClient for operations that need the latest API server state.
+	directClient, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		log.Fatalf("Failed to create direct API client: %v", err)
+	}
+
 	rc := newRoleConfig(*agentSubjects, *reviewerSubjects, *adminSubjects, *agentGroups, *reviewerGroups, *adminGroups)
 	authRequired := *oidcIssuerURL != "" || *agentSubjects != "" || *reviewerSubjects != "" || *adminSubjects != "" ||
 		*agentGroups != "" || *reviewerGroups != "" || *adminGroups != ""

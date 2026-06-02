@@ -270,6 +270,10 @@ function applySearchFilter() {
         const stillExists = state.requests.find(r => r.metadata.name === state.selectedRequest.metadata.name);
         if (!stillExists) {
             selectRequest(state.requests[0]);
+        } else {
+            // Refresh the selected request data and audit timeline on each poll cycle.
+            state.selectedRequest = stillExists;
+            fetchAuditRecords(stillExists.metadata.name);
         }
     }
 }
