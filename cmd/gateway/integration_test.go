@@ -77,6 +77,7 @@ func TestGatewayIntegration(t *testing.T) {
 	runTrustGateTests(t, mgrClient, directClient, ctx)
 	runTrustProfileReadTests(t, mgrClient, directClient, ctx)
 	runAgentGraduationPolicyTests(t, mgrClient, directClient, ctx)
+	runResultTests(t, mgrClient, directClient, ctx)
 	runSSEStreamingTests(t, mgrClient, directClient, watchClient, ctx)
 }
 

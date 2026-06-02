@@ -565,7 +565,7 @@ func (s *Server) handlePutAgentRequestResult(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if body.URL == "" || !strings.HasPrefix(body.URL, "https://") {
+	if body.URL == "" || !strings.HasPrefix(body.URL, "https://") || len(body.URL) < 9 {
 		writeError(w, http.StatusBadRequest, "url must be a valid https URL")
 		return
 	}
