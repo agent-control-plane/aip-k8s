@@ -365,6 +365,64 @@ var _ = Describe("AgentRequest Controller", func() {
 				"controller must not renew the lease; RenewTime should remain T0, not advance to T0+1min")
 		})
 
+		It("fails a dead agent's Executing request once the lease expires (#228 dead-agent detection, full Reconcile path)", func() {
+			// Integration test: drive the full Reconcile entry point (not reconcileExecuting
+			// directly) to verify that an Executing request whose lease has already expired
+			// transitions to PhaseFailed without any wall-clock wait.
+			//
+			// The lease is constructed with RenewTime in the past so that even a real clock
+			// sees it as expired: RenewTime = now - (testOpsLockDuration + 1min).
+
+			eval, err := evaluation.NewEvaluator()
+			Expect(err).NotTo(HaveOccurred())
+
+			controllerReconciler := &AgentRequestReconciler{
+				Client:          k8sClient,
+				APIReader:       k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				OpsLockDuration: testOpsLockDuration,
+				ApprovedTimeout: 5 * time.Minute,
+				Evaluator:       eval,
+				Clock:           func() time.Time { return time.Now() },
+			}
+
+			// Force the AgentRequest (shared by BeforeEach) into Executing phase.
+			var fetchedReq governancev1alpha1.AgentRequest
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &fetchedReq)).To(Succeed())
+			fetchedReq.Status.Phase = governancev1alpha1.PhaseExecuting
+			Expect(k8sClient.Status().Update(ctx, &fetchedReq)).To(Succeed())
+
+			// Create a pre-expired OpsLock lease.
+			// RenewTime + LeaseDuration is in the past, so a real now() sees it as expired.
+			expiredRenewTime := time.Now().Add(-(testOpsLockDuration + time.Minute))
+			leaseName := generateLeaseName(fetchedReq.Spec.Target.URI)
+			holderIdentity := fetchedReq.Spec.AgentIdentity + "/" + fetchedReq.Name
+			lease := &coordinationv1.Lease{
+				ObjectMeta: metav1.ObjectMeta{Name: leaseName, Namespace: "default"},
+				Spec: coordinationv1.LeaseSpec{
+					HolderIdentity:       ptr.To(holderIdentity),
+					LeaseDurationSeconds: ptr.To(int32(testOpsLockDuration / time.Second)),
+					AcquireTime:          &metav1.MicroTime{Time: expiredRenewTime},
+					RenewTime:            &metav1.MicroTime{Time: expiredRenewTime},
+				},
+			}
+			Expect(k8sClient.Create(ctx, lease)).To(Succeed())
+
+			// Drive the full Reconcile entry point — this is the integration-level path.
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Re-Get to observe the server-side patch applied by Reconcile.
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &fetchedReq)).To(Succeed())
+			Expect(fetchedReq.Status.Phase).To(Equal(governancev1alpha1.PhaseFailed))
+
+			// Both audit events must be emitted.
+			Eventually(func() bool {
+				return hasAuditRecord(ctx, resourceName, governancev1alpha1.AuditEventHeartbeatTimeout) &&
+					hasAuditRecord(ctx, resourceName, governancev1alpha1.AuditEventRequestFailed)
+			}, time.Second*5, time.Millisecond*500).Should(BeTrue())
+		})
+
 		It("should time out in Approved phase using the configured ApprovedTimeout, not the default", func() {
 			const customTimeout = 2 * time.Minute
 
