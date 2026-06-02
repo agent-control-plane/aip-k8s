@@ -576,7 +576,12 @@ func (s *Server) handlePutAgentRequestResult(w http.ResponseWriter, r *http.Requ
 			return err
 		}
 
-		if current.Status.Phase != v1alpha1.PhaseExecuting {
+		// Allow recording a result on Executing OR Completed. Accepting Completed
+		// closes the ordering race: if the agent calls /completed before /result
+		// (accidentally or under a crash-restart), the result is not silently lost.
+		// All other phases are terminal-without-result or pre-execution — reject them.
+		if current.Status.Phase != v1alpha1.PhaseExecuting &&
+			current.Status.Phase != v1alpha1.PhaseCompleted {
 			wrongPhase = current.Status.Phase
 			return fmt.Errorf("wrong phase") // not a 409 conflict; RetryOnConflict will not retry this
 		}
@@ -590,7 +595,7 @@ func (s *Server) handlePutAgentRequestResult(w http.ResponseWriter, r *http.Requ
 	}); err != nil {
 		if wrongPhase != "" {
 			writeError(w, http.StatusConflict,
-				fmt.Sprintf("request is in phase %q — can only record result in Executing", wrongPhase))
+				fmt.Sprintf("request is in phase %q — result can only be recorded in Executing or Completed", wrongPhase))
 			return
 		}
 		if apierrors.IsNotFound(err) {

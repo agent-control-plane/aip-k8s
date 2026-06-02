@@ -363,11 +363,13 @@ func runResultTests(t *testing.T, mgrClient, directClient client.Client, ctx con
 		cleanup(ctx, gm, directClient)
 	})
 
-	t.Run("PUT /result on a controller-completed request returns 409 (stale cache guard)", func(t *testing.T) {
+	// Issue #223: if /completed fires before /result the URL must not be silently
+	// lost. Accepting PhaseCompleted in PUT /result closes this ordering race.
+	t.Run("PUT /result after POST /completed succeeds -- late result recording", func(t *testing.T) {
 		gm := gomega.NewWithT(t)
 		s := &Server{
-			client:       mgrClient,    // cached (informer)
-			apiReader:    directClient, // direct (bypasses cache)
+			client:       mgrClient,
+			apiReader:    directClient, // direct — bypasses cache for phase check
 			dedupWindow:  0,
 			waitTimeout:  serverWaitTimeout,
 			roles:        newRoleConfig("", "", "", "", "", ""),
@@ -439,18 +441,20 @@ func runResultTests(t *testing.T, mgrClient, directClient client.Client, ctx con
 			return ar.Status.Phase
 		}, eventuallyTimeout, eventuallyInterval).Should(gomega.Equal(v1alpha1.PhaseCompleted))
 
-		// PUT /result should be rejected -- direct reader sees PhaseCompleted
-		resultBody := `{"url":"https://github.com/org/repo/pull/1","summary":"too late"}`
+		// PUT /result on the now-Completed request must succeed -- agent called
+		// /completed before /result and the URL must not be silently lost.
+		resultBody := `{"url":"https://github.com/org/repo/pull/1","summary":"late result"}`
 		putReq := httptest.NewRequest("PUT", "/agent-requests/"+reqName+"/result", bytes.NewBufferString(resultBody))
 		putReq.SetPathValue("name", reqName)
 		putReq = putReq.WithContext(withCallerSub(putReq.Context(), "cache-guard-agent"))
 		putRR := httptest.NewRecorder()
 		s.handlePutAgentRequestResult(putRR, putReq)
-		gm.Expect(putRR.Code).To(gomega.Equal(http.StatusConflict))
+		gm.Expect(putRR.Code).To(gomega.Equal(http.StatusOK))
 
 		var ar v1alpha1.AgentRequest
 		gm.Expect(directClient.Get(ctx, key, &ar)).To(gomega.Succeed())
-		gm.Expect(ar.Status.Result).To(gomega.BeNil())
+		gm.Expect(ar.Status.Result).NotTo(gomega.BeNil())
+		gm.Expect(ar.Status.Result.URL).To(gomega.Equal("https://github.com/org/repo/pull/1"))
 
 		cleanup(ctx, gm, directClient)
 	})
