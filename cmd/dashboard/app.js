@@ -270,6 +270,10 @@ function applySearchFilter() {
         const stillExists = state.requests.find(r => r.metadata.name === state.selectedRequest.metadata.name);
         if (!stillExists) {
             selectRequest(state.requests[0]);
+        } else {
+            // Refresh the selected request data and audit timeline on each poll cycle.
+            state.selectedRequest = stillExists;
+            fetchAuditRecords(stillExists.metadata.name);
         }
     }
 }
@@ -691,6 +695,10 @@ function renderDetails() {
                 </div>
             </div>
             <span class="badge badge-${escapeHtml(phase.toLowerCase())}" style="font-size:1rem;padding:0.5rem 1rem;">${escapeHtml(phase)}</span>
+            ${req.status.result && req.status.result.url ? `
+            <a href="${escapeHtml(req.status.result.url)}" target="_blank" rel="noopener noreferrer" style="margin-left:0.5rem;text-decoration:none;font-size:0.9rem;">
+                &#x1F517; ${escapeHtml(req.status.result.summary || 'View result')}
+            </a>` : ''}
         </div>
 
         ${grDeletedBanner}
@@ -818,6 +826,11 @@ function renderDetails() {
                         ` : ''}
                         ${verdictLabel}
                         ${policyResults}
+                        ${log.spec.details && log.spec.details.url ? `
+                            <a href="${escapeHtml(log.spec.details.url)}" target="_blank" rel="noopener noreferrer" style="margin-left:0.5rem;text-decoration:none;font-size:0.82rem;color:var(--accent-color);">
+                                &#x1F517; ${escapeHtml(log.spec.details.summary || 'View result')}
+                            </a>
+                        ` : ''}
                     </div>`;
                 }).join('')}
         </div>`;

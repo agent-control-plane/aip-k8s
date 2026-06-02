@@ -277,6 +277,21 @@ type AgentRequestStatus struct {
 	// Set by the gateway at admission time. Mirrors the deprecated spec.governedResourceRef.
 	// +optional
 	GovernedResourceRef *GovernedResourceRef `json:"governedResourceRef,omitempty"`
+
+	// Result is populated by the gateway when the agent reports an execution artifact.
+	// +optional
+	Result *AgentRequestResult `json:"result,omitempty"`
+}
+
+// AgentRequestResult records an execution artifact reported by the agent after
+// completing a tool call.
+type AgentRequestResult struct {
+	// URL is the canonical link to the execution artifact (e.g. a GitHub PR URL).
+	// +kubebuilder:validation:Pattern=`^https://.+`
+	URL string `json:"url"`
+	// Summary is a human-readable label for the result (e.g. PR title).
+	// +kubebuilder:validation:MaxLength=512
+	Summary string `json:"summary"`
 }
 
 // ControlPlaneVerification captures live cluster state that the AIP control

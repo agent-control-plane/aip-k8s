@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -364,6 +365,7 @@ func (s *Server) pollAgentRequestPhase(
 					"denial":                   current.Status.Denial,
 					"conditions":               current.Status.Conditions,
 					"controlPlaneVerification": current.Status.ControlPlaneVerification,
+					"result":                   current.Status.Result,
 				})
 				return
 			}
@@ -424,6 +426,7 @@ func (s *Server) handleGetAgentRequest(w http.ResponseWriter, r *http.Request) {
 		"conditions":               current.Status.Conditions,
 		"controlPlaneVerification": current.Status.ControlPlaneVerification,
 		"auditEvents":              auditEvents,
+		"result":                   current.Status.Result,
 	})
 }
 
@@ -514,6 +517,100 @@ func (s *Server) handleCompletedAgentRequest(w http.ResponseWriter, r *http.Requ
 		"ActionSuccess", "Agent successfully completed the action")
 }
 
+//nolint:dupl // structurally similar to handleCompletedAgentRequest
+func (s *Server) handlePutAgentRequestResult(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
+
+	sub := callerSubFromCtx(r.Context())
+	if s.authRequired && sub == "" {
+		writeError(w, http.StatusUnauthorized, "caller identity required")
+		return
+	}
+	if !requireRole(s.roles, roleAgent, sub, callerGroupsFromCtx(r.Context()), w) {
+		return
+	}
+
+	// Validate input before any K8s API call so malformed requests are rejected cheaply.
+	var body struct {
+		URL     string `json:"url"`
+		Summary string `json:"summary"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if body.URL == "" || !strings.HasPrefix(body.URL, "https://") || len(body.URL) < 9 {
+		writeError(w, http.StatusBadRequest, "url must be a valid https URL")
+		return
+	}
+	if utf8.RuneCountInString(body.Summary) > 512 {
+		writeError(w, http.StatusBadRequest, "summary must be at most 512 characters")
+		return
+	}
+
+	name := r.PathValue("name")
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		ns = defaultNamespace
+	}
+
+	var req v1alpha1.AgentRequest
+	if err := s.apiReader.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &req); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "AgentRequest not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	// Only the creating agent can record a result.
+	if s.authRequired && req.Spec.AgentIdentity != sub {
+		writeError(w, http.StatusForbidden, "forbidden: only the creating agent may record a result")
+		return
+	}
+
+	var wrongPhase string
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current v1alpha1.AgentRequest
+		if err := s.apiReader.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &current); err != nil {
+			return err
+		}
+
+		// Allow recording a result on Executing OR Completed. Accepting Completed
+		// closes the ordering race: if the agent calls /completed before /result
+		// (accidentally or under a crash-restart), the result is not silently lost.
+		// All other phases are terminal-without-result or pre-execution — reject them.
+		if current.Status.Phase != v1alpha1.PhaseExecuting &&
+			current.Status.Phase != v1alpha1.PhaseCompleted {
+			wrongPhase = current.Status.Phase
+			return fmt.Errorf("wrong phase") // not a 409 conflict; RetryOnConflict will not retry this
+		}
+
+		base := current.DeepCopy()
+		current.Status.Result = &v1alpha1.AgentRequestResult{
+			URL:     body.URL,
+			Summary: body.Summary,
+		}
+		return s.client.Status().Patch(r.Context(), &current, client.MergeFrom(base))
+	}); err != nil {
+		if wrongPhase != "" {
+			writeError(w, http.StatusConflict,
+				fmt.Sprintf("request is in phase %q — result can only be recorded in Executing or Completed", wrongPhase))
+			return
+		}
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "AgentRequest not found")
+		} else {
+			writeError(w, http.StatusInternalServerError,
+				fmt.Sprintf("failed to record result: %v", err))
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "result recorded"})
+}
+
 func (s *Server) patchAgentRequestCondition(
 	w http.ResponseWriter, r *http.Request, conditionType, reason, message string,
 ) {
@@ -529,6 +626,7 @@ func (s *Server) patchAgentRequestCondition(
 			return err
 		}
 
+		base := current.DeepCopy()
 		meta.SetStatusCondition(&current.Status.Conditions, metav1.Condition{
 			Type:    conditionType,
 			Status:  metav1.ConditionTrue,
@@ -536,7 +634,7 @@ func (s *Server) patchAgentRequestCondition(
 			Message: message,
 		})
 
-		return s.client.Status().Update(r.Context(), &current)
+		return s.client.Status().Patch(r.Context(), &current, client.MergeFrom(base))
 	}); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "AgentRequest not found")

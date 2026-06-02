@@ -428,6 +428,24 @@ spec:
                   ProviderContext holds live resource state fetched by the context fetcher
                   named in the matching GovernedResource. Schema is fetcher-specific.
                 x-kubernetes-preserve-unknown-fields: true
+              result:
+                description: Result is populated by the gateway when the agent reports
+                  an execution artifact.
+                properties:
+                  summary:
+                    description: Summary is a human-readable label for the result
+                      (e.g. PR title).
+                    maxLength: 512
+                    type: string
+                  url:
+                    description: URL is the canonical link to the execution artifact
+                      (e.g. a GitHub PR URL).
+                    pattern: ^https://.+
+                    type: string
+                required:
+                - summary
+                - url
+                type: object
               verdict:
                 description: Verdict is set by a human reviewer on AwaitingVerdict
                   requests.

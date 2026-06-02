@@ -406,3 +406,86 @@ func TestApproveWithoutJWTManager(t *testing.T) {
 	g.Expect(resp).NotTo(gomega.HaveKey("token"))
 	g.Expect(resp).NotTo(gomega.HaveKey("token_expires_at"))
 }
+
+func TestPutAgentRequestResult(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	ar := pendingAgentRequest("req-result", "default", "agent-sub")
+	ar.Status.Phase = v1alpha1.PhaseExecuting
+	s := newTestServer(ar)
+	if err := s.client.Status().Update(context.Background(), ar); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// 1. PUT result succeeds.
+	body := `{"url":"https://github.com/example/pr/42","summary":"Fixed the bug"}`
+	req := httptest.NewRequest(http.MethodPut, "/agent-requests/req-result/result", strings.NewReader(body))
+	req.SetPathValue("name", "req-result")
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(withCallerSub(req.Context(), "agent-sub"))
+	w := httptest.NewRecorder()
+	s.handlePutAgentRequestResult(w, req)
+	g.Expect(w.Code).To(gomega.Equal(http.StatusOK))
+
+	// 2. Verify result on GET.
+	req = httptest.NewRequest(http.MethodGet, "/agent-requests/req-result", nil)
+	req.SetPathValue("name", "req-result")
+	req = req.WithContext(withCallerSub(req.Context(), "agent-sub"))
+	w = httptest.NewRecorder()
+	s.handleGetAgentRequest(w, req)
+	g.Expect(w.Code).To(gomega.Equal(http.StatusOK))
+
+	var resp map[string]any
+	g.Expect(json.NewDecoder(w.Body).Decode(&resp)).To(gomega.Succeed())
+	g.Expect(resp).To(gomega.HaveKey("result"))
+	result, ok := resp["result"].(map[string]any)
+	g.Expect(ok).To(gomega.BeTrue())
+	g.Expect(result["url"]).To(gomega.Equal("https://github.com/example/pr/42"))
+	g.Expect(result["summary"]).To(gomega.Equal("Fixed the bug"))
+
+	// 3. POST /completed preserves result.
+	req = httptest.NewRequest(http.MethodPost, "/agent-requests/req-result/completed", nil)
+	req.SetPathValue("name", "req-result")
+	req = req.WithContext(withCallerSub(req.Context(), "agent-sub"))
+	w = httptest.NewRecorder()
+	s.handleCompletedAgentRequest(w, req)
+	g.Expect(w.Code).To(gomega.Equal(http.StatusOK))
+
+	var completed v1alpha1.AgentRequest
+	nn := client.ObjectKey{Name: "req-result", Namespace: "default"}
+	g.Expect(s.client.Get(context.Background(), nn, &completed)).To(gomega.Succeed())
+	g.Expect(completed.Status.Result).NotTo(gomega.BeNil())
+	g.Expect(completed.Status.Result.URL).To(gomega.Equal("https://github.com/example/pr/42"))
+
+	// 4. PUT result on non-Executing phase returns 409.
+	// Use an Approved request (not Executing) to test phase rejection.
+	ar3 := pendingAgentRequest("req-result-not-exe", "default", "agent-sub")
+	ar3.Status.Phase = v1alpha1.PhaseApproved
+	s3 := newTestServer(ar3)
+	if err := s3.client.Status().Update(context.Background(), ar3); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPut, "/agent-requests/req-result-not-exe/result", strings.NewReader(body))
+	req.SetPathValue("name", "req-result-not-exe")
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(withCallerSub(req.Context(), "agent-sub"))
+	w = httptest.NewRecorder()
+	s3.handlePutAgentRequestResult(w, req)
+	g.Expect(w.Code).To(gomega.Equal(http.StatusConflict))
+
+	// 5. Invalid URL returns 400.
+	ar2 := pendingAgentRequest("req-result-bad", "default", "agent-sub")
+	ar2.Status.Phase = v1alpha1.PhaseExecuting
+	s2 := newTestServer(ar2)
+	if err := s2.client.Status().Update(context.Background(), ar2); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	body = `{"url":"not-a-url","summary":"bad"}`
+	req = httptest.NewRequest(http.MethodPut, "/agent-requests/req-result-bad/result", strings.NewReader(body))
+	req.SetPathValue("name", "req-result-bad")
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(withCallerSub(req.Context(), "agent-sub"))
+	w = httptest.NewRecorder()
+	s2.handlePutAgentRequestResult(w, req)
+	g.Expect(w.Code).To(gomega.Equal(http.StatusBadRequest))
+}

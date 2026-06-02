@@ -65,6 +65,7 @@ func agentRequestPayload(ar *v1alpha1.AgentRequest, labels map[string]string) ma
 		"denial":                   ar.Status.Denial,
 		"conditions":               ar.Status.Conditions,
 		"controlPlaneVerification": ar.Status.ControlPlaneVerification,
+		"result":                   ar.Status.Result,
 	}
 }
 
