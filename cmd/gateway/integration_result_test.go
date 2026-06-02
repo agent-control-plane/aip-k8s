@@ -148,12 +148,14 @@ func runResultTests(t *testing.T, mgrClient, directClient client.Client, ctx con
 
 	t.Run("PUT /result by non-owner agent returns 403", func(t *testing.T) {
 		gm := gomega.NewWithT(t)
+		// Both testAgentSub and "rogue-agent" have the agent role, so requireRole
+		// passes for both. Only the ownership check distinguishes them.
 		s := &Server{
 			client:       directClient,
 			apiReader:    directClient,
 			dedupWindow:  0,
 			waitTimeout:  serverWaitTimeout,
-			roles:        newRoleConfig(testAgentSub, testReviewerSub, "", "", "", ""),
+			roles:        newRoleConfig(testAgentSub+",rogue-agent", testReviewerSub, "", "", "", ""),
 			authRequired: true,
 		}
 
@@ -365,7 +367,7 @@ func runResultTests(t *testing.T, mgrClient, directClient client.Client, ctx con
 		gm := gomega.NewWithT(t)
 		s := &Server{
 			client:       mgrClient,    // cached (informer)
-			apiReader:    directClient,  // direct (bypasses cache)
+			apiReader:    directClient, // direct (bypasses cache)
 			dedupWindow:  0,
 			waitTimeout:  serverWaitTimeout,
 			roles:        newRoleConfig("", "", "", "", "", ""),

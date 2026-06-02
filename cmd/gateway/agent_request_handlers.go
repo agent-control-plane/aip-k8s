@@ -546,13 +546,8 @@ func (s *Server) handlePutAgentRequestResult(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Only the creating agent can record a result.
-	if req.Spec.AgentIdentity != sub {
-		writeError(w, http.StatusForbidden, "caller is not the creating agent")
-		return
-	}
-	if req.Status.Phase != v1alpha1.PhaseExecuting {
-		writeError(w, http.StatusConflict,
-			fmt.Sprintf("request is in phase %q — can only record result in Executing", req.Status.Phase))
+	if s.authRequired && req.Spec.AgentIdentity != sub {
+		writeError(w, http.StatusForbidden, "forbidden: only the creating agent may record a result")
 		return
 	}
 
@@ -574,10 +569,16 @@ func (s *Server) handlePutAgentRequestResult(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	var wrongPhase string
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var current v1alpha1.AgentRequest
 		if err := s.apiReader.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &current); err != nil {
 			return err
+		}
+
+		if current.Status.Phase != v1alpha1.PhaseExecuting {
+			wrongPhase = current.Status.Phase
+			return fmt.Errorf("wrong phase") // not a 409 conflict; RetryOnConflict will not retry this
 		}
 
 		base := current.DeepCopy()
@@ -587,6 +588,11 @@ func (s *Server) handlePutAgentRequestResult(w http.ResponseWriter, r *http.Requ
 		}
 		return s.client.Status().Patch(r.Context(), &current, client.MergeFrom(base))
 	}); err != nil {
+		if wrongPhase != "" {
+			writeError(w, http.StatusConflict,
+				fmt.Sprintf("request is in phase %q — can only record result in Executing", wrongPhase))
+			return
+		}
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "AgentRequest not found")
 		} else {
