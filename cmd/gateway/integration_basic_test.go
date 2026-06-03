@@ -59,43 +59,20 @@ func runRequestLifecycleTests(t *testing.T, mgrClient, directClient client.Clien
 		cleanup(ctx, gm, directClient)
 	})
 
-	t.Run("Idempotent duplicate - returns 200 immediately", func(t *testing.T) {
+	t.Run("Idempotent duplicate - deterministic name - returns 200 immediately", func(t *testing.T) {
 		gm := gomega.NewWithT(t)
 		s := &Server{
 			client:       mgrClient,
 			apiReader:    mgrClient,
 			dedupWindow:  24 * time.Hour,
-			waitTimeout:  serverWaitTimeout,
+			waitTimeout:  200 * time.Millisecond, // fail fast — no controller in envtest to transition phases
 			roles:        newRoleConfig("", "", "", "", "", ""),
 			authRequired: false,
 		}
 
 		const targetURI = "k8s://prod/default/deployment/dup-test"
 		policy := createApprovalPolicy(ctx, gm, directClient, "dup-test-policy", targetURI)
-
-		ar := &v1alpha1.AgentRequest{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "dup-test",
-				Namespace: testDefaultNS,
-				Labels:    map[string]string{"aip.io/agentIdentity": "agent-dup"},
-			},
-			Spec: v1alpha1.AgentRequestSpec{
-				AgentIdentity: "agent-dup",
-				Action:        "restart",
-				Target:        v1alpha1.Target{URI: targetURI},
-				Reason:        "test",
-			},
-		}
-		gm.Expect(directClient.Create(ctx, ar)).To(gomega.Succeed())
-
-		gm.Eventually(func() string {
-			var current v1alpha1.AgentRequest
-			key := types.NamespacedName{Name: "dup-test", Namespace: testDefaultNS}
-			if err := mgrClient.Get(ctx, key, &current); err != nil {
-				return ""
-			}
-			return current.Status.Phase
-		}, eventuallyTimeout).Should(gomega.Equal(v1alpha1.PhasePending))
+		defer func() { gm.Expect(directClient.Delete(ctx, policy)).To(gomega.Succeed()) }()
 
 		body := createAgentRequestBody{
 			AgentIdentity: "agent-dup",
@@ -104,56 +81,28 @@ func runRequestLifecycleTests(t *testing.T, mgrClient, directClient client.Clien
 			Reason:        "test",
 			Namespace:     testDefaultNS,
 		}
-		jsonBody, err := json.Marshal(body)
-		gm.Expect(err).NotTo(gomega.HaveOccurred(), "body is a known serializable struct")
+		jsonBody, _ := json.Marshal(body)
 
+		// First call: deterministic name, no controller to advance → 504
 		req := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody))
 		rr := httptest.NewRecorder()
-
-		s.handleCreateAgentRequest(rr, req)
-		gm.Expect(rr.Code).To(gomega.Equal(http.StatusOK))
-
-		var respBody map[string]any
-		gm.Expect(json.Unmarshal(rr.Body.Bytes(), &respBody)).To(gomega.Succeed())
-		gm.Expect(respBody["phase"]).To(gomega.Equal(string(v1alpha1.PhasePending)))
-
-		gm.Expect(directClient.Delete(ctx, policy)).To(gomega.Succeed())
-		cleanup(ctx, gm, directClient)
-	})
-
-	t.Run("Dedup window expired - new request allowed", func(t *testing.T) {
-		gm := gomega.NewWithT(t)
-		s := &Server{
-			client:       mgrClient,
-			apiReader:    mgrClient,
-			dedupWindow:  100 * time.Millisecond,
-			waitTimeout:  1 * time.Second,
-			roles:        newRoleConfig("", "", "", "", "", ""),
-			authRequired: false,
-		}
-
-		body := createAgentRequestBody{
-			AgentIdentity: "agent-old",
-			Action:        "restart",
-			TargetURI:     "k8s://prod/default/deployment/dedup-expired",
-			Reason:        "test",
-			Namespace:     testDefaultNS,
-		}
-		jsonBody, err := json.Marshal(body)
-		gm.Expect(err).NotTo(gomega.HaveOccurred(), "body is a known serializable struct")
-
-		req := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody))
-		rr := httptest.NewRecorder()
-
 		s.handleCreateAgentRequest(rr, req)
 		gm.Expect(rr.Code).To(gomega.Equal(http.StatusGatewayTimeout))
 
-		time.Sleep(200 * time.Millisecond)
+		// Extract the name from the first request's response.
+		// The 504 body from pollAgentRequestPhase does not include name, so
+		// compute it deterministically to locate the created request.
+		dedupKey := computeDedupKey(body.AgentIdentity, body.Action, body.TargetURI, "", "")
+		firstName := deterministicRequestName(body.AgentIdentity, dedupKey, s.dedupWindow, time.Now())
 
-		rr2 := httptest.NewRecorder()
+		// Second call: same body, same dedupWindow → AlreadyExists → HTTP 200
 		req2 := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody))
+		rr2 := httptest.NewRecorder()
 		s.handleCreateAgentRequest(rr2, req2)
-		gm.Expect(rr2.Code).To(gomega.Equal(http.StatusGatewayTimeout))
+		gm.Expect(rr2.Code).To(gomega.Equal(http.StatusOK))
+		var secondResp map[string]any
+		gm.Expect(json.Unmarshal(rr2.Body.Bytes(), &secondResp)).To(gomega.Succeed())
+		gm.Expect(secondResp["name"]).To(gomega.Equal(firstName))
 
 		cleanup(ctx, gm, directClient)
 	})
@@ -184,6 +133,66 @@ func runRequestLifecycleTests(t *testing.T, mgrClient, directClient client.Clien
 
 		s.handleCreateAgentRequest(rr, req)
 		gm.Expect(rr.Code).To(gomega.Equal(http.StatusGatewayTimeout))
+
+		cleanup(ctx, gm, directClient)
+	})
+
+	t.Run("Different classification on same resource is not deduped", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
+		s := &Server{
+			client:       mgrClient,
+			apiReader:    mgrClient,
+			dedupWindow:  24 * time.Hour,
+			waitTimeout:  200 * time.Millisecond,
+			roles:        newRoleConfig("", "", "", "", "", ""),
+			authRequired: false,
+		}
+
+		const targetURI = "k8s://prod/default/deployment/class-dedup"
+		policy := createApprovalPolicy(ctx, gm, directClient, "class-dedup-policy", targetURI)
+		defer func() { gm.Expect(directClient.Delete(ctx, policy)).To(gomega.Succeed()) }()
+
+		now := time.Now()
+		// Simulate what the handler does internally — compute dedupKey from normalized classification
+		norm1 := normalizeClassification("nodepool/at-capacity")
+		dedup1 := computeDedupKey("class-agent", "scale", targetURI, norm1, "")
+		name1 := deterministicRequestName("class-agent", dedup1, s.dedupWindow, now)
+		norm2 := normalizeClassification("nodepool/affinity-mismatch")
+		dedup2 := computeDedupKey("class-agent", "scale", targetURI, norm2, "")
+		name2 := deterministicRequestName("class-agent", dedup2, s.dedupWindow, now)
+
+		// Different classification → different dedup keys → different names
+		gm.Expect(dedup1).NotTo(gomega.Equal(dedup2))
+		gm.Expect(name1).NotTo(gomega.Equal(name2))
+
+		cleanup(ctx, gm, directClient)
+	})
+
+	t.Run("Explicit dedupKey overrides computed key", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
+		s := &Server{
+			client:       mgrClient,
+			apiReader:    mgrClient,
+			dedupWindow:  24 * time.Hour,
+			waitTimeout:  200 * time.Millisecond,
+			roles:        newRoleConfig("", "", "", "", "", ""),
+			authRequired: false,
+		}
+
+		const targetURI = "k8s://prod/default/deployment/explicit-dedup"
+		policy := createApprovalPolicy(ctx, gm, directClient, "explicit-dedup-policy", targetURI)
+		defer func() { gm.Expect(directClient.Delete(ctx, policy)).To(gomega.Succeed()) }()
+
+		now := time.Now()
+		// Same explicit dedupKey, same window → same name
+		dedup := computeDedupKey("dedup-agent", "update", targetURI, "anything", "my-fixed-key")
+		nameA := deterministicRequestName("dedup-agent", dedup, s.dedupWindow, now)
+		nameB := deterministicRequestName("dedup-agent", dedup, s.dedupWindow, now.Add(1*time.Hour))
+		gm.Expect(nameA).To(gomega.Equal(nameB))
+
+		// Different window → different name (same explicit key)
+		nameC := deterministicRequestName("dedup-agent", dedup, s.dedupWindow, now.Add(48*time.Hour))
+		gm.Expect(nameC).NotTo(gomega.Equal(nameA))
 
 		cleanup(ctx, gm, directClient)
 	})

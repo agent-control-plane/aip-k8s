@@ -49,13 +49,6 @@ const (
 	verdictIncorrect = "incorrect"
 )
 
-var terminalPhases = map[string]bool{
-	v1alpha1.PhaseDenied:    true,
-	v1alpha1.PhaseCompleted: true,
-	v1alpha1.PhaseFailed:    true,
-	v1alpha1.PhaseExpired:   true,
-}
-
 type Server struct {
 	client                  client.Client
 	apiReader               client.Reader
@@ -97,6 +90,7 @@ type createAgentRequestBody struct {
 	Namespace      string                `json:"namespace"`
 	CorrelationID  string                `json:"correlationID,omitempty"`
 	Classification string                `json:"classification,omitempty"`
+	DedupKey       string                `json:"dedupKey,omitempty"`
 	CascadeModel   *cascadeModelBody     `json:"cascadeModel,omitempty"`
 	ReasoningTrace *reasoningTraceBody   `json:"reasoningTrace,omitempty"`
 	Parameters     json.RawMessage       `json:"parameters,omitempty"`

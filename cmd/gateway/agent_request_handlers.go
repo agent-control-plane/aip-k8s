@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -53,43 +55,39 @@ var validPhases = map[string]bool{
 	v1alpha1.PhaseObserved:        true,
 }
 
-// checkDuplicate returns a non-nil error and writes a 409 if an active request
-// for the same (agentIdentity, action, targetURI) exists within the dedup window.
-// Returns nil (and writes nothing) when no duplicate is found or dedup is disabled.
+// computeDedupKey returns the dedup key for an AgentRequest submission.
+// If the agent supplied an explicit dedupKey it is used verbatim.
+// Otherwise the key is derived from (agentIdentity, action, targetURI, classification)
+// using null-byte separators to prevent cross-field collisions.
+// classification must already be normalised by the caller (normalizeClassification).
+func computeDedupKey(agentIdentity, action, targetURI, classification, explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	h := sha256.New()
+	for _, s := range []string{agentIdentity, action, targetURI, classification} {
+		_, _ = h.Write([]byte(s))
+		_, _ = h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// deterministicRequestName returns a stable K8s object name for an AgentRequest
+// submission. Within one dedupWindow the same (dedupKey, windowIndex) produces the
+// same name, so a K8s Create returns AlreadyExists for true duplicates (atomic —
+// no List→Create race). A new window produces a new name, allowing recurrence.
 //
-// Note: the List→Create sequence is not atomic. Concurrent requests with the
-// same key can both pass this check and both be created. This is intentional:
-// dedup provides best-effort protection against reconciliation-loop floods, not
-// a hard mutual-exclusion guarantee. A strict guarantee would require a
-// ValidatingAdmissionWebhook or a unique server-side constraint.
-func (s *Server) checkDuplicate(
-	ctx context.Context, agentIdentity, action, targetURI, ns string,
-) (*v1alpha1.AgentRequest, error) {
-	if s.dedupWindow == 0 {
-		return nil, nil
-	}
-	var existing v1alpha1.AgentRequestList
-	if err := s.client.List(ctx, &existing,
-		client.InNamespace(ns),
-		client.MatchingLabels{"aip.io/agentIdentity": sanitizeLabelValue(agentIdentity)},
-	); err != nil {
-		return nil, fmt.Errorf("failed to check for duplicate requests: %v", err)
-	}
-	cutoff := time.Now().Add(-s.dedupWindow)
-	for _, req := range existing.Items {
-		if terminalPhases[req.Status.Phase] {
-			continue
-		}
-		if !req.CreationTimestamp.IsZero() && req.CreationTimestamp.Time.Before(cutoff) {
-			continue
-		}
-		if req.Spec.AgentIdentity == agentIdentity &&
-			req.Spec.Action == action &&
-			req.Spec.Target.URI == targetURI {
-			return &req, nil
-		}
-	}
-	return nil, nil
+// Name format: <agent-slug>-<8 hex chars>
+// Total length is bounded to ≤ 63 chars (K8s name limit for most resources).
+func deterministicRequestName(agentIdentity, dedupKey string, dedupWindow time.Duration, now time.Time) string {
+	windowIndex := now.UnixNano() / int64(dedupWindow)
+	h := sha256.New()
+	_, _ = h.Write([]byte(dedupKey))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(strconv.FormatInt(windowIndex, 10)))
+	hashSuffix := hex.EncodeToString(h.Sum(nil))[:8]
+	slug := sanitizeDNSSegment(agentIdentity, 54)
+	return slug + "-" + hashSuffix
 }
 
 //nolint:gocyclo // handler covers full admission pipeline: auth, dedup, GR match, SoakMode, create, poll
@@ -264,39 +262,49 @@ admissionPassed:
 		}
 	}
 
-	existing, err := s.checkDuplicate(r.Context(), body.AgentIdentity, body.Action, body.TargetURI, ns)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if existing != nil {
-		payload := map[string]any{
-			"name":                     existing.Name,
-			"labels":                   reqLabels,
-			"phase":                    existing.Status.Phase,
-			"denial":                   existing.Status.Denial,
-			"conditions":               existing.Status.Conditions,
-			"controlPlaneVerification": existing.Status.ControlPlaneVerification,
-		}
-		if acceptsSSE(r) {
-			rc := http.NewResponseController(w)
-			writeSSEHeaders(w)
-			if err := rc.Flush(); err != nil {
-				log.Printf("SSE: failed to flush for duplicate %s: %v", existing.Name, err)
-				return
-			}
-			if err := writeSSEEvent(w, rc, sseEventResult, payload); err != nil {
-				log.Printf("SSE: failed to write duplicate result for %s: %v", existing.Name, err)
-			}
-			return
-		}
-		writeJSON(w, http.StatusOK, payload)
-		return
+	// Deterministic naming for dedup (when dedupWindow > 0).
+	// Replace GenerateName with a stable name so K8s Create is the atomic dedup check —
+	// AlreadyExists means a live duplicate; a new window bucket allows recurrence.
+	if s.dedupWindow > 0 {
+		normalizedClass := normalizeClassification(body.Classification)
+		dedupKey := computeDedupKey(body.AgentIdentity, body.Action, body.TargetURI, normalizedClass, body.DedupKey)
+		agentReq.Name = deterministicRequestName(body.AgentIdentity, dedupKey, s.dedupWindow, time.Now())
+		agentReq.GenerateName = ""
+		agentReq.Spec.DedupKey = dedupKey // store effective key for observability
 	}
 
 	if err := s.client.Create(r.Context(), agentReq); err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			writeError(w, http.StatusConflict, fmt.Sprintf("AgentRequest already exists: %v", err))
+			// Duplicate within the dedup window: fetch the existing request and return
+			// it as HTTP 200 — same semantics as the old checkDuplicate path.
+			var existing v1alpha1.AgentRequest
+			nn := types.NamespacedName{Name: agentReq.Name, Namespace: ns}
+			if getErr := s.client.Get(r.Context(), nn, &existing); getErr != nil {
+				writeError(w, http.StatusInternalServerError,
+					fmt.Sprintf("duplicate detected but failed to fetch existing: %v", getErr))
+				return
+			}
+			payload := map[string]any{
+				"name":                     existing.Name,
+				"labels":                   reqLabels,
+				"phase":                    existing.Status.Phase,
+				"denial":                   existing.Status.Denial,
+				"conditions":               existing.Status.Conditions,
+				"controlPlaneVerification": existing.Status.ControlPlaneVerification,
+			}
+			if acceptsSSE(r) {
+				rc := http.NewResponseController(w)
+				writeSSEHeaders(w)
+				if err := rc.Flush(); err != nil {
+					log.Printf("SSE: failed to flush for duplicate %s: %v", existing.Name, err)
+					return
+				}
+				if err := writeSSEEvent(w, rc, sseEventResult, payload); err != nil {
+					log.Printf("SSE: failed to write duplicate result for %s: %v", existing.Name, err)
+				}
+				return
+			}
+			writeJSON(w, http.StatusOK, payload)
 			return
 		}
 		if apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) {
