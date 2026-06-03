@@ -49,6 +49,16 @@ const (
 	verdictIncorrect = "incorrect"
 )
 
+// terminalPhases is the set of AgentRequest phases from which no further
+// transitions occur. Used by the dedup path to avoid returning a completed
+// (or failed/denied/expired) request as an active duplicate.
+var terminalPhases = map[string]bool{
+	v1alpha1.PhaseDenied:    true,
+	v1alpha1.PhaseCompleted: true,
+	v1alpha1.PhaseFailed:    true,
+	v1alpha1.PhaseExpired:   true,
+}
+
 type Server struct {
 	client                  client.Client
 	apiReader               client.Reader
@@ -61,7 +71,10 @@ type Server struct {
 	jwtManager              *jwt.Manager
 	httpClient              *http.Client
 	mcpServers              []MCPServer
-	mcpCache                *mcpServerCache
+	// Clock is the time source used for dedup window bucketing.
+	// Defaults to time.Now when nil. Override in tests for determinism.
+	Clock    func() time.Time
+	mcpCache *mcpServerCache
 }
 
 type affectedTargetBody struct {

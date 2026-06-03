@@ -265,18 +265,27 @@ admissionPassed:
 	// Deterministic naming for dedup (when dedupWindow > 0).
 	// Replace GenerateName with a stable name so K8s Create is the atomic dedup check —
 	// AlreadyExists means a live duplicate; a new window bucket allows recurrence.
+	// agentReq.Spec.Classification is already normalised (set above); reuse it here
+	// rather than calling normalizeClassification a second time.
 	if s.dedupWindow > 0 {
-		normalizedClass := normalizeClassification(body.Classification)
-		dedupKey := computeDedupKey(body.AgentIdentity, body.Action, body.TargetURI, normalizedClass, body.DedupKey)
-		agentReq.Name = deterministicRequestName(body.AgentIdentity, dedupKey, s.dedupWindow, time.Now())
+		clk := s.Clock
+		if clk == nil {
+			clk = time.Now
+		}
+		dedupKey := computeDedupKey(body.AgentIdentity, body.Action, body.TargetURI, agentReq.Spec.Classification, body.DedupKey)
+		agentReq.Name = deterministicRequestName(body.AgentIdentity, dedupKey, s.dedupWindow, clk())
 		agentReq.GenerateName = ""
-		agentReq.Spec.DedupKey = dedupKey // store effective key for observability
+		// Only persist the dedupKey field when the agent explicitly provided one.
+		// When the key is gateway-computed, the field stays absent so operators
+		// can distinguish "agent-set" from "auto-computed" post-creation.
+		if body.DedupKey != "" {
+			agentReq.Spec.DedupKey = body.DedupKey
+		}
 	}
 
 	if err := s.client.Create(r.Context(), agentReq); err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			// Duplicate within the dedup window: fetch the existing request and return
-			// it as HTTP 200 — same semantics as the old checkDuplicate path.
+			// Duplicate within the dedup window: fetch the existing request.
 			var existing v1alpha1.AgentRequest
 			nn := types.NamespacedName{Name: agentReq.Name, Namespace: ns}
 			if getErr := s.client.Get(r.Context(), nn, &existing); getErr != nil {
@@ -284,6 +293,20 @@ admissionPassed:
 					fmt.Sprintf("duplicate detected but failed to fetch existing: %v", getErr))
 				return
 			}
+			// If the existing request is in a terminal phase (Completed/Failed/Denied/
+			// Expired) it is a stale object from a prior window that GC has not yet
+			// removed. Delete it so the next window produces a fresh request.
+			// Return 409 so the agent retries immediately — the stale object is now
+			// gone and the retry will succeed.
+			if terminalPhases[existing.Status.Phase] {
+				if delErr := s.client.Delete(r.Context(), &existing); delErr != nil && !apierrors.IsNotFound(delErr) {
+					log.Printf("dedup: failed to delete stale terminal request %s: %v", existing.Name, delErr)
+				}
+				writeError(w, http.StatusConflict,
+					"previous request for this key is terminal (Completed/Failed/Denied/Expired) — stale object deleted, please retry")
+				return
+			}
+			// Active duplicate: return the existing request as HTTP 200.
 			payload := map[string]any{
 				"name":                     existing.Name,
 				"labels":                   reqLabels,
