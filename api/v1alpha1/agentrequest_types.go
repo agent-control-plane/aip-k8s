@@ -48,6 +48,18 @@ type AgentRequestSpec struct {
 	// +optional
 	Classification string `json:"classification,omitempty"`
 
+	// DedupKey is an optional agent-supplied deduplication key. When set, the gateway
+	// uses this value verbatim to detect duplicates instead of computing a default from
+	// (agentIdentity, action, targetURI, classification). Use when the default key is
+	// too coarse — e.g. two distinct issues on the same file-based resource that share
+	// the same action and targetURI but represent different problems.
+	// When absent, the gateway computes the key automatically.
+	// Immutable after creation.
+	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="dedupKey is immutable after creation"
+	// +optional
+	DedupKey string `json:"dedupKey,omitempty"`
+
 	// Optional fields
 	IntentPlanRef *string `json:"intentPlanRef,omitempty"` // Reference to parent IntentPlan
 	// +kubebuilder:validation:Minimum=0

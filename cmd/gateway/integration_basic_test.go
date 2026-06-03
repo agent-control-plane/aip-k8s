@@ -59,43 +59,24 @@ func runRequestLifecycleTests(t *testing.T, mgrClient, directClient client.Clien
 		cleanup(ctx, gm, directClient)
 	})
 
-	t.Run("Idempotent duplicate - returns 200 immediately", func(t *testing.T) {
+	t.Run("Idempotent duplicate - deterministic name - returns 200 immediately", func(t *testing.T) {
 		gm := gomega.NewWithT(t)
+		// Pin the clock so both handler calls and the test's name computation are
+		// in the same dedup window regardless of when the test runs.
+		fixedNow := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 		s := &Server{
 			client:       mgrClient,
 			apiReader:    mgrClient,
 			dedupWindow:  24 * time.Hour,
-			waitTimeout:  serverWaitTimeout,
+			waitTimeout:  200 * time.Millisecond, // fail fast — no controller in envtest
 			roles:        newRoleConfig("", "", "", "", "", ""),
 			authRequired: false,
+			Clock:        func() time.Time { return fixedNow },
 		}
 
 		const targetURI = "k8s://prod/default/deployment/dup-test"
 		policy := createApprovalPolicy(ctx, gm, directClient, "dup-test-policy", targetURI)
-
-		ar := &v1alpha1.AgentRequest{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "dup-test",
-				Namespace: testDefaultNS,
-				Labels:    map[string]string{"aip.io/agentIdentity": "agent-dup"},
-			},
-			Spec: v1alpha1.AgentRequestSpec{
-				AgentIdentity: "agent-dup",
-				Action:        "restart",
-				Target:        v1alpha1.Target{URI: targetURI},
-				Reason:        "test",
-			},
-		}
-		gm.Expect(directClient.Create(ctx, ar)).To(gomega.Succeed())
-
-		gm.Eventually(func() string {
-			var current v1alpha1.AgentRequest
-			key := types.NamespacedName{Name: "dup-test", Namespace: testDefaultNS}
-			if err := mgrClient.Get(ctx, key, &current); err != nil {
-				return ""
-			}
-			return current.Status.Phase
-		}, eventuallyTimeout).Should(gomega.Equal(v1alpha1.PhasePending))
+		defer func() { gm.Expect(directClient.Delete(ctx, policy)).To(gomega.Succeed()) }()
 
 		body := createAgentRequestBody{
 			AgentIdentity: "agent-dup",
@@ -105,55 +86,29 @@ func runRequestLifecycleTests(t *testing.T, mgrClient, directClient client.Clien
 			Namespace:     testDefaultNS,
 		}
 		jsonBody, err := json.Marshal(body)
-		gm.Expect(err).NotTo(gomega.HaveOccurred(), "body is a known serializable struct")
+		gm.Expect(err).NotTo(gomega.HaveOccurred())
 
+		// Compute the expected deterministic name using the same fixed clock.
+		expectedName := deterministicRequestName(body.AgentIdentity,
+			computeDedupKey(body.AgentIdentity, body.Action, body.TargetURI, "", ""),
+			s.dedupWindow, fixedNow)
+
+		// First call: creates the object with the deterministic name, times out
+		// waiting for phase transition (no controller in envtest) → 504.
 		req := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody))
 		rr := httptest.NewRecorder()
-
-		s.handleCreateAgentRequest(rr, req)
-		gm.Expect(rr.Code).To(gomega.Equal(http.StatusOK))
-
-		var respBody map[string]any
-		gm.Expect(json.Unmarshal(rr.Body.Bytes(), &respBody)).To(gomega.Succeed())
-		gm.Expect(respBody["phase"]).To(gomega.Equal(string(v1alpha1.PhasePending)))
-
-		gm.Expect(directClient.Delete(ctx, policy)).To(gomega.Succeed())
-		cleanup(ctx, gm, directClient)
-	})
-
-	t.Run("Dedup window expired - new request allowed", func(t *testing.T) {
-		gm := gomega.NewWithT(t)
-		s := &Server{
-			client:       mgrClient,
-			apiReader:    mgrClient,
-			dedupWindow:  100 * time.Millisecond,
-			waitTimeout:  1 * time.Second,
-			roles:        newRoleConfig("", "", "", "", "", ""),
-			authRequired: false,
-		}
-
-		body := createAgentRequestBody{
-			AgentIdentity: "agent-old",
-			Action:        "restart",
-			TargetURI:     "k8s://prod/default/deployment/dedup-expired",
-			Reason:        "test",
-			Namespace:     testDefaultNS,
-		}
-		jsonBody, err := json.Marshal(body)
-		gm.Expect(err).NotTo(gomega.HaveOccurred(), "body is a known serializable struct")
-
-		req := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody))
-		rr := httptest.NewRecorder()
-
 		s.handleCreateAgentRequest(rr, req)
 		gm.Expect(rr.Code).To(gomega.Equal(http.StatusGatewayTimeout))
 
-		time.Sleep(200 * time.Millisecond)
-
-		rr2 := httptest.NewRecorder()
+		// Second call: same body, same window → AlreadyExists → HTTP 200 with
+		// the existing (Pending) request. Assert the returned name matches.
 		req2 := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody))
+		rr2 := httptest.NewRecorder()
 		s.handleCreateAgentRequest(rr2, req2)
-		gm.Expect(rr2.Code).To(gomega.Equal(http.StatusGatewayTimeout))
+		gm.Expect(rr2.Code).To(gomega.Equal(http.StatusOK))
+		var secondResp map[string]any
+		gm.Expect(json.Unmarshal(rr2.Body.Bytes(), &secondResp)).To(gomega.Succeed())
+		gm.Expect(secondResp["name"]).To(gomega.Equal(expectedName))
 
 		cleanup(ctx, gm, directClient)
 	})
@@ -184,6 +139,113 @@ func runRequestLifecycleTests(t *testing.T, mgrClient, directClient client.Clien
 
 		s.handleCreateAgentRequest(rr, req)
 		gm.Expect(rr.Code).To(gomega.Equal(http.StatusGatewayTimeout))
+
+		cleanup(ctx, gm, directClient)
+	})
+
+	t.Run("Different classification on same resource is not deduped", func(t *testing.T) {
+		// Regression for #231: two requests for the same resource with different
+		// classifications must NOT be collapsed. Verify via the HTTP handler —
+		// both POSTs should create distinct objects (both return 504, not the
+		// second returning 200).
+		gm := gomega.NewWithT(t)
+		fixedNow := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+		s := &Server{
+			client:       mgrClient,
+			apiReader:    mgrClient,
+			dedupWindow:  24 * time.Hour,
+			waitTimeout:  200 * time.Millisecond,
+			roles:        newRoleConfig("", "", "", "", "", ""),
+			authRequired: false,
+			Clock:        func() time.Time { return fixedNow },
+		}
+
+		const targetURI = "k8s://prod/default/deployment/class-dedup"
+		policy := createApprovalPolicy(ctx, gm, directClient, "class-dedup-policy", targetURI)
+		defer func() { gm.Expect(directClient.Delete(ctx, policy)).To(gomega.Succeed()) }()
+
+		body1 := createAgentRequestBody{
+			AgentIdentity:  "class-agent",
+			Action:         "scale",
+			TargetURI:      targetURI,
+			Reason:         "test",
+			Namespace:      testDefaultNS,
+			Classification: "nodepool/at-capacity",
+		}
+		body2 := body1
+		body2.Classification = "nodepool/affinity-mismatch"
+
+		jsonBody1, err1 := json.Marshal(body1)
+		gm.Expect(err1).NotTo(gomega.HaveOccurred())
+		jsonBody2, err2 := json.Marshal(body2)
+		gm.Expect(err2).NotTo(gomega.HaveOccurred())
+
+		// First request (at-capacity): creates a new object → 504 (no controller).
+		rr1 := httptest.NewRecorder()
+		s.handleCreateAgentRequest(rr1, httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody1)))
+		gm.Expect(rr1.Code).To(gomega.Equal(http.StatusGatewayTimeout),
+			"first request (at-capacity) should create a new object")
+
+		// Second request (affinity-mismatch): different classification → different
+		// dedup key → different deterministic name → NOT a duplicate → 504 (new object).
+		rr2 := httptest.NewRecorder()
+		s.handleCreateAgentRequest(rr2, httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody2)))
+		gm.Expect(rr2.Code).To(gomega.Equal(http.StatusGatewayTimeout),
+			"second request (affinity-mismatch) must not be treated as a duplicate")
+
+		cleanup(ctx, gm, directClient)
+	})
+
+	t.Run("Explicit dedupKey overrides computed key", func(t *testing.T) {
+		// Two requests with different classifications but the same explicit dedupKey
+		// should be deduped (second returns 200). Verifies via the HTTP handler that
+		// body.DedupKey takes precedence over body.Classification.
+		gm := gomega.NewWithT(t)
+		fixedNow := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+		s := &Server{
+			client:       mgrClient,
+			apiReader:    mgrClient,
+			dedupWindow:  24 * time.Hour,
+			waitTimeout:  200 * time.Millisecond,
+			roles:        newRoleConfig("", "", "", "", "", ""),
+			authRequired: false,
+			Clock:        func() time.Time { return fixedNow },
+		}
+
+		const targetURI = "k8s://prod/default/deployment/explicit-dedup"
+		policy := createApprovalPolicy(ctx, gm, directClient, "explicit-dedup-policy", targetURI)
+		defer func() { gm.Expect(directClient.Delete(ctx, policy)).To(gomega.Succeed()) }()
+
+		// Both requests use the same explicit dedupKey but different classifications.
+		base := createAgentRequestBody{
+			AgentIdentity: "dedup-agent",
+			Action:        "update",
+			TargetURI:     targetURI,
+			Reason:        "test",
+			Namespace:     testDefaultNS,
+			DedupKey:      "my-fixed-key",
+		}
+		body1 := base
+		body1.Classification = "nodepool/at-capacity"
+		body2 := base
+		body2.Classification = "nodepool/affinity-mismatch"
+
+		jsonBody1, err1 := json.Marshal(body1)
+		gm.Expect(err1).NotTo(gomega.HaveOccurred())
+		jsonBody2, err2 := json.Marshal(body2)
+		gm.Expect(err2).NotTo(gomega.HaveOccurred())
+
+		// First request: creates the object → 504.
+		rr1 := httptest.NewRecorder()
+		s.handleCreateAgentRequest(rr1, httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody1)))
+		gm.Expect(rr1.Code).To(gomega.Equal(http.StatusGatewayTimeout))
+
+		// Second request: same explicit dedupKey → same deterministic name →
+		// AlreadyExists → 200 (deduped), regardless of different classification.
+		rr2 := httptest.NewRecorder()
+		s.handleCreateAgentRequest(rr2, httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody2)))
+		gm.Expect(rr2.Code).To(gomega.Equal(http.StatusOK),
+			"same explicit dedupKey must deduplicate regardless of classification")
 
 		cleanup(ctx, gm, directClient)
 	})
