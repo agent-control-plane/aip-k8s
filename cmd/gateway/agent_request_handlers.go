@@ -272,7 +272,10 @@ admissionPassed:
 		if clk == nil {
 			clk = time.Now
 		}
-		dedupKey := computeDedupKey(body.AgentIdentity, body.Action, body.TargetURI, agentReq.Spec.Classification, body.DedupKey)
+		dedupKey := computeDedupKey(
+			body.AgentIdentity, body.Action, body.TargetURI,
+			agentReq.Spec.Classification, body.DedupKey,
+		)
 		agentReq.Name = deterministicRequestName(body.AgentIdentity, dedupKey, s.dedupWindow, clk())
 		agentReq.GenerateName = ""
 		// Only persist the dedupKey field when the agent explicitly provided one.
@@ -300,7 +303,9 @@ admissionPassed:
 			// gone and the retry will succeed.
 			if terminalPhases[existing.Status.Phase] {
 				if delErr := s.client.Delete(r.Context(), &existing); delErr != nil && !apierrors.IsNotFound(delErr) {
-					log.Printf("dedup: failed to delete stale terminal request %s: %v", existing.Name, delErr)
+					writeError(w, http.StatusInternalServerError,
+						fmt.Sprintf("dedup: failed to delete stale terminal request %s: %v", existing.Name, delErr))
+					return
 				}
 				writeError(w, http.StatusConflict,
 					"previous request for this key is terminal (Completed/Failed/Denied/Expired) — stale object deleted, please retry")
