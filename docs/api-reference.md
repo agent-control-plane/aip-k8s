@@ -193,13 +193,13 @@ helm upgrade --install aip-k8s \
   --set gateway.auth.reviewerSubjects=sre1@example.com,sre2@example.com
 ```
 
-3. Agents attach a Bearer token when calling the gateway. When auth is enabled, `agentIdentity` must equal the JWT `sub` claim:
+3. Agents attach a Bearer token when calling the gateway. When auth is enabled, the gateway uses the JWT `sub` claim as the authoritative `agentIdentity` — the `agentIdentity` field in the request body is optional and ignored. Agents only need to send `action`, `targetURI`, `reason`, and `namespace`:
 
 ```sh
 TOKEN=$(gcloud auth print-identity-token --audiences=aip-gateway)
 curl -H "Authorization: Bearer $TOKEN" \
      -H "Content-Type: application/json" \
-     -d '{"agentIdentity":"<jwt-sub>","action":"restart","targetURI":"...","reason":"...","namespace":"production"}' \
+     -d '{"action":"restart","targetURI":"...","reason":"...","namespace":"production"}' \
      http://localhost:8080/agent-requests
 ```
 
