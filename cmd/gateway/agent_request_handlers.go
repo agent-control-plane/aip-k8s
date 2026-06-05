@@ -115,13 +115,17 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 	}
 
 	// agentIdentity is the verified identity used for all downstream logic.
-	// When a token is present the token subject is the authoritative source;
-	// body.AgentIdentity is ignored so agents cannot impersonate a different
-	// identity. This matches the MCP path (governanceSubmissionPath) which
-	// derives agentID exclusively from callerSubFromCtx.
-	// In open/dev mode (no token) body.AgentIdentity is required as a fallback.
+	// When authRequired=true the token subject (sub) is the authoritative source —
+	// sub is guaranteed non-empty here because the 401 guard above already rejected
+	// unauthenticated requests. body.AgentIdentity is ignored so agents cannot
+	// impersonate a different identity. This matches the MCP path
+	// (governanceSubmissionPath) which derives agentID from callerSubFromCtx only.
+	// When authRequired=false body.AgentIdentity is always used, regardless of
+	// whether any middleware (e.g. proxy-header) happened to populate callerSub.
+	// Tying to s.authRequired rather than sub != "" prevents the proxy-header
+	// middleware from silently overriding the body identity in dev/open mode.
 	var agentIdentity string
-	if sub != "" {
+	if s.authRequired {
 		agentIdentity = sub
 	} else {
 		if body.AgentIdentity == "" {

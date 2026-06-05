@@ -154,7 +154,7 @@ func runAuthAndApprovalTests(t *testing.T, mgrClient, directClient client.Client
 		cleanup(ctx, gm, directClient)
 	})
 
-	t.Run("Auth - agentIdentity in body is overridden by token sub when authRequired: true", func(t *testing.T) {
+	t.Run("Auth - agentIdentity derived from token sub when authRequired: true (body.AgentIdentity ignored)", func(t *testing.T) {
 		gm := gomega.NewWithT(t)
 		s := &Server{
 			client:       mgrClient,
@@ -356,6 +356,69 @@ func runAuthAndApprovalTests(t *testing.T, mgrClient, directClient client.Client
 		gm.Expect(found.Labels["aip.io/profileName"]).To(gomega.Equal(v1alpha1.ProfileNameForAgent("agent-body-honored")))
 		expectedSlug := sanitizeDNSSegment("agent-body-honored", 54)
 		gm.Expect(found.Name).To(gomega.HavePrefix(expectedSlug))
+
+		cleanup(ctx, gm, directClient)
+	})
+
+	t.Run("Auth - body.AgentIdentity is used even when callerSub is set and authRequired: false (proxy-header dev mode)", func(t *testing.T) {
+		// Regression test: when authRequired=false the proxy-header middleware can
+		// populate callerSub via X-Remote-User. The handler must still use
+		// body.AgentIdentity and NOT silently substitute the proxy sub — otherwise
+		// a spoofed header would override the agent's declared identity in dev mode.
+		gm := gomega.NewWithT(t)
+		s := &Server{
+			client:       mgrClient,
+			apiReader:    mgrClient,
+			dedupWindow:  0,
+			waitTimeout:  200 * time.Millisecond,
+			roles:        newRoleConfig("", "", "", "", "", ""),
+			authRequired: false,
+		}
+
+		body := createAgentRequestBody{
+			AgentIdentity: "real-body-agent",
+			Action:        "restart",
+			TargetURI:     "k8s://prod/default/deployment/proxy-header-test",
+			Reason:        "test",
+			Namespace:     testDefaultNS,
+		}
+		jsonBody, err := json.Marshal(body)
+		gm.Expect(err).NotTo(gomega.HaveOccurred())
+
+		// Simulate proxy-header middleware having set a different sub.
+		ctxWithSub := withCallerSub(ctx, "proxy-injected-sub")
+		req := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody)).WithContext(ctxWithSub)
+		rr := httptest.NewRecorder()
+
+		s.handleCreateAgentRequest(rr, req)
+		// Handler creates the request (times out waiting for phase — no controller).
+		gm.Expect(rr.Code).To(gomega.Equal(http.StatusGatewayTimeout))
+
+		// The created AgentRequest must use body.AgentIdentity, not the proxy sub.
+		var list v1alpha1.AgentRequestList
+		gm.Eventually(func() error {
+			if err := directClient.List(ctx, &list, client.InNamespace(testDefaultNS)); err != nil {
+				return err
+			}
+			for _, ar := range list.Items {
+				if ar.Spec.Target.URI == "k8s://prod/default/deployment/proxy-header-test" {
+					return nil
+				}
+			}
+			return errors.New("AgentRequest not created yet")
+		}, eventuallyTimeout).Should(gomega.Succeed())
+
+		var found *v1alpha1.AgentRequest
+		for _, ar := range list.Items {
+			if ar.Spec.Target.URI == "k8s://prod/default/deployment/proxy-header-test" {
+				found = &ar
+				break
+			}
+		}
+		gm.Expect(found).NotTo(gomega.BeNil())
+		gm.Expect(found.Spec.AgentIdentity).To(gomega.Equal("real-body-agent"),
+			"proxy-injected-sub must not override body.AgentIdentity when authRequired=false")
+		gm.Expect(found.Labels["aip.io/agentIdentity"]).To(gomega.Equal(sanitizeLabelValue("real-body-agent")))
 
 		cleanup(ctx, gm, directClient)
 	})
