@@ -391,8 +391,12 @@ func runAuthAndApprovalTests(t *testing.T, mgrClient, directClient client.Client
 		rr := httptest.NewRecorder()
 
 		s.handleCreateAgentRequest(rr, req)
-		// Handler creates the request (times out waiting for phase — no controller).
-		gm.Expect(rr.Code).To(gomega.Equal(http.StatusGatewayTimeout))
+		// Reconciliation may complete before the 200ms wait timeout.
+		gm.Expect(rr.Code).To(gomega.Or(
+			gomega.Equal(http.StatusGatewayTimeout),
+			gomega.Equal(http.StatusCreated),
+			gomega.Equal(http.StatusOK),
+		))
 
 		// The created AgentRequest must use body.AgentIdentity, not the proxy sub.
 		var list v1alpha1.AgentRequestList
