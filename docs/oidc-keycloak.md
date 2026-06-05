@@ -513,6 +513,28 @@ name or ID. Set `--oidc-identity-claim` to that claim name and
 
 ---
 
+## Pre-upgrade checklist: verifying identity matches
+
+When upgrading the AIP gateway from older versions (where `agentIdentity` in the request body was trusted) to newer versions (where agent identity is strictly derived from the validated token `sub`/identity claim), you must verify that the token's identity claim matches your existing `GovernedResource.permittedAgents` configuration.
+
+To perform a manual pre-upgrade check:
+
+1. Mint an OIDC `access_token` or `id_token` using the client credentials grant or the token flow configured for your agent.
+2. Query the `/whoami` endpoint of the gateway using the token:
+   ```bash
+   curl -H "Authorization: Bearer $TOKEN" http://<aip-gateway-host>/whoami
+   ```
+3. The gateway will return the resolved identity and role:
+   ```json
+   {
+     "identity": "aip-agent-1",
+     "role": "agent"
+   }
+   ```
+4. Confirm that the `"identity"` value matches exactly what is configured in your `GovernedResource.spec.permittedAgents` lists and any `SafetyPolicy` CEL expressions. If they differ (e.g. if the provider's token contains a numeric subject but `permittedAgents` was configured to use a body-supplied email address), agent requests will be rejected with `403 IDENTITY_INVALID` or `403 ACTION_NOT_PERMITTED` after the upgrade.
+
+---
+
 ## Next steps
 
 - Auth0 OIDC setup — managed provider, same gateway flags (guide coming soon).

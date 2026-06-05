@@ -154,6 +154,212 @@ func runAuthAndApprovalTests(t *testing.T, mgrClient, directClient client.Client
 		cleanup(ctx, gm, directClient)
 	})
 
+	t.Run("Auth - agentIdentity in body is overridden by token sub when authRequired: true", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
+		s := &Server{
+			client:       mgrClient,
+			apiReader:    mgrClient,
+			dedupWindow:  5 * time.Second,
+			waitTimeout:  2 * time.Second,
+			roles:        newRoleConfig("agent-sub-token", testReviewerSub, "", "", "", ""),
+			authRequired: true,
+		}
+
+		gr := &v1alpha1.GovernedResource{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "auth-override-gr",
+			},
+			Spec: v1alpha1.GovernedResourceSpec{
+				URIPattern:       "k8s://prod/default/deployment/auth-override-test",
+				PermittedActions: []string{"restart"},
+				PermittedAgents:  []string{"agent-sub-token"},
+				ContextFetcher:   "none",
+			},
+		}
+		gm.Expect(directClient.Create(ctx, gr)).To(gomega.Succeed())
+		defer func() {
+			gm.Expect(directClient.Delete(ctx, gr)).To(gomega.Succeed())
+		}()
+
+		// Wait for GR to be in mgrClient cache
+		gm.Eventually(func() error {
+			var checkGR v1alpha1.GovernedResource
+			return mgrClient.Get(ctx, types.NamespacedName{Name: gr.Name}, &checkGR)
+		}, eventuallyTimeout).Should(gomega.Succeed())
+
+		body := createAgentRequestBody{
+			AgentIdentity: "impersonated-agent-body",
+			Action:        "restart",
+			TargetURI:     "k8s://prod/default/deployment/auth-override-test",
+			Reason:        "test",
+			Namespace:     testDefaultNS,
+		}
+		jsonBody, err := json.Marshal(body)
+		gm.Expect(err).NotTo(gomega.HaveOccurred())
+
+		ctxWithAuth := withCallerSub(ctx, "agent-sub-token")
+		req := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody)).WithContext(ctxWithAuth)
+		rr := httptest.NewRecorder()
+
+		s.handleCreateAgentRequest(rr, req)
+		gm.Expect(rr.Code).To(gomega.Or(gomega.Equal(http.StatusCreated), gomega.Equal(http.StatusOK)))
+
+		var list v1alpha1.AgentRequestList
+		gm.Eventually(func() error {
+			if err := directClient.List(ctx, &list, client.InNamespace(testDefaultNS)); err != nil {
+				return err
+			}
+			found := false
+			for _, ar := range list.Items {
+				if ar.Spec.Target.URI == "k8s://prod/default/deployment/auth-override-test" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return errors.New("AgentRequest not created yet")
+			}
+			return nil
+		}, eventuallyTimeout).Should(gomega.Succeed())
+
+		var found *v1alpha1.AgentRequest
+		for _, ar := range list.Items {
+			if ar.Spec.Target.URI == "k8s://prod/default/deployment/auth-override-test" {
+				found = &ar
+				break
+			}
+		}
+		gm.Expect(found).NotTo(gomega.BeNil())
+		gm.Expect(found.Spec.AgentIdentity).To(gomega.Equal("agent-sub-token"))
+
+		// Assert all derived keys use "agent-sub-token", not the body
+		gm.Expect(found.Labels["aip.io/agentIdentity"]).To(gomega.Equal(sanitizeLabelValue("agent-sub-token")))
+		gm.Expect(found.Labels["aip.io/profileName"]).To(gomega.Equal(v1alpha1.ProfileNameForAgent("agent-sub-token")))
+		expectedSlug := sanitizeDNSSegment("agent-sub-token", 54)
+		gm.Expect(found.Name).To(gomega.HavePrefix(expectedSlug))
+
+		cleanup(ctx, gm, directClient)
+	})
+
+	t.Run("Auth - permittedAgents check uses callerSub, not body when authRequired: true", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
+		s := &Server{
+			client:       mgrClient,
+			apiReader:    mgrClient,
+			dedupWindow:  0,
+			waitTimeout:  2 * time.Second,
+			roles:        newRoleConfig("agent-sub-token,forbidden-agent", testReviewerSub, "", "", "", ""),
+			authRequired: true,
+		}
+
+		gr := &v1alpha1.GovernedResource{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "auth-permitted-agents-gr",
+			},
+			Spec: v1alpha1.GovernedResourceSpec{
+				URIPattern:       "k8s://prod/default/deployment/auth-permitted-agents-test",
+				PermittedActions: []string{"restart"},
+				PermittedAgents:  []string{"agent-sub-token"},
+				ContextFetcher:   "none",
+			},
+		}
+		gm.Expect(directClient.Create(ctx, gr)).To(gomega.Succeed())
+		defer func() {
+			gm.Expect(directClient.Delete(ctx, gr)).To(gomega.Succeed())
+		}()
+
+		// Wait for GR to be in mgrClient cache
+		gm.Eventually(func() error {
+			var checkGR v1alpha1.GovernedResource
+			return mgrClient.Get(ctx, types.NamespacedName{Name: gr.Name}, &checkGR)
+		}, eventuallyTimeout).Should(gomega.Succeed())
+
+		// We use callerSub = "forbidden-agent" (who is not in permittedAgents)
+		// but body agentIdentity = "agent-sub-token" (who is in permittedAgents).
+		body := createAgentRequestBody{
+			AgentIdentity: "agent-sub-token",
+			Action:        "restart",
+			TargetURI:     "k8s://prod/default/deployment/auth-permitted-agents-test",
+			Reason:        "test",
+			Namespace:     testDefaultNS,
+		}
+		jsonBody, err := json.Marshal(body)
+		gm.Expect(err).NotTo(gomega.HaveOccurred())
+
+		ctxWithAuth := withCallerSub(ctx, "forbidden-agent")
+		req := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody)).WithContext(ctxWithAuth)
+		rr := httptest.NewRecorder()
+
+		s.handleCreateAgentRequest(rr, req)
+		// It must fail with StatusForbidden (403) and DenialCodeIdentityInvalid (IDENTITY_INVALID)
+		gm.Expect(rr.Code).To(gomega.Equal(http.StatusForbidden))
+		gm.Expect(rr.Body.String()).To(gomega.ContainSubstring(v1alpha1.DenialCodeIdentityInvalid))
+	})
+
+	t.Run("Auth - agentIdentity in body is honored when authRequired: false", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
+		s := &Server{
+			client:       mgrClient,
+			apiReader:    mgrClient,
+			dedupWindow:  5 * time.Second,
+			waitTimeout:  2 * time.Second,
+			roles:        newRoleConfig("", "", "", "", "", ""),
+			authRequired: false,
+		}
+
+		body := createAgentRequestBody{
+			AgentIdentity: "agent-body-honored",
+			Action:        "restart",
+			TargetURI:     "k8s://prod/default/deployment/auth-honored-test",
+			Reason:        "test",
+			Namespace:     testDefaultNS,
+		}
+		jsonBody, err := json.Marshal(body)
+		gm.Expect(err).NotTo(gomega.HaveOccurred())
+
+		req := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody))
+		rr := httptest.NewRecorder()
+
+		s.handleCreateAgentRequest(rr, req)
+		gm.Expect(rr.Code).To(gomega.Or(gomega.Equal(http.StatusCreated), gomega.Equal(http.StatusOK)))
+
+		var list v1alpha1.AgentRequestList
+		gm.Eventually(func() error {
+			if err := directClient.List(ctx, &list, client.InNamespace(testDefaultNS)); err != nil {
+				return err
+			}
+			found := false
+			for _, ar := range list.Items {
+				if ar.Spec.Target.URI == "k8s://prod/default/deployment/auth-honored-test" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return errors.New("AgentRequest not created yet")
+			}
+			return nil
+		}, eventuallyTimeout).Should(gomega.Succeed())
+
+		var found *v1alpha1.AgentRequest
+		for _, ar := range list.Items {
+			if ar.Spec.Target.URI == "k8s://prod/default/deployment/auth-honored-test" {
+				found = &ar
+				break
+			}
+		}
+		gm.Expect(found).NotTo(gomega.BeNil())
+		gm.Expect(found.Spec.AgentIdentity).To(gomega.Equal("agent-body-honored"))
+
+		// Assert all derived keys use "agent-body-honored"
+		gm.Expect(found.Labels["aip.io/agentIdentity"]).To(gomega.Equal(sanitizeLabelValue("agent-body-honored")))
+		gm.Expect(found.Labels["aip.io/profileName"]).To(gomega.Equal(v1alpha1.ProfileNameForAgent("agent-body-honored")))
+		expectedSlug := sanitizeDNSSegment("agent-body-honored", 54)
+		gm.Expect(found.Name).To(gomega.HavePrefix(expectedSlug))
+
+		cleanup(ctx, gm, directClient)
+	})
+
 	runHumanDecisionTests(t, mgrClient, directClient, ctx)
 	runAuditTests(t, mgrClient, directClient, ctx)
 }
