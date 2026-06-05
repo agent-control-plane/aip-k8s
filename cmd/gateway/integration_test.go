@@ -84,6 +84,8 @@ func TestGatewayIntegration(t *testing.T) {
 	}
 	g.Expect(directClient.Create(ctx, prodGR)).To(gomega.Succeed())
 	t.Cleanup(func() {
+		// Intentionally ignored: resource may already be deleted by the time
+		// cleanup runs; deletion failures are non-actionable in teardown.
 		_ = directClient.Delete(ctx, prodGR)
 	})
 
