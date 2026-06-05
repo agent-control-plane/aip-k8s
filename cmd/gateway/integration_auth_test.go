@@ -154,7 +154,7 @@ func runAuthAndApprovalTests(t *testing.T, mgrClient, directClient client.Client
 		cleanup(ctx, gm, directClient)
 	})
 
-	t.Run("Auth - agentIdentity derived from token sub when authRequired: true (body.AgentIdentity ignored)", func(t *testing.T) {
+	t.Run("Auth - agentIdentity derived from token sub when authRequired: true", func(t *testing.T) {
 		gm := gomega.NewWithT(t)
 		s := &Server{
 			client:       mgrClient,
@@ -360,7 +360,7 @@ func runAuthAndApprovalTests(t *testing.T, mgrClient, directClient client.Client
 		cleanup(ctx, gm, directClient)
 	})
 
-	t.Run("Auth - body.AgentIdentity is used even when callerSub is set and authRequired: false (proxy-header dev mode)", func(t *testing.T) {
+	t.Run("Auth - body.AgentIdentity wins over proxy callerSub when authRequired: false", func(t *testing.T) {
 		// Regression test: when authRequired=false the proxy-header middleware can
 		// populate callerSub via X-Remote-User. The handler must still use
 		// body.AgentIdentity and NOT silently substitute the proxy sub — otherwise
