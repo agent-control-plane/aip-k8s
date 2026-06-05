@@ -109,14 +109,26 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if body.AgentIdentity == "" || body.Action == "" || body.TargetURI == "" {
-		writeError(w, http.StatusBadRequest, "agentIdentity, action, and targetURI are required")
+	if body.Action == "" || body.TargetURI == "" {
+		writeError(w, http.StatusBadRequest, "action and targetURI are required")
 		return
 	}
 
-	if s.authRequired && body.AgentIdentity != sub {
-		writeError(w, http.StatusBadRequest, "agentIdentity must match authenticated caller")
-		return
+	// agentIdentity is the verified identity used for all downstream logic.
+	// When a token is present the token subject is the authoritative source;
+	// body.AgentIdentity is ignored so agents cannot impersonate a different
+	// identity. This matches the MCP path (governanceSubmissionPath) which
+	// derives agentID exclusively from callerSubFromCtx.
+	// In open/dev mode (no token) body.AgentIdentity is required as a fallback.
+	var agentIdentity string
+	if sub != "" {
+		agentIdentity = sub
+	} else {
+		if body.AgentIdentity == "" {
+			writeError(w, http.StatusBadRequest, "agentIdentity is required when running without authentication")
+			return
+		}
+		agentIdentity = body.AgentIdentity
 	}
 
 	ns := body.Namespace
@@ -130,8 +142,8 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 	}
 
 	reqLabels := map[string]string{
-		"aip.io/agentIdentity": sanitizeLabelValue(body.AgentIdentity),
-		"aip.io/profileName":   v1alpha1.ProfileNameForAgent(body.AgentIdentity),
+		"aip.io/agentIdentity": sanitizeLabelValue(agentIdentity),
+		"aip.io/profileName":   v1alpha1.ProfileNameForAgent(agentIdentity),
 	}
 	if body.CorrelationID != "" {
 		reqLabels["aip.io/correlationID"] = sanitizeLabelValue(body.CorrelationID)
@@ -142,12 +154,12 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 
 	agentReq := &v1alpha1.AgentRequest{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: fmt.Sprintf("%s-", sanitizeDNSSegment(body.AgentIdentity, 57)),
+			GenerateName: fmt.Sprintf("%s-", sanitizeDNSSegment(agentIdentity, 57)),
 			Namespace:    ns,
 			Labels:       reqLabels,
 		},
 		Spec: v1alpha1.AgentRequestSpec{
-			AgentIdentity:  body.AgentIdentity,
+			AgentIdentity:  agentIdentity,
 			Action:         body.Action,
 			Target:         v1alpha1.Target{URI: body.TargetURI},
 			Reason:         body.Reason,
@@ -194,7 +206,7 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 
 	// Check agent identity (step 3 in design doc).
 	if len(matchedGR.Spec.PermittedAgents) > 0 {
-		agentPermitted = slices.Contains(matchedGR.Spec.PermittedAgents, body.AgentIdentity)
+		agentPermitted = slices.Contains(matchedGR.Spec.PermittedAgents, agentIdentity)
 		if !agentPermitted {
 			writeError(w, http.StatusForbidden, v1alpha1.DenialCodeIdentityInvalid)
 			return
@@ -245,7 +257,7 @@ admissionPassed:
 
 	// Trust gate: enforce trust level requirements from GovernedResource.
 	if matchedGR != nil && matchedGR.Spec.TrustRequirements != nil {
-		trustResult, err := s.evaluateTrustGate(r.Context(), ns, body.AgentIdentity, agentReq.Spec.Mode, matchedGR)
+		trustResult, err := s.evaluateTrustGate(r.Context(), ns, agentIdentity, agentReq.Spec.Mode, matchedGR)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("trust gate error: %v", err))
 			return
@@ -273,10 +285,10 @@ admissionPassed:
 			clk = time.Now
 		}
 		dedupKey := computeDedupKey(
-			body.AgentIdentity, body.Action, body.TargetURI,
+			agentIdentity, body.Action, body.TargetURI,
 			agentReq.Spec.Classification, body.DedupKey,
 		)
-		agentReq.Name = deterministicRequestName(body.AgentIdentity, dedupKey, s.dedupWindow, clk())
+		agentReq.Name = deterministicRequestName(agentIdentity, dedupKey, s.dedupWindow, clk())
 		agentReq.GenerateName = ""
 		// Only persist the dedupKey field when the agent explicitly provided one.
 		// When the key is gateway-computed, the field stays absent so operators
