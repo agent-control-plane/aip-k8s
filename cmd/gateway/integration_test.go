@@ -13,6 +13,8 @@ import (
 	"github.com/agent-control-plane/aip-k8s/internal/evaluation"
 	"github.com/onsi/gomega"
 	coordinationv1 "k8s.io/api/coordination/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -70,6 +72,26 @@ func TestGatewayIntegration(t *testing.T) {
 		var list v1alpha1.AgentRequestList
 		return mgrClient.List(ctx, &list)
 	}, serverStartupTimeout, eventuallyInterval).Should(gomega.Succeed())
+
+	// Create global GovernedResource to allow prod admission in integration tests
+	prodGR := &v1alpha1.GovernedResource{
+		ObjectMeta: metav1.ObjectMeta{Name: "global-prod-gr"},
+		Spec: v1alpha1.GovernedResourceSpec{
+			URIPattern:       "k8s://prod/default/deployment/*",
+			PermittedActions: []string{"restart", "scale", "update", "test"},
+			ContextFetcher:   "none",
+		},
+	}
+	g.Expect(directClient.Create(ctx, prodGR)).To(gomega.Succeed())
+	t.Cleanup(func() {
+		_ = directClient.Delete(ctx, prodGR)
+	})
+
+	// Wait for global GR to be in mgrClient cache
+	g.Eventually(func() error {
+		var checkGR v1alpha1.GovernedResource
+		return mgrClient.Get(ctx, types.NamespacedName{Name: prodGR.Name}, &checkGR)
+	}, eventuallyTimeout).Should(gomega.Succeed())
 
 	runRequestLifecycleTests(t, mgrClient, directClient, ctx)
 	runAuthAndApprovalTests(t, mgrClient, directClient, ctx)
