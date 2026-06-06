@@ -53,8 +53,8 @@ var (
 				"name": "replica-cap-guard",
 				"type": "StateEvaluation",
 				"action": "Deny",
-				"expression": "has(request.spec.parameters) && has(request.spec.parameters.proposedMaxReplicas) && target != null && has(target.fileContent) && has(target.fileContent.absoluteMax) && double(request.spec.parameters.proposedMaxReplicas) / double(target.fileContent.absoluteMax) > 0.9",
-				"message": "Proposed maxReplicas exceeds 90%% of absoluteMax. Reduce the request."
+				"expression": "has(request.spec.parameters) && has(request.spec.parameters.proposedMaxReplicas) && double(request.spec.parameters.proposedMaxReplicas) >= 19.0",
+				"message": "Proposed maxReplicas of 19+ exceeds the safe threshold. Reduce the request."
 			},
 			{
 				"name": "require-human-approval",
@@ -159,27 +159,21 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 		_, _ = runCmd(cmd)
 	})
 
-	Context("Scenario A: Denied — agent proposes 19 replicas (95% of absoluteMax)", func() {
+	Context("Scenario A: Denied — agent proposes 19 replicas (exceeds threshold of 18)", func() {
 		It("should evaluate safety policy and deny the request", func() {
 			By("submitting AgentRequest with proposedMaxReplicas=19 through gateway")
+			// replica-cap-guard denies >= 19 replicas purely on request parameters,
+			// without requiring GitHub context. Deny outranks RequireApproval so the
+			// controller sets phase=Denied in a single evaluation pass — the gateway
+			// polls until it sees Denied and returns it directly.
 			resp := submitToGateway(19)
 
-			// The controller may set RequiresApproval transiently before completing
-			// policy evaluation and transitioning to Denied. When that happens the
-			// gateway's pollAgentRequestPhase returns early with phase=Pending, so we
-			// poll the K8s API directly to wait for the final Denied state.
 			By("verifying phase=Denied with rule replica-cap-guard")
-			var finalAR governancev1alpha1.AgentRequest
-			Eventually(func(g Gomega) {
-				err := k8sClient.Get(ctx, types.NamespacedName{Name: resp.Name, Namespace: reqNamespace}, &finalAR)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(string(finalAR.Status.Phase)).To(Equal("Denied"))
-			}, 60*time.Second, 2*time.Second).Should(Succeed(), "AgentRequest %s never reached Denied phase", resp.Name)
-
-			Expect(finalAR.Status.Denial).NotTo(BeNil())
-			Expect(finalAR.Status.Denial.Code).To(Equal("POLICY_VIOLATION"))
-			Expect(finalAR.Status.Denial.PolicyResults).NotTo(BeEmpty())
-			Expect(finalAR.Status.Denial.PolicyResults[0].RuleName).To(Equal("replica-cap-guard"))
+			Expect(resp.Phase).To(Equal("Denied"))
+			Expect(resp.Denial).NotTo(BeNil())
+			Expect(resp.Denial.Code).To(Equal("POLICY_VIOLATION"))
+			Expect(resp.Denial.PolicyResults).NotTo(BeEmpty())
+			Expect(resp.Denial.PolicyResults[0].RuleName).To(Equal("replica-cap-guard"))
 		})
 	})
 
