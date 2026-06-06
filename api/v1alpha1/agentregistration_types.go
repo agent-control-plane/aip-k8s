@@ -21,7 +21,7 @@ import (
 )
 
 // ExternalIdentityType identifies the credential provider for an outbound binding.
-// +kubebuilder:validation:Enum=StaticSecret;AzureWorkloadIdentity;AWSWebIdentity;KubernetesOIDC
+// +kubebuilder:validation:Enum=StaticSecret;AzureWorkloadIdentity;AWSWebIdentity;KubernetesOIDC;KubernetesTokenRequest
 type ExternalIdentityType string
 
 const (
@@ -31,9 +31,11 @@ const (
 	ExternalIdentityAzureWorkloadIdentity ExternalIdentityType = "AzureWorkloadIdentity"
 	// ExternalIdentityAWSWebIdentity uses AssumeRoleWithWebIdentity via AWS STS.
 	ExternalIdentityAWSWebIdentity ExternalIdentityType = "AWSWebIdentity"
-	// ExternalIdentityKubernetesOIDC uses the agent's OIDC token directly (passthrough)
-	// or exchanges it via RFC 8693 for a K8s-valid token.
+	// ExternalIdentityKubernetesOIDC exchanges the agent's OIDC token via RFC 8693
+	// for a target-audience token. Passthrough mode is not supported.
 	ExternalIdentityKubernetesOIDC ExternalIdentityType = "KubernetesOIDC"
+	// ExternalIdentityKubernetesTokenRequest uses K8s ServiceAccount TokenRequest API.
+	ExternalIdentityKubernetesTokenRequest ExternalIdentityType = "KubernetesTokenRequest"
 )
 
 // StaticSecretCredential reads a bearer token from a K8s Secret.
@@ -99,23 +101,37 @@ type AWSWebIdentityCredential struct {
 	STSEndpoint string `json:"stsEndpoint,omitempty"`
 }
 
-// KubernetesOIDCCredential configures OIDC token passthrough (or RFC 8693 exchange)
-// for Kubernetes API servers acting as MCP server targets.
+// KubernetesOIDCCredential configures RFC 8693 token exchange for Kubernetes API
+// servers acting as MCP server targets. The agent's validated OIDC JWT is exchanged
+// for a target-audience token at the configured endpoint.
 //
-// Passthrough mode (TokenExchangeURL empty): the agent's validated OIDC JWT is
-// forwarded directly. Requires the cluster's --oidc-issuer-url to match the AIP
-// gateway issuer. K8s RBAC is enforced on the agent's own sub/groups claims.
-//
-// Exchange mode (TokenExchangeURL set): calls the RFC 8693 endpoint with the agent's
-// JWT as subject_token. Used when gateway and K8s cluster use different issuers.
+// Passthrough mode (no exchange) is intentionally not supported: forwarding a
+// gateway-audience token to upstream servers allows a compromised server to replay
+// it against the gateway. Always configure a dedicated token exchange endpoint.
 type KubernetesOIDCCredential struct {
-	// TokenExchangeURL is an optional RFC 8693 token exchange endpoint.
-	// When empty, the agent's JWT is forwarded to K8s directly (passthrough).
-	// +optional
-	TokenExchangeURL string `json:"tokenExchangeURL,omitempty"`
+	// TokenExchangeURL is the RFC 8693 token exchange endpoint.
+	// +kubebuilder:validation:MinLength=1
+	TokenExchangeURL string `json:"tokenExchangeURL"`
 	// Audience overrides the aud claim for the forwarded or exchanged token.
 	// +optional
 	Audience string `json:"audience,omitempty"`
+}
+
+// KubernetesTokenRequestCredential configures using K8s ServiceAccount TokenRequest API.
+type KubernetesTokenRequestCredential struct {
+	// ServiceAccountName is the name of the ServiceAccount to impersonate.
+	// +kubebuilder:validation:MinLength=1
+	ServiceAccountName string `json:"serviceAccountName"`
+	// ServiceAccountNamespace is the namespace of the ServiceAccount.
+	// +kubebuilder:validation:MinLength=1
+	ServiceAccountNamespace string `json:"serviceAccountNamespace"`
+	// ExpirationSeconds is the requested duration of validity for the token.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	ExpirationSeconds *int32 `json:"expirationSeconds,omitempty"`
+	// Audiences are the intended audiences of the token.
+	// +optional
+	Audiences []string `json:"audiences,omitempty"`
 }
 
 // ExternalIdentityBinding maps an MCP server to the credential provider for
@@ -124,6 +140,7 @@ type KubernetesOIDCCredential struct {
 // +kubebuilder:validation:XValidation:rule="self.type == 'AzureWorkloadIdentity' ? has(self.azureWorkloadIdentity) : !has(self.azureWorkloadIdentity)",message="azureWorkloadIdentity must be set when type is AzureWorkloadIdentity and unset otherwise"
 // +kubebuilder:validation:XValidation:rule="self.type == 'AWSWebIdentity' ? has(self.awsWebIdentity) : !has(self.awsWebIdentity)",message="awsWebIdentity must be set when type is AWSWebIdentity and unset otherwise"
 // +kubebuilder:validation:XValidation:rule="self.type == 'KubernetesOIDC' ? has(self.kubernetesOIDC) : !has(self.kubernetesOIDC)",message="kubernetesOIDC must be set when type is KubernetesOIDC and unset otherwise"
+// +kubebuilder:validation:XValidation:rule="self.type == 'KubernetesTokenRequest' ? has(self.kubernetesTokenRequest) : !has(self.kubernetesTokenRequest)",message="kubernetesTokenRequest must be set when type is KubernetesTokenRequest and unset otherwise"
 type ExternalIdentityBinding struct {
 	// Service matches MCPServer.metadata.name (e.g. "github", "k8s-mcp-server").
 	// +kubebuilder:validation:MinLength=1
@@ -142,6 +159,9 @@ type ExternalIdentityBinding struct {
 	// KubernetesOIDC is set when Type is KubernetesOIDC.
 	// +optional
 	KubernetesOIDC *KubernetesOIDCCredential `json:"kubernetesOIDC,omitempty"`
+	// KubernetesTokenRequest is set when Type is KubernetesTokenRequest.
+	// +optional
+	KubernetesTokenRequest *KubernetesTokenRequestCredential `json:"kubernetesTokenRequest,omitempty"`
 }
 
 // AgentRegistrationOIDC declares which OIDC tokens prove this agent's identity.

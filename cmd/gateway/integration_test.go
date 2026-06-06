@@ -103,6 +103,7 @@ func TestGatewayIntegration(t *testing.T) {
 	runAgentGraduationPolicyTests(t, mgrClient, directClient, ctx)
 	runResultTests(t, mgrClient, directClient, ctx)
 	runSSEStreamingTests(t, mgrClient, directClient, watchClient, ctx)
+	runRegistrationIntegrationTests(t, directClient, ctx)
 }
 
 func startTestManager(t *testing.T, cfg *rest.Config) client.Client {

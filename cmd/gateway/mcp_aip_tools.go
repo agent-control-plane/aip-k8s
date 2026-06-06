@@ -227,6 +227,34 @@ func (s *Server) aipApprovalResult(ar *v1alpha1.AgentRequest) *mcp.ToolsCallResu
 	return nil
 }
 
+// enforceRegistrationPolicy resolves the effective agent identity and enforces
+// registration policy. Returns (resolvedAgentID, unregistered, error).
+func (s *Server) enforceRegistrationPolicy(ctx context.Context, agentID string) (string, bool, error) {
+	if s.regCache == nil {
+		return agentID, false, nil
+	}
+	sub := callerSubFromCtx(ctx)
+	reg := s.regCache.getForSubject(agentID, sub)
+	if reg == nil {
+		if agentID != "" && s.regCache.exists(agentID) {
+			return "", false, fmt.Errorf("%w: OIDC subject not in allowedSubjects", ErrIdentityMismatch)
+		}
+		switch s.unregisteredAgentPolicy {
+		case policyStrict:
+			return "", true, ErrAgentNotRegistered
+		case policyWarn:
+			log.Printf("Unregistered agent in MCP write tool path, policy=warn, agentIdentity=%q", agentID)
+		}
+		return agentID, true, nil
+	}
+	// getForSubject already verified identity (sub ∈ AllowedSubjects or sub == agentIdentity).
+	// Guard against an empty sub when auth is required as a final safety net.
+	if s.authRequired && sub == "" {
+		return "", false, fmt.Errorf("%w: caller subject required when auth is enabled", ErrIdentityMismatch)
+	}
+	return reg.Spec.AgentIdentity, false, nil
+}
+
 // submitAgentRequestForTool creates an AgentRequest for a write tool call that
 // lacks an AIP JWT, triggering governance evaluation by the controller.
 func (s *Server) submitAgentRequestForTool(
@@ -237,6 +265,13 @@ func (s *Server) submitAgentRequestForTool(
 	if s.client == nil {
 		return nil, fmt.Errorf("kubernetes client not configured")
 	}
+
+	resolvedID, unregistered, err := s.enforceRegistrationPolicy(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	agentID = resolvedID
+
 	if targetURI == "" {
 		targetURI = buildTargetURI(toolArgs)
 	}
@@ -258,6 +293,13 @@ func (s *Server) submitAgentRequestForTool(
 			Target:        v1alpha1.Target{URI: targetURI},
 			Reason:        reason,
 		},
+	}
+
+	if unregistered && s.unregisteredAgentPolicy == policyWarn {
+		if ar.Annotations == nil {
+			ar.Annotations = make(map[string]string)
+		}
+		ar.Annotations["governance.aip.io/unregistered"] = annotationValueTrue
 	}
 
 	// Serialize the tool args as AgentRequest parameters so SafetyPolicy CEL

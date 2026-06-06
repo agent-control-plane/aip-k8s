@@ -127,10 +127,41 @@ spec:
                             or exchanged token.
                           type: string
                         tokenExchangeURL:
-                          description: |-
-                            TokenExchangeURL is an optional RFC 8693 token exchange endpoint.
-                            When empty, the agent's JWT is forwarded to K8s directly (passthrough).
+                          description: TokenExchangeURL is the RFC 8693 token exchange
+                            endpoint.
+                          minLength: 1
                           type: string
+                      required:
+                      - tokenExchangeURL
+                      type: object
+                    kubernetesTokenRequest:
+                      description: KubernetesTokenRequest is set when Type is KubernetesTokenRequest.
+                      properties:
+                        audiences:
+                          description: Audiences are the intended audiences of the
+                            token.
+                          items:
+                            type: string
+                          type: array
+                        expirationSeconds:
+                          description: ExpirationSeconds is the requested duration
+                            of validity for the token.
+                          format: int32
+                          minimum: 1
+                          type: integer
+                        serviceAccountName:
+                          description: ServiceAccountName is the name of the ServiceAccount
+                            to impersonate.
+                          minLength: 1
+                          type: string
+                        serviceAccountNamespace:
+                          description: ServiceAccountNamespace is the namespace of
+                            the ServiceAccount.
+                          minLength: 1
+                          type: string
+                      required:
+                      - serviceAccountName
+                      - serviceAccountNamespace
                       type: object
                     service:
                       description: Service matches MCPServer.metadata.name (e.g. "github",
@@ -164,6 +195,7 @@ spec:
                       - AzureWorkloadIdentity
                       - AWSWebIdentity
                       - KubernetesOIDC
+                      - KubernetesTokenRequest
                       type: string
                   required:
                   - service
@@ -186,6 +218,10 @@ spec:
                       and unset otherwise
                     rule: 'self.type == ''KubernetesOIDC'' ? has(self.kubernetesOIDC)
                       : !has(self.kubernetesOIDC)'
+                  - message: kubernetesTokenRequest must be set when type is KubernetesTokenRequest
+                      and unset otherwise
+                    rule: 'self.type == ''KubernetesTokenRequest'' ? has(self.kubernetesTokenRequest)
+                      : !has(self.kubernetesTokenRequest)'
                 type: array
                 x-kubernetes-list-map-keys:
                 - service

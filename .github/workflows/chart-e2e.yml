@@ -73,6 +73,7 @@ jobs:
             --set gc.enabled=false \
             --set controller.extraArgs[0]="--ops-lock-duration=15s" \
             --set controller.extraArgs[1]="--ops-lock-wait-timeout=20s" \
+            --set gateway.unregisteredAgentPolicy="warn" \
             --wait --timeout 3m
 
       - name: Start port-forwards

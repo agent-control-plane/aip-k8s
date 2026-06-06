@@ -40,6 +40,12 @@ gateway:
   # at this path and mints Ed25519 JWT tokens on AgentRequest approval.
   # Leave empty to disable JWT minting.
   jwtKeyPath: ""
+  # unregisteredAgentPolicy controls gateway behavior for agents that have no
+  # AgentRegistration CR. Valid values:
+  #   "allow"  (default) — agent proceeds; no registration check enforced.
+  #   "warn"   — agent proceeds but the gateway logs a warning.
+  #   "strict" — agent is rejected with 403 AGENT_NOT_REGISTERED.
+  unregisteredAgentPolicy: "allow"
   service:
     type: ClusterIP
     port: 8080

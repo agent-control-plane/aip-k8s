@@ -174,6 +174,7 @@ func newOIDCMiddleware(
 			groups := claimStringSlice(allClaims, groupsClaim)
 			rctx := withCallerSub(r.Context(), identity)
 			rctx = withCallerGroups(rctx, groups)
+			rctx = withRawOIDCToken(rctx, raw)
 			next.ServeHTTP(w, r.WithContext(rctx))
 		})
 	}, nil

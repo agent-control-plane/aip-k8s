@@ -22,6 +22,7 @@ type contextKey string
 
 const callerSubKey contextKey = "callerSub"
 const callerGroupsKey contextKey = "callerGroups"
+const rawOIDCTokenKey contextKey = "rawOIDCToken"
 
 func withCallerSub(ctx context.Context, sub string) context.Context {
 	return context.WithValue(ctx, callerSubKey, sub)
@@ -41,12 +42,28 @@ func callerGroupsFromCtx(ctx context.Context) []string {
 	return g
 }
 
+func withRawOIDCToken(ctx context.Context, token string) context.Context {
+	return context.WithValue(ctx, rawOIDCTokenKey, token)
+}
+
+func rawOIDCTokenFromCtx(ctx context.Context) string {
+	s, _ := ctx.Value(rawOIDCTokenKey).(string)
+	return s
+}
+
 const defaultNamespace = "default"
 
 const (
 	verdictCorrect   = "correct"
 	verdictPartial   = "partial"
 	verdictIncorrect = "incorrect"
+)
+
+const (
+	policyAllow         = "allow"
+	policyWarn          = "warn"
+	policyStrict        = "strict"
+	annotationValueTrue = "true"
 )
 
 // terminalPhases is the set of AgentRequest phases from which no further
@@ -73,8 +90,10 @@ type Server struct {
 	mcpServers              []MCPServer
 	// Clock is the time source used for dedup window bucketing.
 	// Defaults to time.Now when nil. Override in tests for determinism.
-	Clock    func() time.Time
-	mcpCache *mcpServerCache
+	Clock                   func() time.Time
+	mcpCache                *mcpServerCache
+	regCache                *registrationCache
+	unregisteredAgentPolicy string
 }
 
 type affectedTargetBody struct {

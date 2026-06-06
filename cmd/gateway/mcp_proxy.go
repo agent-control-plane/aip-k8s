@@ -16,10 +16,12 @@ import (
 )
 
 var (
-	ErrJWTMissing       = errors.New("missing AIP bearer token")
-	ErrJWTInvalid       = errors.New("invalid AIP token")
-	ErrJWTActionDenied  = errors.New("tool not allowed for this action")
-	ErrJWTNotConfigured = errors.New("JWT signing not configured")
+	ErrJWTMissing         = errors.New("missing AIP bearer token")
+	ErrJWTInvalid         = errors.New("invalid AIP token")
+	ErrJWTActionDenied    = errors.New("tool not allowed for this action")
+	ErrJWTNotConfigured   = errors.New("JWT signing not configured")
+	ErrAgentNotRegistered = errors.New("AGENT_NOT_REGISTERED")
+	ErrIdentityMismatch   = errors.New("IDENTITY_MISMATCH")
 )
 
 const mcpRequestTimeout = 30 * time.Second
@@ -91,7 +93,7 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result, errMsg := s.forwardToolCall(r.Context(), mcpServer, args, toolName, 1)
+	result, errMsg := s.forwardToolCall(r.Context(), mcpServer, args, toolName, 1, agent)
 	if errMsg != "" {
 		if !tool.ReadOnly && requestRef != "" {
 			s.failAgentRequest(r.Context(), requestRef, "MCP tool execution failed: "+errMsg)

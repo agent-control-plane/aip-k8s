@@ -64,6 +64,9 @@ spec:
             {{- if .Values.gateway.jwtKeyPath }}
             - --jwt-key-path={{ .Values.gateway.jwtKeyPath }}
             {{- end }}
+            {{- if .Values.gateway.unregisteredAgentPolicy }}
+            - --unregistered-agent-policy={{ .Values.gateway.unregisteredAgentPolicy | quote }}
+            {{- end }}
           ports:
             - name: http
               containerPort: 8080
