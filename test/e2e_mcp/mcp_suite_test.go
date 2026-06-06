@@ -239,12 +239,57 @@ var _ = BeforeSuite(func() {
 	tokenSecret := fmt.Sprintf(`{"apiVersion":"v1","kind":"Secret","metadata":{"name":"%s","namespace":"%s"},"type":"Opaque","stringData":{"token":"%s"}}`, githubTokenSecret, namespace, githubPAT)
 	Expect(kubectlApply(tokenSecret)).To(Succeed(), "Failed to create github token Secret")
 
-	By("patching controller deployment with AIP_MCP_TOKEN env var")
-	patchJSON := fmt.Sprintf(`{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"AIP_MCP_TOKEN","valueFrom":{"secretKeyRef":{"name":"%s","key":"token"}}}]}]}}}}`, githubTokenSecret)
-	cmd = exec.Command("kubectl", "patch", "deployment", controllerDeployment, "-n", namespace,
-		"--type=strategic", "-p", patchJSON)
-	_, err = runCmd(cmd)
-	Expect(err).NotTo(HaveOccurred(), "Failed to patch controller deployment with AIP_MCP_TOKEN")
+	By("creating AgentRegistrations for MCP e2e agents")
+	agentRegs := fmt.Sprintf(`
+apiVersion: governance.aip.io/v1alpha1
+kind: AgentRegistration
+metadata:
+  name: mcp-e2e-agent
+  namespace: %s
+spec:
+  agentIdentity: "e2e-mcp-agent"
+  oidc: {}
+  externalIdentities:
+    - service: "github"
+      type: StaticSecret
+      staticSecret:
+        name: %s
+        namespace: %s
+        key: token
+---
+apiVersion: governance.aip.io/v1alpha1
+kind: AgentRegistration
+metadata:
+  name: mcp-e2e-agent-c
+  namespace: %s
+spec:
+  agentIdentity: "e2e-mcp-agent-c"
+  oidc: {}
+  externalIdentities:
+    - service: "github"
+      type: StaticSecret
+      staticSecret:
+        name: %s
+        namespace: %s
+        key: token
+---
+apiVersion: governance.aip.io/v1alpha1
+kind: AgentRegistration
+metadata:
+  name: mcp-e2e-agent-d
+  namespace: %s
+spec:
+  agentIdentity: "e2e-mcp-agent-d"
+  oidc: {}
+  externalIdentities:
+    - service: "github"
+      type: StaticSecret
+      staticSecret:
+        name: %s
+        namespace: %s
+        key: token
+`, namespace, githubTokenSecret, namespace, namespace, githubTokenSecret, namespace, namespace, githubTokenSecret, namespace)
+	Expect(kubectlApply(agentRegs)).To(Succeed(), "Failed to create AgentRegistration CRs")
 
 	By("deploying github-mcp-server into aip-k8s-system namespace")
 	cmd = exec.Command("kubectl", "apply", "-f", filepath.Join(projDir, "config", "mcp"))
@@ -355,6 +400,10 @@ var _ = AfterSuite(func() {
 	By("deleting MCPServer CR")
 	err := k8sClient.Delete(ctx, &governancev1alpha1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: mcpServerCRDName}})
 	Expect(client.IgnoreNotFound(err)).To(Succeed(), "deleting MCPServer %s", mcpServerCRDName)
+
+	By("deleting AgentRegistration CRs")
+	cmd = exec.Command("kubectl", "delete", "agentregistration", "--all", "-n", namespace, "--ignore-not-found")
+	_, _ = runCmd(cmd)
 
 	By("deleting aip-github-token Secret")
 	cmd = exec.Command("kubectl", "delete", "secret", githubTokenSecret, "-n", namespace, "--ignore-not-found", "--wait=false")

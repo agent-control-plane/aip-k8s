@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -582,6 +583,147 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 			Expect(execRPCResp.Result.Content).NotTo(BeEmpty())
 			Expect(execRPCResp.Result.Content[0].Text).To(ContainSubstring("/pull/"))
 			_, _ = fmt.Fprintf(GinkgoWriter, "PR created via aip/await_approval flow: %s\n", execRPCResp.Result.Content[0].Text)
+		})
+	})
+
+	Context("Scenario E: per-agent credential -> real GitHub tool call succeeds", func() {
+		var mcpServerE *governancev1alpha1.MCPServer
+		var agentRegE *governancev1alpha1.AgentRegistration
+
+		BeforeAll(func() {
+			if os.Getenv("E2E_GITHUB_TOKEN") == "" && os.Getenv("AIP_E2E_GITHUB_PAT") == "" {
+				Skip("E2E_GITHUB_TOKEN and AIP_E2E_GITHUB_PAT not set — skipping Scenario E")
+			}
+
+			By("creating a second MCPServer CR with no BearerTokenSecretRef")
+			mcpServerE = &governancev1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "github-scenario-e",
+				},
+				Spec: governancev1alpha1.MCPServerSpec{
+					URL:             fmt.Sprintf("http://localhost:%s", "18081"),
+					SecretNamespace: namespace,
+				},
+			}
+			Expect(k8sClient.Create(ctx, mcpServerE)).To(Succeed(), "Failed to create github-scenario-e MCPServer")
+
+			By("patching MCPServer status with discovered tools")
+			mcpServerE.Status.Tools = []governancev1alpha1.MCPServerTool{
+				{Name: "get_file_contents", ReadOnly: true},
+			}
+			mcpServerE.Status.DiscoveredToolCount = 1
+			Expect(k8sClient.Status().Update(ctx, mcpServerE)).To(Succeed(), "Failed to update github-scenario-e status")
+
+			By("creating a second AgentRegistration CR with StaticSecret binding")
+			agentRegE = &governancev1alpha1.AgentRegistration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "mcp-e2e-agent-e",
+					Namespace: namespace,
+				},
+				Spec: governancev1alpha1.AgentRegistrationSpec{
+					AgentIdentity: "e2e-mcp-agent-e",
+					OIDC:          &governancev1alpha1.OIDCSpec{},
+					ExternalIdentities: []governancev1alpha1.ExternalIdentityBinding{
+						{
+							Service: "github-scenario-e",
+							Type:    governancev1alpha1.ExternalIdentityStaticSecret,
+							StaticSecret: &governancev1alpha1.StaticSecretCredential{
+								Name:      githubTokenSecret,
+								Namespace: namespace,
+								Key:       "token",
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, agentRegE)).To(Succeed(), "Failed to create mcp-e2e-agent-e AgentRegistration")
+
+			By("waiting for gateway to cache MCPServer 'github-scenario-e'")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("curl", "-sf", fmt.Sprintf("%s/mcp-registry", gwURL))
+				out, err := runCmd(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(out).To(ContainSubstring(`"github-scenario-e/get_file_contents"`))
+			}, 30*time.Second, 1*time.Second).Should(Succeed(), "Gateway did not cache github-scenario-e")
+		})
+
+		AfterAll(func() {
+			if agentRegE != nil {
+				_ = k8sClient.Delete(ctx, agentRegE)
+			}
+			if mcpServerE != nil {
+				_ = k8sClient.Delete(ctx, mcpServerE)
+			}
+			// Clean up any remaining AgentRegistration CRs
+			cmd := exec.Command("kubectl", "delete", "agentregistration", "--all", "-n", namespace, "--ignore-not-found")
+			_, _ = runCmd(cmd)
+		})
+
+		It("should list tools and successfully execute tool call using per-agent credential", func() {
+			mcpURL := fmt.Sprintf("%s/mcp", gwURL)
+
+			By("calling tools/list — should include github-scenario-e tool")
+			listRPC := `{
+				"jsonrpc": "2.0",
+				"id": 80,
+				"method": "tools/list",
+				"params": {}
+			}`
+			listReq, err := http.NewRequest("POST", mcpURL, strings.NewReader(listRPC))
+			Expect(err).NotTo(HaveOccurred())
+			listReq.Header.Set("Content-Type", "application/json")
+			listReq.Header.Set("X-Remote-User", "e2e-mcp-agent-e")
+
+			listResp, err := http.DefaultClient.Do(listReq)
+			Expect(err).NotTo(HaveOccurred())
+			defer listResp.Body.Close()
+			listBody, err := io.ReadAll(listResp.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(listResp.StatusCode).To(Equal(http.StatusOK))
+			Expect(string(listBody)).To(ContainSubstring("github-scenario-e/get_file_contents"))
+
+			By("calling github-scenario-e/get_file_contents on a known file")
+			callRPC := `{
+				"jsonrpc": "2.0",
+				"id": 81,
+				"method": "tools/call",
+				"params": {
+					"name": "github-scenario-e/get_file_contents",
+					"arguments": {
+						"owner": "agent-control-plane",
+						"repo": "aip-k8s",
+						"path": "README.md"
+					}
+				}
+			}`
+			callReq, err := http.NewRequest("POST", mcpURL, strings.NewReader(callRPC))
+			Expect(err).NotTo(HaveOccurred())
+			callReq.Header.Set("Content-Type", "application/json")
+			callReq.Header.Set("X-Remote-User", "e2e-mcp-agent-e")
+
+			callResp, err := http.DefaultClient.Do(callReq)
+			Expect(err).NotTo(HaveOccurred())
+			defer callResp.Body.Close()
+			callBody, err := io.ReadAll(callResp.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(callResp.StatusCode).To(Equal(http.StatusOK))
+
+			var rpcResp struct {
+				Result *struct {
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"result,omitempty"`
+				Error *struct {
+					Code    int    `json:"code"`
+					Message string `json:"message"`
+				} `json:"error,omitempty"`
+			}
+			Expect(json.Unmarshal(callBody, &rpcResp)).To(Succeed())
+			Expect(rpcResp.Error).To(BeNil(), "JSON-RPC error: %+v", rpcResp.Error)
+			Expect(rpcResp.Result).NotTo(BeNil())
+			Expect(rpcResp.Result.Content).NotTo(BeEmpty())
+			Expect(rpcResp.Result.Content[0].Text).To(ContainSubstring("aip-k8s"))
 		})
 	})
 })

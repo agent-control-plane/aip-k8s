@@ -174,6 +174,7 @@ func TestMCPHandler_ToolsCall_ReadOnly(t *testing.T) {
 			{Name: "github", URL: upstream.URL, Status: "available",
 				Tools: []MCPTool{{Name: "get_file_contents", ReadOnly: true}}},
 		},
+		regCache: setupTestRegCache(),
 	}
 	body := mcpRequest("tools/call", mcp.ToolsCallParams{
 		Name:      "github/get_file_contents",
@@ -249,6 +250,7 @@ func TestMCPHandler_ToolsCall_WriteTool_ValidJWT(t *testing.T) {
 			{Name: "github", URL: upstream.URL, Status: "available",
 				Tools: []MCPTool{{Name: "create_pull_request", ReadOnly: false}}},
 		},
+		regCache: setupTestRegCache(),
 	}
 	body := mcpRequest("tools/call", mcp.ToolsCallParams{
 		Name:      "github/create_pull_request",
@@ -453,6 +455,7 @@ func TestMCPHandler_FullSequence(t *testing.T) {
 		jwtManager: mgr,
 		httpClient: &http.Client{Timeout: 5 * time.Second},
 		mcpServers: mcpServers,
+		regCache:   setupTestRegCache(),
 	}
 
 	t.Run("initialize", func(t *testing.T) {
@@ -523,6 +526,7 @@ func TestMCPHandler_ToolsCall_EnsureSessionFailureLogged(t *testing.T) {
 				Tools:     []MCPTool{{Name: "pods_list", ReadOnly: true}},
 				sessionMu: &sync.Mutex{}},
 		},
+		regCache: setupTestRegCache(),
 	}
 	body := mcpRequest("tools/call", mcp.ToolsCallParams{
 		Name:      "k8s/pods_list",
@@ -556,6 +560,7 @@ func TestMCPHandler_ToolsCall_Upstream401_ResetsSession(t *testing.T) {
 				sessionMu:    mu,
 				sessionReady: true}, // pre-warmed session
 		},
+		regCache: setupTestRegCache(),
 	}
 	body := mcpRequest("tools/call", mcp.ToolsCallParams{
 		Name:      "k8s/pods_list",
