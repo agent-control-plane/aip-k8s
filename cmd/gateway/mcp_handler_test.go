@@ -669,3 +669,88 @@ func TestMCPHandler_ToolsCall_WriteTool_K8sResourceMismatch(t *testing.T) {
 	g.Expect(resp.Error).ToNot(gomega.BeNil())
 	g.Expect(resp.Error.Code).To(gomega.Equal(mcp.ErrCodeForbidden))
 }
+
+// TestMCPHandler_ToolsCall_NilRegCache_Returns403 verifies the fail-closed
+// credential binding: when Server.regCache is nil, forwardToolCall must return
+// HTTP 403 rather than silently falling back to an unauthenticated request.
+func TestMCPHandler_ToolsCall_NilRegCache_Returns403(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	keyPath, cleanup := generateTestKeyFile(t)
+	defer cleanup()
+	mgr, err := jwt.NewManager(keyPath, time.Now)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	token, _, err := mgr.MintToken("agent-1", "github/create_pull_request", "acme/demo", "req-123")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// regCache is intentionally nil — simulates a gateway with no AgentRegistration watch.
+	s := &Server{
+		jwtManager: mgr,
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+		mcpServers: []MCPServer{
+			{Name: "github", URL: "http://example.com", Status: "available",
+				Tools: []MCPTool{{Name: "create_pull_request", ReadOnly: false}}},
+		},
+		regCache: nil,
+	}
+	body := mcpRequest("tools/call", mcp.ToolsCallParams{
+		Name:      "github/create_pull_request",
+		Arguments: map[string]any{"owner": "acme", "repo": "demo"},
+	})
+	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(string(body)))
+	req.Header.Set("X-AIP-Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+
+	s.handleMCP(rr, req)
+
+	g.Expect(rr.Code).To(gomega.Equal(http.StatusForbidden))
+	g.Expect(rr.Body.String()).To(gomega.ContainSubstring("no credential binding"))
+}
+
+// TestMCPHandler_ToolsCall_MissingBinding_Returns403 verifies the fail-closed
+// credential binding: when the regCache exists but has no provider for the
+// (agentIdentity, serverName) pair, forwardToolCall must return HTTP 403.
+func TestMCPHandler_ToolsCall_MissingBinding_Returns403(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	keyPath, cleanup := generateTestKeyFile(t)
+	defer cleanup()
+	mgr, err := jwt.NewManager(keyPath, time.Now)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// enforceResourceClaim (for non-GitHub servers) compares the JWT resource
+	// claim against buildTargetURI(args) = "k8s://<ns>/<kind>/<name>".
+	// Use matching values so the resource check passes and we reach forwardToolCall.
+	token, _, err := mgr.MintToken("agent-1", "unknown-server/create_resource",
+		"k8s://default/deployment/my-app", "req-456")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	s := &Server{
+		jwtManager: mgr,
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+		mcpServers: []MCPServer{
+			{Name: "unknown-server", URL: "http://example.com", Status: "available",
+				Tools: []MCPTool{{Name: "create_resource", ReadOnly: false}}},
+		},
+		// setupTestRegCache has providers for agent-1 on github/k8s/jira/github-mcp,
+		// but NOT on "unknown-server" — providerFor returns nil → 403.
+		regCache: setupTestRegCache(),
+	}
+	body := mcpRequest("tools/call", mcp.ToolsCallParams{
+		Name: "unknown-server/create_resource",
+		Arguments: map[string]any{
+			"namespace": "default",
+			"name":      "my-app",
+			"kind":      "Deployment",
+		},
+	})
+	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(string(body)))
+	req.Header.Set("X-AIP-Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+
+	s.handleMCP(rr, req)
+
+	g.Expect(rr.Code).To(gomega.Equal(http.StatusForbidden))
+	g.Expect(rr.Body.String()).To(gomega.ContainSubstring("no credential binding"))
+}

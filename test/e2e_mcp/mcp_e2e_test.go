@@ -164,12 +164,22 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 			By("submitting AgentRequest with proposedMaxReplicas=19 through gateway")
 			resp := submitToGateway(19)
 
+			// The controller may set RequiresApproval transiently before completing
+			// policy evaluation and transitioning to Denied. When that happens the
+			// gateway's pollAgentRequestPhase returns early with phase=Pending, so we
+			// poll the K8s API directly to wait for the final Denied state.
 			By("verifying phase=Denied with rule replica-cap-guard")
-			Expect(resp.Phase).To(Equal("Denied"))
-			Expect(resp.Denial).NotTo(BeNil())
-			Expect(resp.Denial.Code).To(Equal("POLICY_VIOLATION"))
-			Expect(resp.Denial.PolicyResults).NotTo(BeEmpty())
-			Expect(resp.Denial.PolicyResults[0].RuleName).To(Equal("replica-cap-guard"))
+			var finalAR governancev1alpha1.AgentRequest
+			Eventually(func(g Gomega) {
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: resp.Name, Namespace: reqNamespace}, &finalAR)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(string(finalAR.Status.Phase)).To(Equal("Denied"))
+			}, 60*time.Second, 2*time.Second).Should(Succeed(), "AgentRequest %s never reached Denied phase", resp.Name)
+
+			Expect(finalAR.Status.Denial).NotTo(BeNil())
+			Expect(finalAR.Status.Denial.Code).To(Equal("POLICY_VIOLATION"))
+			Expect(finalAR.Status.Denial.PolicyResults).NotTo(BeEmpty())
+			Expect(finalAR.Status.Denial.PolicyResults[0].RuleName).To(Equal("replica-cap-guard"))
 		})
 	})
 
@@ -626,7 +636,9 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 				},
 				Spec: governancev1alpha1.AgentRegistrationSpec{
 					AgentIdentity: "e2e-mcp-agent-e",
-					OIDC:          &governancev1alpha1.AgentRegistrationOIDC{},
+					// OIDC is intentionally omitted (nil): an empty AgentRegistrationOIDC{}
+					// is non-nil and activates AllowedSubjects enforcement with an empty list,
+					// which has subtly different semantics. Omitting it disables OIDC validation.
 					ExternalIdentities: []governancev1alpha1.ExternalIdentityBinding{
 						{
 							Service: "github-scenario-e",
@@ -643,11 +655,15 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 			Expect(k8sClient.Create(ctx, agentRegE)).To(Succeed(), "Failed to create mcp-e2e-agent-e AgentRegistration")
 
 			By("waiting for gateway to cache MCPServer 'github-scenario-e'")
+			// /mcp-registry returns {"mcp_servers":[{"name":"github-scenario-e","tools":[...],...}]}.
+			// The server name and tool name are separate JSON fields, so we check them
+			// independently: server name presence confirms the CRD watch fired.
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("curl", "-sf", fmt.Sprintf("%s/mcp-registry", gwURL))
 				out, err := runCmd(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(out).To(ContainSubstring(`"github-scenario-e/get_file_contents"`))
+				g.Expect(out).To(ContainSubstring(`"github-scenario-e"`))
+				g.Expect(out).To(ContainSubstring(`"get_file_contents"`))
 			}, 30*time.Second, 1*time.Second).Should(Succeed(), "Gateway did not cache github-scenario-e")
 
 			// Wait for the registrationCache watch to pick up the new AgentRegistration.
