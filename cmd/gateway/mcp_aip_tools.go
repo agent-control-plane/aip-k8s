@@ -73,8 +73,11 @@ func (s *Server) handleAIPAwaitApproval(
 	ctx, cancel := context.WithTimeout(r.Context(), s.waitTimeout)
 	defer cancel()
 
+	// Use apiReader (direct API server read) to avoid informer-cache lag: the
+	// AgentRequest may have been created milliseconds ago by governanceSubmissionPath
+	// and the cached client may not have received the watch event yet.
 	var ar v1alpha1.AgentRequest
-	if err := s.client.Get(ctx, client.ObjectKey{Namespace: defaultNamespace, Name: requestID}, &ar); err != nil {
+	if err := s.apiReader.Get(ctx, client.ObjectKey{Namespace: defaultNamespace, Name: requestID}, &ar); err != nil {
 		msg := "AgentRequest not found: " + requestID
 		if wErr := mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeInvalid, msg); wErr != nil {
 			log.Printf("WriteJSONRPCError failed: %v", wErr)
