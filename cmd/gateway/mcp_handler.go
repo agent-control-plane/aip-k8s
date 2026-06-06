@@ -351,9 +351,11 @@ func (s *Server) forwardToolCall(
 	}
 	bearerToken, err := p.Token(ctx, rawOIDCToken)
 	if err != nil {
+		// Log server-side so operators can grep without relying on client-visible error text.
+		log.Printf("credential resolution failed: agent=%q server=%q err=%v", agentIdentity, mcpServer.Name, err)
 		writeError(w, http.StatusInternalServerError,
-			fmt.Sprintf("failed to resolve credential for agent %q on server %q: %v",
-				agentIdentity, mcpServer.Name, err))
+			fmt.Sprintf("failed to resolve credential for agent %q on server %q",
+				agentIdentity, mcpServer.Name))
 		return mcpProxyResult{}, "", true
 	}
 	if bearerToken != "" {

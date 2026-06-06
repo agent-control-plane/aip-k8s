@@ -17,6 +17,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	governancev1alpha1 "github.com/agent-control-plane/aip-k8s/api/v1alpha1"
@@ -591,8 +592,11 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 		var agentRegE *governancev1alpha1.AgentRegistration
 
 		BeforeAll(func() {
-			if os.Getenv("E2E_GITHUB_TOKEN") == "" && os.Getenv("AIP_E2E_GITHUB_PAT") == "" {
-				Skip("E2E_GITHUB_TOKEN and AIP_E2E_GITHUB_PAT not set — skipping Scenario E")
+			// BeforeSuite already skips the whole suite when githubPATEnv is unset,
+			// so by the time we reach here the PAT is guaranteed to be set. This
+			// guard is a belt-and-suspenders in case the scenario is run in isolation.
+			if os.Getenv(githubPATEnv) == "" {
+				Skip(fmt.Sprintf("%s not set — skipping Scenario E", githubPATEnv))
 			}
 
 			By("creating a second MCPServer CR with no BearerTokenSecretRef")
@@ -622,7 +626,7 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 				},
 				Spec: governancev1alpha1.AgentRegistrationSpec{
 					AgentIdentity: "e2e-mcp-agent-e",
-					OIDC:          &governancev1alpha1.OIDCSpec{},
+					OIDC:          &governancev1alpha1.AgentRegistrationOIDC{},
 					ExternalIdentities: []governancev1alpha1.ExternalIdentityBinding{
 						{
 							Service: "github-scenario-e",
@@ -645,18 +649,40 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(out).To(ContainSubstring(`"github-scenario-e/get_file_contents"`))
 			}, 30*time.Second, 1*time.Second).Should(Succeed(), "Gateway did not cache github-scenario-e")
+
+			// Wait for the registrationCache watch to pick up the new AgentRegistration.
+			// The MCPServer poll above only confirms the server-list cache fired; the
+			// AgentRegistration watch is independent and may lag slightly. The gateway
+			// returns 403 specifically when regCache has no binding for the agent+server
+			// pair, so probe with a tools/call and retry until we get any non-403 status
+			// (200 = credential resolved + GitHub responded; 500 = upstream error but
+			// credential was resolved — both confirm the cache is populated).
+			By("waiting for registrationCache to pick up mcp-e2e-agent-e")
+			Eventually(func(g Gomega) {
+				probeReq, err := http.NewRequest("POST", fmt.Sprintf("%s/mcp", gwURL),
+					strings.NewReader(`{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"github-scenario-e/get_file_contents","arguments":{"owner":"agent-control-plane","repo":"aip-k8s","path":"README.md"}}}`))
+				g.Expect(err).NotTo(HaveOccurred())
+				probeReq.Header.Set("Content-Type", "application/json")
+				probeReq.Header.Set("X-Remote-User", "e2e-mcp-agent-e")
+				probeResp, err := http.DefaultClient.Do(probeReq)
+				g.Expect(err).NotTo(HaveOccurred())
+				defer probeResp.Body.Close() //nolint:errcheck
+				g.Expect(probeResp.StatusCode).NotTo(Equal(http.StatusForbidden),
+					"regCache has not yet picked up mcp-e2e-agent-e AgentRegistration")
+			}, 30*time.Second, 2*time.Second).Should(Succeed(), "registrationCache did not pick up mcp-e2e-agent-e")
 		})
 
 		AfterAll(func() {
+			// Delete only the resources Scenario E created. AfterSuite handles the
+			// namespace-wide --all cleanup. Deleting --all here would also remove
+			// the BeforeSuite registrations (mcp-e2e-agent, -c, -d), which could
+			// corrupt any future scenario added after this one.
 			if agentRegE != nil {
 				_ = k8sClient.Delete(ctx, agentRegE)
 			}
 			if mcpServerE != nil {
 				_ = k8sClient.Delete(ctx, mcpServerE)
 			}
-			// Clean up any remaining AgentRegistration CRs
-			cmd := exec.Command("kubectl", "delete", "agentregistration", "--all", "-n", namespace, "--ignore-not-found")
-			_, _ = runCmd(cmd)
 		})
 
 		It("should list tools and successfully execute tool call using per-agent credential", func() {

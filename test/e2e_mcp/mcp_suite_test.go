@@ -240,6 +240,10 @@ var _ = BeforeSuite(func() {
 	Expect(kubectlApply(tokenSecret)).To(Succeed(), "Failed to create github token Secret")
 
 	By("creating AgentRegistrations for MCP e2e agents")
+	// These agents authenticate via X-Remote-User proxy header (no OIDC tokens).
+	// Omit the oidc field entirely: an empty oidc: {} is non-nil and activates
+	// AllowedSubjects enforcement with an empty list, which has subtly different
+	// semantics. Omitting it is the explicit "no OIDC validation" signal.
 	agentRegs := fmt.Sprintf(`
 apiVersion: governance.aip.io/v1alpha1
 kind: AgentRegistration
@@ -248,7 +252,6 @@ metadata:
   namespace: %s
 spec:
   agentIdentity: "e2e-mcp-agent"
-  oidc: {}
   externalIdentities:
     - service: "github"
       type: StaticSecret
@@ -264,7 +267,6 @@ metadata:
   namespace: %s
 spec:
   agentIdentity: "e2e-mcp-agent-c"
-  oidc: {}
   externalIdentities:
     - service: "github"
       type: StaticSecret
@@ -280,7 +282,6 @@ metadata:
   namespace: %s
 spec:
   agentIdentity: "e2e-mcp-agent-d"
-  oidc: {}
   externalIdentities:
     - service: "github"
       type: StaticSecret
@@ -397,9 +398,12 @@ var _ = AfterSuite(func() {
 	cmd := exec.Command("kubectl", "delete", "-f", filepath.Join(getProjectDir(), "config", "mcp"), "--ignore-not-found", "--wait=false")
 	_, _ = runCmd(cmd)
 
-	By("deleting MCPServer CR")
+	By("deleting MCPServer CRs")
 	err := k8sClient.Delete(ctx, &governancev1alpha1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: mcpServerCRDName}})
 	Expect(client.IgnoreNotFound(err)).To(Succeed(), "deleting MCPServer %s", mcpServerCRDName)
+	// Defensive cleanup for Scenario E's MCPServer; its AfterAll deletes it too,
+	// but if that AfterAll was skipped or panicked this ensures no leak between runs.
+	_ = client.IgnoreNotFound(k8sClient.Delete(ctx, &governancev1alpha1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: "github-scenario-e"}}))
 
 	By("deleting AgentRegistration CRs")
 	cmd = exec.Command("kubectl", "delete", "agentregistration", "--all", "-n", namespace, "--ignore-not-found")
