@@ -187,6 +187,12 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *mc
 
 	result, errMsg, done := s.forwardToolCall(r.Context(), w, mcpServer, params.Arguments, toolName, req.ID, agent)
 	if done {
+		// forwardToolCall already wrote the error response. For JWT-authorized write
+		// tools the AgentRequest must still be advanced to Failed so the OpsLock is
+		// released; the response body is already committed so this is a side-effect only.
+		if requestRef != "" {
+			s.failAgentRequest(r.Context(), requestRef, "MCP tool credential error")
+		}
 		return
 	}
 	if errMsg != "" {
@@ -349,10 +355,10 @@ func (s *Server) forwardToolCall(
 				agentIdentity, mcpServer.Name))
 		return mcpProxyResult{}, "", true
 	}
-	bearerToken, err := p.Token(ctx, rawOIDCToken)
+	bearerToken, err := p.Token(callCtx, rawOIDCToken)
 	if err != nil {
 		// Log server-side so operators can grep without relying on client-visible error text.
-		log.Printf("credential resolution failed: agent=%q server=%q err=%v", agentIdentity, mcpServer.Name, err)
+		log.Printf("Credential resolution failed: server=%q agent=%q err=%v", mcpServer.Name, agentIdentity, err)
 		writeError(w, http.StatusInternalServerError,
 			fmt.Sprintf("failed to resolve credential for agent %q on server %q",
 				agentIdentity, mcpServer.Name))
