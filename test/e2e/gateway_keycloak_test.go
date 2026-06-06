@@ -184,11 +184,23 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 			`[{"name":%q,"url":%q,"tools":[{"name":"echo","read_only":true}]}]`,
 			kcFakeMCPServerName, fakeMCP.url(),
 		)
+		// Explicitly restrict agent subjects so openMode() is false.
+		// Without this every caller passes every role check (open mode),
+		// which would cause test 4 to get 404 instead of 403 when an agent
+		// token hits a reviewer endpoint (role check passes → K8s Get →
+		// NotFound). The reviewer-subjects flag is intentionally omitted so
+		// aip-registered-agent (agent only) fails the reviewer role check.
+		agentSubjects := strings.Join([]string{
+			kcRegisteredAgentID, // tests 3, 4, 5
+			"aip-agent-1",       // test 1: unregistered agent strict rejection
+			kcWrongSubjectID,    // test 2: IDENTITY_MISMATCH
+		}, ",")
 		gwProc = exec.Command(binPath,
 			"--addr=:"+kc8GWPort,
 			"--oidc-issuer-url="+kcIssuer,
 			"--oidc-audience=aip-gateway",
 			"--oidc-identity-claim=azp",
+			"--agent-subjects="+agentSubjects,
 			"--unregistered-agent-policy=strict",
 		)
 		gwProc.Dir = projDir
