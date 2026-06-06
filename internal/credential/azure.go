@@ -24,7 +24,7 @@ type AzureWorkloadIdentityProvider struct {
 	tokenURL string
 	client   *http.Client
 
-	// caches is keyed by rawOIDCToken; each entry is a *TokenCache.
+	// caches is keyed by sha256(rawOIDCToken) hex; each entry is a *TokenCache.
 	caches sync.Map
 }
 
@@ -131,6 +131,14 @@ func (p *AzureWorkloadIdentityProvider) Token(ctx context.Context, rawOIDCToken 
 	})
 	actual, _ := p.caches.LoadOrStore(key, c)
 	result, err := actual.(*TokenCache).Get(ctx)
+	if err != nil && actual == c {
+		// First fetch for this new entry failed. Evict it so the closure's
+		// reference to the raw OIDC token is released. IsExpired() returns false
+		// for entries that have never fetched successfully, so the amortized
+		// cleanup loop below would never evict it. CompareAndDelete is used to
+		// avoid removing a replacement entry written by a concurrent caller.
+		p.caches.CompareAndDelete(key, c)
+	}
 
 	// Amortized cleanup: evict entries whose exchanged token has expired.
 	p.caches.Range(func(k, v any) bool {

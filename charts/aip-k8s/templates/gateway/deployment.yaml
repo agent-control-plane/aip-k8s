@@ -65,7 +65,7 @@ spec:
             - --jwt-key-path={{ .Values.gateway.jwtKeyPath }}
             {{- end }}
             {{- if .Values.gateway.unregisteredAgentPolicy }}
-            - --unregistered-agent-policy={{ .Values.gateway.unregisteredAgentPolicy | quote }}
+            - --unregistered-agent-policy={{ .Values.gateway.unregisteredAgentPolicy }}
             {{- end }}
           ports:
             - name: http
