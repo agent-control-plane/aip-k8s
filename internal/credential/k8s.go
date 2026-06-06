@@ -94,7 +94,7 @@ func (p *KubernetesOIDCProvider) doExchange(ctx context.Context, assertion strin
 	}
 
 	var tokenResp oidcExchangeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&tokenResp); err != nil {
 		return "", time.Time{}, fmt.Errorf("failed to decode token response: %w", err)
 	}
 

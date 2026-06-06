@@ -31,8 +31,8 @@ const (
 	ExternalIdentityAzureWorkloadIdentity ExternalIdentityType = "AzureWorkloadIdentity"
 	// ExternalIdentityAWSWebIdentity uses AssumeRoleWithWebIdentity via AWS STS.
 	ExternalIdentityAWSWebIdentity ExternalIdentityType = "AWSWebIdentity"
-	// ExternalIdentityKubernetesOIDC uses the agent's OIDC token directly (passthrough)
-	// or exchanges it via RFC 8693 for a K8s-valid token.
+	// ExternalIdentityKubernetesOIDC exchanges the agent's OIDC token via RFC 8693
+	// for a target-audience token. Passthrough mode is not supported.
 	ExternalIdentityKubernetesOIDC ExternalIdentityType = "KubernetesOIDC"
 	// ExternalIdentityKubernetesTokenRequest uses K8s ServiceAccount TokenRequest API.
 	ExternalIdentityKubernetesTokenRequest ExternalIdentityType = "KubernetesTokenRequest"
