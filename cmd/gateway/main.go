@@ -61,6 +61,8 @@ var (
 	jwtKey = flag.String("jwt-key", "",
 		"PEM-encoded Ed25519 private key for JWT signing (alternative to --jwt-key-path). "+
 			"Typically sourced from a K8s Secret via environment variable.")
+	unregisteredAgentPolicy = flag.String("unregistered-agent-policy", "allow",
+		"Policy for unregistered agents: 'allow', 'warn', or 'strict'")
 )
 
 const (
@@ -185,6 +187,8 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 		mcpCache.seed(srv.Name, srv.URL, srv.BearerToken, srv.Tools)
 	}
 
+	regCache := newRegistrationCache(mgr.GetClient())
+
 	server := &Server{
 		client:                  mgr.GetClient(),    // cached — field indexers work here
 		apiReader:               mgr.GetAPIReader(), // direct — bypass cache for consistency-sensitive reads
@@ -198,9 +202,12 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 		httpClient:              &http.Client{Timeout: 30 * time.Second},
 		mcpServers:              mcpServers,
 		mcpCache:                mcpCache,
+		regCache:                regCache,
+		unregisteredAgentPolicy: *unregisteredAgentPolicy,
 	}
 
 	go watchMCPServers(ctx, k8sClient, mcpCache)
+	go watchAgentRegistrations(ctx, k8sClient, regCache)
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /whoami", server.handleWhoAmI)

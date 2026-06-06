@@ -21,7 +21,7 @@ import (
 )
 
 // ExternalIdentityType identifies the credential provider for an outbound binding.
-// +kubebuilder:validation:Enum=StaticSecret;AzureWorkloadIdentity;AWSWebIdentity;KubernetesOIDC
+// +kubebuilder:validation:Enum=StaticSecret;AzureWorkloadIdentity;AWSWebIdentity;KubernetesOIDC;KubernetesTokenRequest
 type ExternalIdentityType string
 
 const (
@@ -34,6 +34,8 @@ const (
 	// ExternalIdentityKubernetesOIDC uses the agent's OIDC token directly (passthrough)
 	// or exchanges it via RFC 8693 for a K8s-valid token.
 	ExternalIdentityKubernetesOIDC ExternalIdentityType = "KubernetesOIDC"
+	// ExternalIdentityKubernetesTokenRequest uses K8s ServiceAccount TokenRequest API.
+	ExternalIdentityKubernetesTokenRequest ExternalIdentityType = "KubernetesTokenRequest"
 )
 
 // StaticSecretCredential reads a bearer token from a K8s Secret.
@@ -118,12 +120,29 @@ type KubernetesOIDCCredential struct {
 	Audience string `json:"audience,omitempty"`
 }
 
+// KubernetesTokenRequestCredential configures using K8s ServiceAccount TokenRequest API.
+type KubernetesTokenRequestCredential struct {
+	// ServiceAccountName is the name of the ServiceAccount to impersonate.
+	// +kubebuilder:validation:MinLength=1
+	ServiceAccountName string `json:"serviceAccountName"`
+	// ServiceAccountNamespace is the namespace of the ServiceAccount.
+	// +kubebuilder:validation:MinLength=1
+	ServiceAccountNamespace string `json:"serviceAccountNamespace"`
+	// ExpirationSeconds is the requested duration of validity for the token.
+	// +optional
+	ExpirationSeconds *int32 `json:"expirationSeconds,omitempty"`
+	// Audiences are the intended audiences of the token.
+	// +optional
+	Audiences []string `json:"audiences,omitempty"`
+}
+
 // ExternalIdentityBinding maps an MCP server to the credential provider for
 // this agent on that service.
 // +kubebuilder:validation:XValidation:rule="self.type == 'StaticSecret' ? has(self.staticSecret) : !has(self.staticSecret)",message="staticSecret must be set when type is StaticSecret and unset otherwise"
 // +kubebuilder:validation:XValidation:rule="self.type == 'AzureWorkloadIdentity' ? has(self.azureWorkloadIdentity) : !has(self.azureWorkloadIdentity)",message="azureWorkloadIdentity must be set when type is AzureWorkloadIdentity and unset otherwise"
 // +kubebuilder:validation:XValidation:rule="self.type == 'AWSWebIdentity' ? has(self.awsWebIdentity) : !has(self.awsWebIdentity)",message="awsWebIdentity must be set when type is AWSWebIdentity and unset otherwise"
 // +kubebuilder:validation:XValidation:rule="self.type == 'KubernetesOIDC' ? has(self.kubernetesOIDC) : !has(self.kubernetesOIDC)",message="kubernetesOIDC must be set when type is KubernetesOIDC and unset otherwise"
+// +kubebuilder:validation:XValidation:rule="self.type == 'KubernetesTokenRequest' ? has(self.kubernetesTokenRequest) : !has(self.kubernetesTokenRequest)",message="kubernetesTokenRequest must be set when type is KubernetesTokenRequest and unset otherwise"
 type ExternalIdentityBinding struct {
 	// Service matches MCPServer.metadata.name (e.g. "github", "k8s-mcp-server").
 	// +kubebuilder:validation:MinLength=1
@@ -142,6 +161,9 @@ type ExternalIdentityBinding struct {
 	// KubernetesOIDC is set when Type is KubernetesOIDC.
 	// +optional
 	KubernetesOIDC *KubernetesOIDCCredential `json:"kubernetesOIDC,omitempty"`
+	// KubernetesTokenRequest is set when Type is KubernetesTokenRequest.
+	// +optional
+	KubernetesTokenRequest *KubernetesTokenRequestCredential `json:"kubernetesTokenRequest,omitempty"`
 }
 
 // AgentRegistrationOIDC declares which OIDC tokens prove this agent's identity.

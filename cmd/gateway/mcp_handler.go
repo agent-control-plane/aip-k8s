@@ -185,7 +185,7 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *mc
 		action = prefixedAction
 	}
 
-	result, errMsg := s.forwardToolCall(r.Context(), mcpServer, params.Arguments, toolName, req.ID)
+	result, errMsg := s.forwardToolCall(r.Context(), mcpServer, params.Arguments, toolName, req.ID, agent)
 	if errMsg != "" {
 		// JWT-authorized write tool failed: advance AR to Failed to release the lock.
 		if requestRef != "" {
@@ -267,7 +267,11 @@ func (s *Server) governanceSubmissionPath(
 		r.Context(), agentID, params.Name, aipTargetURI, aipReason, params.Arguments,
 	)
 	if submitErr != nil {
-		if wErr := mcp.WriteJSONRPCError(w, req.ID, mcp.ErrCodeInternal,
+		code := mcp.ErrCodeInternal
+		if errors.Is(submitErr, ErrAgentNotRegistered) || errors.Is(submitErr, ErrIdentityMismatch) {
+			code = mcp.ErrCodeForbidden
+		}
+		if wErr := mcp.WriteJSONRPCError(w, req.ID, code,
 			"failed to submit governance request: "+submitErr.Error()); wErr != nil {
 			log.Printf("WriteJSONRPCError failed: %v", wErr)
 		}
@@ -308,7 +312,7 @@ func (s *Server) enforceResourceClaimForTool(serverName, resource string, args m
 
 func (s *Server) forwardToolCall(
 	ctx context.Context, mcpServer *MCPServer, args map[string]any,
-	toolName string, id any,
+	toolName string, id any, agentIdentity string,
 ) (mcpProxyResult, string) {
 	rpcBody, err := buildJSONRPCRequestBody(args, toolName, id)
 	if err != nil {
@@ -329,7 +333,19 @@ func (s *Server) forwardToolCall(
 	if mcpServer.SessionID != "" {
 		req.Header.Set("Mcp-Session-Id", mcpServer.SessionID)
 	}
+	rawOIDCToken := rawOIDCTokenFromCtx(ctx)
 	bearerToken := mcpServer.BearerToken
+	if s.regCache != nil {
+		if provider := s.regCache.providerFor(agentIdentity, mcpServer.Name); provider != nil {
+			tok, err := provider.Token(ctx, rawOIDCToken)
+			if err != nil {
+				log.Printf("credential resolution %s/%s: %v — falling back to shared token",
+					agentIdentity, mcpServer.Name, err)
+			} else {
+				bearerToken = tok
+			}
+		}
+	}
 	if bearerToken == "" {
 		bearerToken = os.Getenv("AIP_MCP_TOKEN")
 	}

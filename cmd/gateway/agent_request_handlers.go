@@ -99,9 +99,6 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusUnauthorized, "caller identity required")
 		return
 	}
-	if !requireRole(s.roles, roleAgent, sub, callerGroupsFromCtx(r.Context()), w) {
-		return
-	}
 
 	var body createAgentRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -114,25 +111,60 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// agentIdentity is the verified identity used for all downstream logic.
-	// When authRequired=true the token subject (sub) is the authoritative source —
-	// sub is guaranteed non-empty here because the 401 guard above already rejected
-	// unauthenticated requests. body.AgentIdentity is ignored so agents cannot
-	// impersonate a different identity. This matches the MCP path
-	// (governanceSubmissionPath) which derives agentID from callerSubFromCtx only.
-	// When authRequired=false body.AgentIdentity is always used, regardless of
-	// whether any middleware (e.g. proxy-header) happened to populate callerSub.
-	// Tying to s.authRequired rather than sub != "" prevents the proxy-header
-	// middleware from silently overriding the body identity in dev/open mode.
 	var agentIdentity string
-	if s.authRequired {
-		agentIdentity = sub
+	var unregistered bool
+	var reg *v1alpha1.AgentRegistration
+	if s.regCache != nil {
+		reg = s.regCache.getForSubject(body.AgentIdentity, sub)
+	}
+
+	if reg != nil {
+		agentIdentity = reg.Spec.AgentIdentity
+		// Validate OIDC allowedSubjects if configured in the registration
+		if s.authRequired && reg.Spec.OIDC != nil && len(reg.Spec.OIDC.AllowedSubjects) > 0 {
+			if err := validateOIDCSubject(reg, sub); err != nil {
+				writeError(w, http.StatusForbidden, "IDENTITY_MISMATCH: "+err.Error())
+				return
+			}
+		} else {
+			// Fallback to global role check if registration doesn't specify AllowedSubjects
+			if !requireRole(s.roles, roleAgent, sub, callerGroupsFromCtx(r.Context()), w) {
+				return
+			}
+		}
 	} else {
-		if body.AgentIdentity == "" {
-			writeError(w, http.StatusBadRequest, "agentIdentity is required when running without authentication")
+		// getForSubject returned nil: either no registration exists for this agent, or one
+		// exists but the caller's OIDC subject is not in its AllowedSubjects list.
+		if s.regCache != nil && body.AgentIdentity != "" && s.regCache.exists(body.AgentIdentity) {
+			writeError(w, http.StatusForbidden, "IDENTITY_MISMATCH: OIDC subject not in allowedSubjects")
 			return
 		}
-		agentIdentity = body.AgentIdentity
+
+		if !requireRole(s.roles, roleAgent, sub, callerGroupsFromCtx(r.Context()), w) {
+			return
+		}
+
+		if s.regCache != nil {
+			unregistered = true
+			switch s.unregisteredAgentPolicy {
+			case policyStrict:
+				writeError(w, http.StatusForbidden, "AGENT_NOT_REGISTERED")
+				return
+			case policyWarn:
+				log.Printf("Unregistered agent, policy=warn, agentIdentity=%q", body.AgentIdentity)
+			}
+		}
+
+		// Resolve default/open identity
+		if s.authRequired {
+			agentIdentity = sub
+		} else {
+			if body.AgentIdentity == "" {
+				writeError(w, http.StatusBadRequest, "agentIdentity is required when running without authentication")
+				return
+			}
+			agentIdentity = body.AgentIdentity
+		}
 	}
 
 	ns := body.Namespace
@@ -174,6 +206,13 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 			ExecutionMode:  body.ExecutionMode,
 			ScopeBounds:    body.ScopeBounds,
 		},
+	}
+
+	if unregistered && s.unregisteredAgentPolicy == policyWarn {
+		if agentReq.Annotations == nil {
+			agentReq.Annotations = make(map[string]string)
+		}
+		agentReq.Annotations["governance.aip.io/unregistered"] = annotationValueTrue
 	}
 
 	// GovernedResource admission: URI → agent identity → action (per design doc order).
@@ -806,4 +845,15 @@ func (s *Server) handleListAgentRequests(w http.ResponseWriter, r *http.Request)
 	} else {
 		writeJSON(w, http.StatusOK, items)
 	}
+}
+
+func validateOIDCSubject(reg *v1alpha1.AgentRegistration, sub string) error {
+	if reg.Spec.OIDC == nil || len(reg.Spec.OIDC.AllowedSubjects) == 0 {
+		return nil
+	}
+	if slices.Contains(reg.Spec.OIDC.AllowedSubjects, sub) {
+		return nil
+	}
+	return fmt.Errorf("token subject %q not in allowedSubjects for agent %q",
+		sub, reg.Spec.AgentIdentity)
 }
