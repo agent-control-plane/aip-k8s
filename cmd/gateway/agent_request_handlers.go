@@ -120,14 +120,10 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 
 	if reg != nil {
 		agentIdentity = reg.Spec.AgentIdentity
-		// Validate OIDC allowedSubjects if configured in the registration
-		if s.authRequired && reg.Spec.OIDC != nil && len(reg.Spec.OIDC.AllowedSubjects) > 0 {
-			if err := validateOIDCSubject(reg, sub); err != nil {
-				writeError(w, http.StatusForbidden, "IDENTITY_MISMATCH: "+err.Error())
-				return
-			}
-		} else {
-			// Fallback to global role check if registration doesn't specify AllowedSubjects
+		// getForSubject already verified identity: sub ∈ AllowedSubjects (when set)
+		// or sub == agentIdentity (when AllowedSubjects is empty). No re-validation needed.
+		// For registrations without AllowedSubjects, require the agent role as defense-in-depth.
+		if s.authRequired && (reg.Spec.OIDC == nil || len(reg.Spec.OIDC.AllowedSubjects) == 0) {
 			if !requireRole(s.roles, roleAgent, sub, callerGroupsFromCtx(r.Context()), w) {
 				return
 			}
@@ -845,15 +841,4 @@ func (s *Server) handleListAgentRequests(w http.ResponseWriter, r *http.Request)
 	} else {
 		writeJSON(w, http.StatusOK, items)
 	}
-}
-
-func validateOIDCSubject(reg *v1alpha1.AgentRegistration, sub string) error {
-	if reg.Spec.OIDC == nil || len(reg.Spec.OIDC.AllowedSubjects) == 0 {
-		return nil
-	}
-	if slices.Contains(reg.Spec.OIDC.AllowedSubjects, sub) {
-		return nil
-	}
-	return fmt.Errorf("token subject %q not in allowedSubjects for agent %q",
-		sub, reg.Spec.AgentIdentity)
 }

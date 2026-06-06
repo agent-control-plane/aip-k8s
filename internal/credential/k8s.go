@@ -2,6 +2,8 @@ package credential
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,17 +20,21 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// KubernetesOIDCProvider handles OIDC token passthrough or RFC 8693 token exchange.
-// Each distinct inbound OIDC token gets its own TokenCache entry so that concurrent
-// callers with different identities cannot overwrite each other's token.
+// KubernetesOIDCProvider exchanges an agent OIDC token for a target-audience token
+// via RFC 8693 token exchange. Passthrough mode (no exchange URL) is not supported:
+// forwarding the gateway-audience token to upstream servers allows compromised servers
+// to replay it against the gateway.
+//
+// Each distinct inbound OIDC token gets its own TokenCache entry (keyed by the token's
+// SHA-256 digest) to prevent cross-identity credential contamination under concurrent load.
 type KubernetesOIDCProvider struct {
 	tokenExchangeURL string
 	audience         string
 	client           *http.Client
 
-	// caches is keyed by rawOIDCToken; each entry is a *TokenCache.
-	// Using sync.Map avoids a TOCTOU where two goroutines with different OIDC
-	// tokens would race to write a shared rawOIDCToken field.
+	// caches is keyed by sha256(rawOIDCToken) hex; each value is a *TokenCache.
+	// Keying by digest avoids retaining raw JWT strings (which contain sensitive claims)
+	// as map keys in memory. Entries are evicted amortized on each Token() call.
 	caches sync.Map
 }
 
@@ -38,6 +44,7 @@ type oidcExchangeResponse struct {
 }
 
 // NewKubernetesOIDCProvider creates a new KubernetesOIDCProvider.
+// tokenExchangeURL must be non-empty; passthrough mode is intentionally unsupported.
 func NewKubernetesOIDCProvider(tokenExchangeURL, audience string) *KubernetesOIDCProvider {
 	return &KubernetesOIDCProvider{
 		tokenExchangeURL: tokenExchangeURL,
@@ -50,6 +57,13 @@ func NewKubernetesOIDCProvider(tokenExchangeURL, audience string) *KubernetesOID
 func (p *KubernetesOIDCProvider) WithClient(httpClient *http.Client) *KubernetesOIDCProvider {
 	p.client = httpClient
 	return p
+}
+
+// tokenKey returns a safe map key for rawOIDCToken: the hex-encoded SHA-256 digest.
+// This avoids retaining full JWT strings (including header/payload) as map keys.
+func tokenKey(rawToken string) string {
+	sum := sha256.Sum256([]byte(rawToken))
+	return hex.EncodeToString(sum[:])
 }
 
 // doExchange performs the RFC 8693 token exchange for the given assertion.
@@ -104,21 +118,26 @@ func (p *KubernetesOIDCProvider) doExchange(ctx context.Context, assertion strin
 	return tokenResp.AccessToken, expiresAt, nil
 }
 
-// Token returns either the passthrough raw token or the exchanged token.
-// Each distinct rawOIDCToken gets its own TokenCache so concurrent callers with
-// different inbound identities never share a single exchanged-token slot.
+// Token returns the exchanged token for the given inbound OIDC token.
+// Each distinct rawOIDCToken gets its own TokenCache keyed by sha256(token), so
+// concurrent callers with different identities cannot share or overwrite each other's
+// cached credential. Expired cache entries are evicted amortized on each call.
 func (p *KubernetesOIDCProvider) Token(ctx context.Context, rawOIDCToken string) (string, error) {
 	if p.tokenExchangeURL == "" {
-		// Passthrough mode
-		return rawOIDCToken, nil
+		// Passthrough mode is not supported: the inbound OIDC token is scoped to the
+		// gateway audience. Forwarding it to upstream MCP servers allows a compromised
+		// server to replay the token against the gateway.
+		return "", fmt.Errorf("KubernetesOIDC: tokenExchangeURL is required; passthrough is not supported")
 	}
 
 	if rawOIDCToken == "" {
 		return "", fmt.Errorf("raw OIDC token is required for Kubernetes token exchange")
 	}
 
-	// Fast path: cache entry already exists for this token.
-	if v, ok := p.caches.Load(rawOIDCToken); ok {
+	key := tokenKey(rawOIDCToken)
+
+	// Fast path: cache entry already exists for this token digest.
+	if v, ok := p.caches.Load(key); ok {
 		return v.(*TokenCache).Get(ctx)
 	}
 
@@ -127,8 +146,19 @@ func (p *KubernetesOIDCProvider) Token(ctx context.Context, rawOIDCToken string)
 	c := NewTokenCache(func(ctx context.Context) (string, time.Time, error) {
 		return p.doExchange(ctx, tok)
 	})
-	actual, _ := p.caches.LoadOrStore(rawOIDCToken, c)
-	return actual.(*TokenCache).Get(ctx)
+	actual, _ := p.caches.LoadOrStore(key, c)
+	result, err := actual.(*TokenCache).Get(ctx)
+
+	// Amortized cleanup: evict entries whose exchanged token has expired.
+	// This bounds memory growth as inbound OIDC tokens rotate.
+	p.caches.Range(func(k, v any) bool {
+		if v.(*TokenCache).IsExpired() {
+			p.caches.Delete(k)
+		}
+		return true
+	})
+
+	return result, err
 }
 
 // KubernetesTokenRequestProvider fetches tokens using the ServiceAccount TokenRequest API.

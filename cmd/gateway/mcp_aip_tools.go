@@ -247,16 +247,12 @@ func (s *Server) enforceRegistrationPolicy(ctx context.Context, agentID string) 
 		}
 		return agentID, true, nil
 	}
-	resolvedID := reg.Spec.AgentIdentity
-	if s.authRequired {
-		if sub == "" {
-			return "", false, fmt.Errorf("%w: caller subject required when auth is enabled", ErrIdentityMismatch)
-		}
-		if err := validateOIDCSubject(reg, sub); err != nil {
-			return "", false, fmt.Errorf("%w: %w", ErrIdentityMismatch, err)
-		}
+	// getForSubject already verified identity (sub ∈ AllowedSubjects or sub == agentIdentity).
+	// Guard against an empty sub when auth is required as a final safety net.
+	if s.authRequired && sub == "" {
+		return "", false, fmt.Errorf("%w: caller subject required when auth is enabled", ErrIdentityMismatch)
 	}
-	return resolvedID, false, nil
+	return reg.Spec.AgentIdentity, false, nil
 }
 
 // submitAgentRequestForTool creates an AgentRequest for a write tool call that

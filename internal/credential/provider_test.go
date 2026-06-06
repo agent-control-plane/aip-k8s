@@ -64,7 +64,9 @@ func TestTokenCacheSingleflight(t *testing.T) {
 
 func TestStaticSecretProvider(t *testing.T) {
 	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("failed to add corev1 scheme: %v", err)
+	}
 
 	secretName := "my-secret"
 	namespace := "default"
@@ -191,14 +193,14 @@ func TestAzureWorkloadIdentityProvider(t *testing.T) {
 }
 
 func TestKubernetesOIDCProvider(t *testing.T) {
-	t.Run("PassthroughMode", func(t *testing.T) {
+	t.Run("PassthroughMode_IsRejected", func(t *testing.T) {
+		// Passthrough mode (empty tokenExchangeURL) is intentionally unsupported:
+		// forwarding a gateway-audience token to upstream MCP servers allows a
+		// compromised server to replay it against the gateway.
 		provider := NewKubernetesOIDCProvider("", "")
-		token, err := provider.Token(context.Background(), "raw-token-123")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if token != "raw-token-123" {
-			t.Errorf("expected raw-token-123, got %s", token)
+		_, err := provider.Token(context.Background(), "raw-token-123")
+		if err == nil {
+			t.Fatal("expected error for passthrough mode, got nil")
 		}
 	})
 

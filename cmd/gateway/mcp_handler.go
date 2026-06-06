@@ -339,11 +339,14 @@ func (s *Server) forwardToolCall(
 		if provider := s.regCache.providerFor(agentIdentity, mcpServer.Name); provider != nil {
 			tok, err := provider.Token(ctx, rawOIDCToken)
 			if err != nil {
-				log.Printf("credential resolution %s/%s: %v — falling back to shared token",
+				// A per-agent provider is configured — fail closed. Falling back to the
+				// shared super-token would defeat per-agent scoping and is a privilege escalation.
+				log.Printf("Credential resolution failed for registered agent, agentIdentity=%s, server=%s, err=%v",
 					agentIdentity, mcpServer.Name, err)
-			} else {
-				bearerToken = tok
+				return mcpProxyResult{}, fmt.Sprintf("credential resolution failed for agent %s on %s",
+					agentIdentity, mcpServer.Name)
 			}
+			bearerToken = tok
 		}
 	}
 	if bearerToken == "" {

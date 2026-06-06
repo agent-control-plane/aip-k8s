@@ -101,20 +101,17 @@ type AWSWebIdentityCredential struct {
 	STSEndpoint string `json:"stsEndpoint,omitempty"`
 }
 
-// KubernetesOIDCCredential configures OIDC token passthrough (or RFC 8693 exchange)
-// for Kubernetes API servers acting as MCP server targets.
+// KubernetesOIDCCredential configures RFC 8693 token exchange for Kubernetes API
+// servers acting as MCP server targets. The agent's validated OIDC JWT is exchanged
+// for a target-audience token at the configured endpoint.
 //
-// Passthrough mode (TokenExchangeURL empty): the agent's validated OIDC JWT is
-// forwarded directly. Requires the cluster's --oidc-issuer-url to match the AIP
-// gateway issuer. K8s RBAC is enforced on the agent's own sub/groups claims.
-//
-// Exchange mode (TokenExchangeURL set): calls the RFC 8693 endpoint with the agent's
-// JWT as subject_token. Used when gateway and K8s cluster use different issuers.
+// Passthrough mode (no exchange) is intentionally not supported: forwarding a
+// gateway-audience token to upstream servers allows a compromised server to replay
+// it against the gateway. Always configure a dedicated token exchange endpoint.
 type KubernetesOIDCCredential struct {
-	// TokenExchangeURL is an optional RFC 8693 token exchange endpoint.
-	// When empty, the agent's JWT is forwarded to K8s directly (passthrough).
-	// +optional
-	TokenExchangeURL string `json:"tokenExchangeURL,omitempty"`
+	// TokenExchangeURL is the RFC 8693 token exchange endpoint.
+	// +kubebuilder:validation:MinLength=1
+	TokenExchangeURL string `json:"tokenExchangeURL"`
 	// Audience overrides the aud claim for the forwarded or exchanged token.
 	// +optional
 	Audience string `json:"audience,omitempty"`
@@ -130,6 +127,7 @@ type KubernetesTokenRequestCredential struct {
 	ServiceAccountNamespace string `json:"serviceAccountNamespace"`
 	// ExpirationSeconds is the requested duration of validity for the token.
 	// +optional
+	// +kubebuilder:validation:Minimum=1
 	ExpirationSeconds *int32 `json:"expirationSeconds,omitempty"`
 	// Audiences are the intended audiences of the token.
 	// +optional

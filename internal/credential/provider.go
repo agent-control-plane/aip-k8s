@@ -32,6 +32,14 @@ func NewTokenCache(fetch func(ctx context.Context) (string, time.Time, error)) *
 	}
 }
 
+// IsExpired reports whether the cached token has passed its expiry time.
+// A TokenCache that has never successfully fetched a token returns false (not yet expired).
+func (c *TokenCache) IsExpired() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.token != "" && time.Now().After(c.expiresAt)
+}
+
 // Get retrieves the token, either from the cache if valid or by calling the fetch function.
 func (c *TokenCache) Get(ctx context.Context) (string, error) {
 	c.mu.RLock()

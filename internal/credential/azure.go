@@ -14,8 +14,9 @@ import (
 )
 
 // AzureWorkloadIdentityProvider exchanges the agent's OIDC token for an Azure Entra access token.
-// Each distinct inbound OIDC token gets its own TokenCache entry so that concurrent
-// callers with different identities cannot overwrite each other's token.
+// Each distinct inbound OIDC token gets its own TokenCache entry, keyed by sha256(token),
+// so concurrent callers with different identities cannot overwrite each other's cached credential.
+// Expired cache entries are evicted amortized on each Token() call to bound memory growth.
 type AzureWorkloadIdentityProvider struct {
 	tenantID string
 	clientID string
@@ -108,15 +109,18 @@ func (p *AzureWorkloadIdentityProvider) doExchange(ctx context.Context, assertio
 }
 
 // Token returns the cached or freshly exchanged Azure access token.
-// Each distinct rawOIDCToken gets its own TokenCache so concurrent callers with
-// different inbound identities never share a single exchanged-token slot.
+// Each distinct rawOIDCToken gets its own TokenCache keyed by sha256(token), so concurrent
+// callers with different inbound identities never share a single exchanged-token slot.
+// Raw JWT strings are not retained as map keys. Expired entries are evicted amortized.
 func (p *AzureWorkloadIdentityProvider) Token(ctx context.Context, rawOIDCToken string) (string, error) {
 	if rawOIDCToken == "" {
 		return "", fmt.Errorf("raw OIDC token is required for Azure exchange")
 	}
 
-	// Fast path: cache entry already exists for this token.
-	if v, ok := p.caches.Load(rawOIDCToken); ok {
+	key := tokenKey(rawOIDCToken)
+
+	// Fast path: cache entry already exists for this token digest.
+	if v, ok := p.caches.Load(key); ok {
 		return v.(*TokenCache).Get(ctx)
 	}
 
@@ -125,6 +129,16 @@ func (p *AzureWorkloadIdentityProvider) Token(ctx context.Context, rawOIDCToken 
 	c := NewTokenCache(func(ctx context.Context) (string, time.Time, error) {
 		return p.doExchange(ctx, tok)
 	})
-	actual, _ := p.caches.LoadOrStore(rawOIDCToken, c)
-	return actual.(*TokenCache).Get(ctx)
+	actual, _ := p.caches.LoadOrStore(key, c)
+	result, err := actual.(*TokenCache).Get(ctx)
+
+	// Amortized cleanup: evict entries whose exchanged token has expired.
+	p.caches.Range(func(k, v any) bool {
+		if v.(*TokenCache).IsExpired() {
+			p.caches.Delete(k)
+		}
+		return true
+	})
+
+	return result, err
 }

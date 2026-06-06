@@ -38,33 +38,56 @@ func newRegistrationCache(k8sClient client.Client) *registrationCache {
 }
 
 // getForSubject looks up a registration by claimed agent identity and/or caller subject.
+//
+// Identity resolution rules (secure-by-default):
+//   - Step 1: if agentIdentity is given and a registration exists for it:
+//   - AllowedSubjects non-empty → require sub ∈ AllowedSubjects.
+//   - AllowedSubjects empty    → require sub == agentIdentity OR sub == "" (unauthenticated).
+//     An empty AllowedSubjects does NOT mean "accept any caller" — it means the
+//     caller must prove they are exactly that agent. This closes the #37 impersonation vector.
+//   - Step 2: scan all registrations for one whose AllowedSubjects contains sub.
+//     If multiple registrations match, the lookup is considered ambiguous and nil is returned.
+//   - Otherwise nil.
 func (c *registrationCache) getForSubject(agentIdentity, sub string) *v1alpha1.AgentRegistration {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	// 1. If agentIdentity is specified, try that first.
+	// 1. If agentIdentity is specified, try a direct lookup first.
 	if agentIdentity != "" {
 		if reg, ok := c.byAgent[agentIdentity]; ok {
-			// If it has allowedSubjects, check if the sub matches.
-			if reg.Spec.OIDC == nil || len(reg.Spec.OIDC.AllowedSubjects) == 0 {
+			if reg.Spec.OIDC != nil && len(reg.Spec.OIDC.AllowedSubjects) > 0 {
+				// AllowedSubjects configured: sub must be in the list.
+				if slices.Contains(reg.Spec.OIDC.AllowedSubjects, sub) {
+					return reg
+				}
+				return nil // sub not in AllowedSubjects — reject immediately
+			}
+			// No AllowedSubjects: only match if sub equals the agent identity or
+			// authentication is not required (sub is empty).
+			if sub == "" || sub == agentIdentity {
 				return reg
 			}
-			if slices.Contains(reg.Spec.OIDC.AllowedSubjects, sub) {
-				return reg
-			}
+			return nil // sub doesn't match agentIdentity — reject immediately
 		}
 	}
 
-	// 2. Fall back to scanning all registrations to find one that allows this subject.
+	// 2. Scan all registrations for one whose AllowedSubjects includes this sub.
+	// Reject the lookup if multiple registrations match (ambiguous claim).
+	if sub == "" {
+		return nil
+	}
+	var match *v1alpha1.AgentRegistration
 	for _, reg := range c.byAgent {
-		if reg.Spec.OIDC != nil {
-			if slices.Contains(reg.Spec.OIDC.AllowedSubjects, sub) {
-				return reg
+		if reg.Spec.OIDC != nil && slices.Contains(reg.Spec.OIDC.AllowedSubjects, sub) {
+			if match != nil {
+				// Ambiguous: sub is in multiple registrations' AllowedSubjects.
+				log.Printf("Ambiguous AgentRegistration lookup: sub %q matches multiple registrations, rejecting", sub)
+				return nil
 			}
+			match = reg
 		}
 	}
-
-	return nil
+	return match
 }
 
 // exists reports whether a registration exists for the given agent identity,
