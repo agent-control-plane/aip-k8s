@@ -96,6 +96,12 @@ func submitToGateway(replicas int) gwRequestResponse {
 
 // submitToGatewayAs submits an AgentRequest with a custom agent identity,
 // used when a test needs to avoid the dedup key (agentIdentity, action, targetURI).
+//
+// If the gateway returns 409 "stale object deleted, please retry" (meaning a
+// terminal AR with the same dedup key existed in the informer cache, was deleted
+// server-side, and the client should retry), we wait 1 s for the cache to drain
+// and retry once. This handles the edge case where a prior scenario's Denied AR
+// lingers in the gateway's informer cache briefly after kubectl-delete completes.
 func submitToGatewayAs(agentIdentity string, replicas int) gwRequestResponse {
 	body := fmt.Sprintf(`{
 		"agentIdentity": "%s",
@@ -106,18 +112,37 @@ func submitToGatewayAs(agentIdentity string, replicas int) gwRequestResponse {
 		"parameters": {"proposedMaxReplicas": %d}
 	}`, agentIdentity, githubOwner, githubRepo, testBranch, githubConfigFilePath, reqNamespace, replicas)
 
-	req, err := http.NewRequest("POST", gwURL+"/agent-requests", strings.NewReader(body))
-	Expect(err).NotTo(HaveOccurred())
-	req.Header.Set("Content-Type", "application/json")
-
 	// Client timeout must exceed the gateway's --wait-timeout (90s).
 	gwClient := &http.Client{Timeout: 3 * time.Minute}
-	resp, err := gwClient.Do(req)
-	Expect(err).NotTo(HaveOccurred())
-	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
-	Expect(err).NotTo(HaveOccurred())
+	var (
+		resp      *http.Response
+		bodyBytes []byte
+	)
+	for attempt := range 2 {
+		if attempt > 0 {
+			// Give the gateway's informer cache time to reflect the deletion.
+			time.Sleep(time.Second)
+		}
+		req, err := http.NewRequest("POST", gwURL+"/agent-requests", strings.NewReader(body))
+		Expect(err).NotTo(HaveOccurred())
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err = gwClient.Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		bodyBytes, err = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		Expect(err).NotTo(HaveOccurred())
+
+		if resp.StatusCode == http.StatusConflict &&
+			strings.Contains(string(bodyBytes), "please retry") {
+			_, _ = fmt.Fprintf(GinkgoWriter,
+				"attempt %d: got 409 'please retry' (stale cache), retrying after 1s\n", attempt+1)
+			continue
+		}
+		break
+	}
+
 	Expect(resp.StatusCode).To(Equal(http.StatusCreated), "gateway returned non-201: %s", string(bodyBytes))
 
 	var result gwRequestResponse
@@ -179,6 +204,15 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 
 	Context("Scenario B: Approved — agent proposes 17 replicas (85% of absoluteMax)", func() {
 		var arName string
+
+		BeforeAll(func() {
+			// Scenario A's AgentRequest (phase=Denied) shares the same dedup key
+			// (agentIdentity + action + targetURI). Delete it so the gateway does not
+			// return 409 "stale object deleted, please retry" when Scenario B submits.
+			By("removing terminal AgentRequests from Scenario A to clear dedup key")
+			cmd := exec.Command("kubectl", "delete", "agentrequest", "--all", "-n", reqNamespace, "--ignore-not-found")
+			_, _ = runCmd(cmd)
+		})
 
 		It("should evaluate safety policy and require human approval (no Deny match)", func() {
 			By("submitting AgentRequest with proposedMaxReplicas=17 through gateway")
