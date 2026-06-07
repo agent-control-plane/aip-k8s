@@ -656,8 +656,10 @@ No new suite file. Requires `AIP_E2E_GITHUB_PAT_AGENT1` and `AIP_E2E_GITHUB_PAT_
 ```text
 BeforeAll:
   - Register aip-agent-2 in Keycloak (new client, reuses kcSetup helpers)
-  - Create per-agent PAT Secrets (agent1, agent2)
-  - kubectl apply AgentRegistration for each with externalIdentities[github] set
+  - Create per-agent PAT Secrets (agent1, agent2) via kubectl (infra-level Secret,
+    not an AIP object — kubectl is acceptable for Secret management by cluster ops)
+  - Create AgentRegistrations via gateway API (admin JWT):
+      POST /agent-registrations  ← Phase 5 endpoint; no kubectl needed
   - Wait for ATP to exist (controller bootstrap from Registration)
   - Gateway subprocess already running with --oidc-issuer-url=keycloak (Phase 8 setup)
 
@@ -666,6 +668,10 @@ It "agent-2 Keycloak token → GitHub MCP call uses agent-2 PAT":       ✅
 It "unregistered agent warn mode → annotated, admitted":               ✅
 It "--unregistered-agent-policy=strict rejects unknown agent":         ✅
 ```
+
+Note: Phase 8b was implemented before Phase 5 (gateway CRUD endpoints) landed.
+The actual test code still uses `kubectl apply` for AgentRegistrations. Phase 5
+will add a migration step to switch Phase 8b to use `POST /agent-registrations`.
 
 ### Phase 9 — Full identity propagation E2E + provider exchange mechanics
 
@@ -689,15 +695,23 @@ Prerequisites (BeforeAll):
   - Keycloak deployed with token exchange enabled:
       kcEnableTokenExchange(port, realm)           ← new helper
       kcCreateAudienceClient(port, realm, "kubernetes")  ← new helper
-  - K8s MCP server deployed: kubectl apply -f config/mcp/k8s-mcp-server.yaml
-  - MCPServer CR created: name=k8s-mcp, url=http://k8s-mcp-server.aip-k8s-system
-  - AgentRegistration for aip-agent-1:
-      externalIdentities:
-        - service: k8s-mcp
-          type: KubernetesOIDC
-          kubernetesOIDC:
-            tokenExchangeURL: http://keycloak.keycloak.svc/realms/aip/protocol/openid-connect/token
-            audience: kubernetes
+  - K8s MCP server deployed via kubectl apply -f config/mcp/k8s-mcp-server.yaml
+    (infra-level Deployment/Service — kubectl acceptable here, same as AIP itself)
+  - MCPServer CR picked up automatically by gateway's existing mcp_watch.go
+  - Admin Keycloak JWT obtained; AgentRegistration created via gateway API:
+      POST /agent-registrations   (adminToken)   ← Phase 5 endpoint, no kubectl
+      {
+        "agentIdentity": "aip-agent-1",
+        "oidc": {"issuer": "...", "subjectClaim": "azp", "allowedSubjects": ["aip-agent-1"]},
+        "externalIdentities": [{
+          "service": "k8s-mcp",
+          "type": "KubernetesOIDC",
+          "kubernetesOIDC": {
+            "tokenExchangeURL": "http://keycloak.keycloak.svc/realms/aip/protocol/openid-connect/token",
+            "audience": "kubernetes"
+          }
+        }]
+      }
   - K8s RBAC: ClusterRoleBinding binding aip-agent-1 (sub claim) to a Role
     that permits list/get on ConfigMaps in the test namespace
 
@@ -716,9 +730,9 @@ It "token exchange is cached: second call within TTL skips re-exchange":
   - Assert exchange called exactly once; second call hits TokenCache
 
 AfterAll:
-  - kubectl delete mcpserver --all -n default --ignore-not-found
-  - kubectl delete agentregistration --all -n default --ignore-not-found
+  - DELETE /agent-registrations/reg-aip-agent-1 (adminToken) ← gateway API, no kubectl
   - kubectl delete clusterrolebinding aip-agent-1-k8s-mcp --ignore-not-found
+  (MCPServer CR cleanup handled by existing gwCleanup helper)
 ```
 
 #### Kind cluster config: `test/fixtures/kind-oidc.yaml`
@@ -871,10 +885,38 @@ Files:
 Files completed:
 - `test/e2e/gateway_keycloak_test.go` — Phase 8b (per-agent GitHub MCP credentials)
 
+### Phase 5 — Gateway AgentRegistration CRUD endpoints
+
+Admins must never need `kubectl` or direct K8s API access. `AgentRegistration`
+objects are created, updated, and deleted via the gateway HTTP API using an admin
+JWT — the same gateway that agents use for `AgentRequest` submission.
+
+New routes:
+```
+POST   /agent-registrations           roleAdmin
+GET    /agent-registrations           roleAdmin, roleReviewer
+GET    /agent-registrations/{name}    roleAdmin, roleReviewer
+PUT    /agent-registrations/{name}    roleAdmin
+DELETE /agent-registrations/{name}    roleAdmin
+```
+
+Files:
+- `cmd/gateway/agent_registration_handlers.go` — handler implementations
+- `cmd/gateway/main.go` — register routes
+- `cmd/gateway/integration_agent_registration_test.go` — integration tests using
+  an in-process test OIDC provider (real JWT signing, no Keycloak needed):
+    - Admin JWT → POST → 201; registrationCache upserted
+    - Agent JWT → POST → 403
+    - Admin DELETE → cache removes entry; next unregistered AgentRequest gets policy treatment
+    - Reviewer GET → 200 (read-only access)
+- `docs/api-reference.md` + auth rules table; `make docs-lint` passes
+- Phase 8b test code migrated from `kubectl apply AgentRegistration` →
+  `POST /agent-registrations` with admin JWT
+
 ### Phase 9 — Full identity propagation E2E
 
-Prerequisites: Kind cluster with OIDC + audit log config; Keycloak token exchange
-enabled; K8s MCP server deployed.
+Prerequisites: Phase 5 landed; Kind cluster with OIDC + audit log config;
+Keycloak token exchange enabled; K8s MCP server deployed.
 
 Files:
 - `test/fixtures/kind-oidc.yaml` — Kind cluster config with `--oidc-issuer-url` +
