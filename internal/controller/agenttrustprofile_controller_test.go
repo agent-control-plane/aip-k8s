@@ -236,6 +236,12 @@ var _ = Describe("AgentTrustProfile Controller", Ordered, func() {
 			var atp governancev1alpha1.AgentTrustProfile
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: profileName, Namespace: ns}, &atp)).To(Succeed())
 			Expect(atp.Spec.AgentIdentity).To(Equal(agentID))
+
+			// Reconcile again to verify idempotency (no error, no duplicate).
+			_, err = r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: profileName, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
 		})
 
 		It("uses AgentRegistration identity over DiagnosticAccuracySummary when both exist", func() {
@@ -541,116 +547,4 @@ var _ = Describe("AgentTrustProfile Controller", Ordered, func() {
 		Expect(found).To(BeTrue(), "expected RequestSubmitted condition with Reason=TrustGateBlock")
 	})
 
-	It("should bootstrap ATP proactively from AgentRegistration", func() {
-		ns := createNamespace("tp-bootstrap-reg")
-		agentID := "agent-bootstrap-reg"
-		profileName := summaryNameForAgent(agentID)
-
-		// Create AgentRegistration
-		reg := &governancev1alpha1.AgentRegistration{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "reg-bootstrap",
-				Namespace: ns,
-			},
-			Spec: governancev1alpha1.AgentRegistrationSpec{
-				AgentIdentity: agentID,
-			},
-		}
-		Expect(k8sClient.Create(ctx, reg)).To(Succeed())
-		defer func() { _ = k8sClient.Delete(ctx, reg) }()
-
-		// Reconcile ATP directly using the mapped request (profileName)
-		req := reconcile.Request{NamespacedName: types.NamespacedName{Name: profileName, Namespace: ns}}
-		_, err := newReconciler().Reconcile(ctx, req)
-		Expect(err).NotTo(HaveOccurred())
-
-		// Verify ATP is created and spec matches
-		var p governancev1alpha1.AgentTrustProfile
-		Expect(k8sClient.Get(ctx, req.NamespacedName, &p)).To(Succeed())
-		Expect(p.Spec.AgentIdentity).To(Equal(agentID))
-	})
-
-	It("should complete reconcile without error if Registration updated and ATP already exists", func() {
-		ns := createNamespace("tp-bootstrap-idempotent")
-		agentID := "agent-bootstrap-idem"
-		profileName := summaryNameForAgent(agentID)
-
-		// Pre-create ATP
-		profile := governancev1alpha1.AgentTrustProfile{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      profileName,
-				Namespace: ns,
-			},
-			Spec: governancev1alpha1.AgentTrustProfileSpec{
-				AgentIdentity: agentID,
-			},
-		}
-		Expect(k8sClient.Create(ctx, &profile)).To(Succeed())
-
-		// Create AgentRegistration
-		reg := &governancev1alpha1.AgentRegistration{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "reg-bootstrap-idem",
-				Namespace: ns,
-			},
-			Spec: governancev1alpha1.AgentRegistrationSpec{
-				AgentIdentity: agentID,
-			},
-		}
-		Expect(k8sClient.Create(ctx, reg)).To(Succeed())
-		defer func() { _ = k8sClient.Delete(ctx, reg) }()
-
-		// Reconcile ATP directly
-		req := reconcile.Request{NamespacedName: types.NamespacedName{Name: profileName, Namespace: ns}}
-		_, err := newReconciler().Reconcile(ctx, req)
-		Expect(err).NotTo(HaveOccurred())
-
-		// Reconcile again to verify idempotency
-		_, err = newReconciler().Reconcile(ctx, req)
-		Expect(err).NotTo(HaveOccurred())
-
-		// Verify ATP still exists and is not duplicated
-		var p governancev1alpha1.AgentTrustProfile
-		Expect(k8sClient.Get(ctx, req.NamespacedName, &p)).To(Succeed())
-		Expect(p.Spec.AgentIdentity).To(Equal(agentID))
-	})
-
-	It("should bootstrap ATP reactively from AgentRequest if no AgentRegistration exists", func() {
-		ns := createNamespace("tp-bootstrap-reactive")
-		agentID := "agent-bootstrap-react"
-		profileName := summaryNameForAgent(agentID)
-
-		// Create a completed AgentRequest (reaches terminal phase)
-		ar := &governancev1alpha1.AgentRequest{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "ar-reactive",
-				Namespace: ns,
-				Labels: map[string]string{
-					"aip.io/profileName": profileName,
-				},
-			},
-			Spec: governancev1alpha1.AgentRequestSpec{
-				AgentIdentity: agentID,
-				Action:        "test",
-				Reason:        "test",
-				Target:        governancev1alpha1.Target{URI: "k8s://cluster/test"},
-			},
-		}
-		Expect(k8sClient.Create(ctx, ar)).To(Succeed())
-
-		// Set it to terminal phase (Completed)
-		arBase := ar.DeepCopy()
-		ar.Status.Phase = governancev1alpha1.PhaseCompleted
-		Expect(k8sClient.Status().Patch(ctx, ar, client.MergeFrom(arBase))).To(Succeed())
-
-		// Reconcile ATP directly
-		req := reconcile.Request{NamespacedName: types.NamespacedName{Name: profileName, Namespace: ns}}
-		_, err := newReconciler().Reconcile(ctx, req)
-		Expect(err).NotTo(HaveOccurred())
-
-		// Verify ATP is created reactively from the AgentRequest
-		var p governancev1alpha1.AgentTrustProfile
-		Expect(k8sClient.Get(ctx, req.NamespacedName, &p)).To(Succeed())
-		Expect(p.Spec.AgentIdentity).To(Equal(agentID))
-	})
 })

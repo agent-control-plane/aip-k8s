@@ -187,7 +187,8 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 					fmt.Sprintf("AGENT_NOT_REGISTERED: agent %q has no AgentRegistration", body.AgentIdentity))
 				return
 			case "warn":
-				log.Printf("warn: unregistered agent %q submitted AgentRequest", body.AgentIdentity)
+				log.Printf("Unregistered AgentRequest submitted agentIdentity=%q policy=%q",
+					body.AgentIdentity, s.unregisteredAgentPolicy)
 				if agentReq.Annotations == nil {
 					agentReq.Annotations = map[string]string{}
 				}

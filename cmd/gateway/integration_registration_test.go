@@ -257,7 +257,7 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 			apiReader:               directClient,
 			dedupWindow:             0,
 			waitTimeout:             serverWaitTimeout,
-			roles:                   newRoleConfig("any-sub-again,agent-empty-oidc", "", "", "", "", ""),
+			roles:                   newRoleConfig("any-sub-again,agent-empty-oidc,someone-else", "", "", "", "", ""),
 			authRequired:            true,
 			regCache:                regCache,
 			unregisteredAgentPolicy: "strict",
@@ -279,6 +279,16 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		rrEmptyOIDCPost := httptest.NewRecorder()
 		sEmptyOIDC.handleCreateAgentRequest(rrEmptyOIDCPost, reqEmptyOIDCPost)
 		gm.Expect(rrEmptyOIDCPost.Code).To(gomega.Equal(http.StatusCreated))
+
+		// 8. Registered agent, empty AllowedSubjects, mismatched sub -> 403 IDENTITY_MISMATCH
+		reqEmptyOIDCWrong := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBodyEmptyOIDC))
+		reqEmptyOIDCWrongCtx := withCallerSub(reqEmptyOIDCWrong.Context(), "someone-else")
+		reqEmptyOIDCWrongCtx = withCallerGroups(reqEmptyOIDCWrongCtx, []string{})
+		reqEmptyOIDCWrong = reqEmptyOIDCWrong.WithContext(reqEmptyOIDCWrongCtx)
+		rrEmptyOIDCWrong := httptest.NewRecorder()
+		sEmptyOIDC.handleCreateAgentRequest(rrEmptyOIDCWrong, reqEmptyOIDCWrong)
+		gm.Expect(rrEmptyOIDCWrong.Code).To(gomega.Equal(http.StatusForbidden))
+		gm.Expect(rrEmptyOIDCWrong.Body.String()).To(gomega.ContainSubstring("IDENTITY_MISMATCH"))
 
 		cleanup(ctx, gm, directClient)
 	})

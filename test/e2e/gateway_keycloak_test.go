@@ -55,6 +55,10 @@ const (
 
 	githubOwner = "agent-control-plane"
 	githubRepo  = "aip-demo-infra"
+
+	// gatewayRestartGracePeriod is the time to wait after stopping the gateway
+	// subprocess before starting it again with new flags.
+	gatewayRestartGracePeriod = 2 * time.Second
 )
 
 // Phase 8 extends the Keycloak OIDC integration with registration policy enforcement
@@ -410,7 +414,7 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 				_ = gwProc.Process.Kill()
 				_, _ = gwProc.Process.Wait()
 			}
-			time.Sleep(2 * time.Second)
+			time.Sleep(gatewayRestartGracePeriod)
 
 			By("starting gateway with unregistered-agent-policy=warn")
 			mcpRegistry := `[{"name":"github","url":"http://localhost:18086","tools":[{"name":"create_pull_request","read_only":false}]}]`
@@ -460,28 +464,34 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 			_ = exec.Command("kubectl", "delete", "agentregistration", "--all", "-n", "aip-k8s-system", "--ignore-not-found").Run()
 			_ = exec.Command("kubectl", "delete", "secret", "github-pat-agent1", "github-pat-agent2", "-n", "aip-k8s-system", "--ignore-not-found").Run()
 
+			// Delete Keycloak clients created in this context (Phase 8b).
 			kcDeleteClient(kcPort, kcRealm, "aip-agent-2")
 			kcDeleteClient(kcPort, kcRealm, "completely-unknown-agent")
+			// aip-agent-1 is created in the parent Phase 8 BeforeAll (kcSetupClient)
+			// and is also deleted here because Phase 8b does not have its own
+			// AfterAll in the parent context.
 			kcDeleteClient(kcPort, kcRealm, "aip-agent-1")
 		})
 
-		It("aip-agent-1 Keycloak token → gateway admits, MCP call uses agent-1 PAT", func() {
-			pat := os.Getenv("AIP_E2E_GITHUB_PAT_AGENT1")
+		// testPerAgentCredentialBrokering exercises the full flow for a single agent:
+		// Keycloak token → gateway admission → MCP proxy call with per-agent PAT.
+		testPerAgentCredentialBrokering := func(agentID, patEnvVar, kcClientID, kcClientSecret, prTitle string) {
+			pat := os.Getenv(patEnvVar)
 			expectedUser, err := getGitHubUser(pat)
 			Expect(err).NotTo(HaveOccurred())
 
-			branchName := fmt.Sprintf("phase8b-agent1-%d", time.Now().UnixNano())
+			branchName := fmt.Sprintf("phase8b-%s-%d", agentID, time.Now().UnixNano())
 			createGitHubBranch(pat, branchName)
 			defer deleteGitHubBranch(pat, branchName)
 
-			token := kcFetchToken(kcPort, kcRealm, "aip-agent-1", "agent-1-secret")
+			token := kcFetchToken(kcPort, kcRealm, kcClientID, kcClientSecret)
 
 			resp, err := gwPostWithToken(kc8GWPort, "/agent-requests", fmt.Sprintf(`{
-				"agentIdentity": "aip-agent-1",
+				"agentIdentity": "%s",
 				"action":        "github/create_pull_request",
 				"targetURI":     "github://%s/%s",
-				"reason":        "Phase 8b e2e test agent-1"
-			}`, githubOwner, githubRepo), token)
+				"reason":        "Phase 8b e2e test %s"
+			}`, agentID, githubOwner, githubRepo, agentID), token)
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
@@ -494,7 +504,7 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 			Expect(reqName).NotTo(BeEmpty())
 
 			reviewerToken := kcFetchToken(kcPort, kcRealm, "aip-reviewer-1", "reviewer-1-secret")
-			approveResp, err := gwPostWithToken(kc8GWPort, "/agent-requests/"+reqName+"/approve", `{"reason":"Phase 8b approval agent-1"}`, reviewerToken)
+			approveResp, err := gwPostWithToken(kc8GWPort, "/agent-requests/"+reqName+"/approve", fmt.Sprintf(`{"reason":"Phase 8b approval %s"}`, agentID), reviewerToken)
 			Expect(err).NotTo(HaveOccurred())
 			defer approveResp.Body.Close()
 			Expect(approveResp.StatusCode).To(Equal(http.StatusOK))
@@ -511,13 +521,13 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 				"arguments": {
 					"owner": "%s",
 					"repo": "%s",
-					"title": "[Phase 8b] E2E test PR agent-1",
+					"title": "%s",
 					"body": "PR created during Keycloak per-agent credentials e2e test.",
 					"head": "%s",
 					"base": "main",
 					"draft": true
 				}
-			}`, githubOwner, githubRepo, branchName)
+			}`, githubOwner, githubRepo, prTitle, branchName)
 
 			proxyReq, err := http.NewRequest("POST", fmt.Sprintf("http://localhost:%s/mcp-proxy/github/create_pull_request", kc8GWPort), strings.NewReader(prBody))
 			Expect(err).NotTo(HaveOccurred())
@@ -554,97 +564,26 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 			}
 			Expect(json.NewDecoder(respPR.Body).Decode(&prInfo)).To(Succeed())
 			Expect(prInfo.User.Login).To(Equal(expectedUser))
+		}
+
+		It("aip-agent-1 Keycloak token → gateway admits, MCP call uses agent-1 PAT", func() {
+			testPerAgentCredentialBrokering(
+				"aip-agent-1",
+				"AIP_E2E_GITHUB_PAT_AGENT1",
+				"aip-agent-1",
+				"agent-1-secret",
+				"[Phase 8b] E2E test PR agent-1",
+			)
 		})
 
 		It("aip-agent-2 Keycloak token → gateway admits, MCP call uses agent-2 PAT", func() {
-			pat := os.Getenv("AIP_E2E_GITHUB_PAT_AGENT2")
-			expectedUser, err := getGitHubUser(pat)
-			Expect(err).NotTo(HaveOccurred())
-
-			branchName := fmt.Sprintf("phase8b-agent2-%d", time.Now().UnixNano())
-			createGitHubBranch(pat, branchName)
-			defer deleteGitHubBranch(pat, branchName)
-
-			token := kcFetchToken(kcPort, kcRealm, "aip-agent-2", "agent-2-secret")
-
-			resp, err := gwPostWithToken(kc8GWPort, "/agent-requests", fmt.Sprintf(`{
-				"agentIdentity": "aip-agent-2",
-				"action":        "github/create_pull_request",
-				"targetURI":     "github://%s/%s",
-				"reason":        "Phase 8b e2e test agent-2"
-			}`, githubOwner, githubRepo), token)
-			Expect(err).NotTo(HaveOccurred())
-			defer resp.Body.Close()
-			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
-
-			var createResp struct {
-				Name string `json:"name"`
-			}
-			Expect(json.NewDecoder(resp.Body).Decode(&createResp)).To(Succeed())
-			reqName := createResp.Name
-			Expect(reqName).NotTo(BeEmpty())
-
-			reviewerToken := kcFetchToken(kcPort, kcRealm, "aip-reviewer-1", "reviewer-1-secret")
-			approveResp, err := gwPostWithToken(kc8GWPort, "/agent-requests/"+reqName+"/approve", `{"reason":"Phase 8b approval agent-2"}`, reviewerToken)
-			Expect(err).NotTo(HaveOccurred())
-			defer approveResp.Body.Close()
-			Expect(approveResp.StatusCode).To(Equal(http.StatusOK))
-
-			var aprBody struct {
-				Token string `json:"token"`
-			}
-			Expect(json.NewDecoder(approveResp.Body).Decode(&aprBody)).To(Succeed())
-			aipJWT := aprBody.Token
-			Expect(aipJWT).NotTo(BeEmpty())
-
-			prBody := fmt.Sprintf(`{
-				"name": "create_pull_request",
-				"arguments": {
-					"owner": "%s",
-					"repo": "%s",
-					"title": "[Phase 8b] E2E test PR agent-2",
-					"body": "PR created during Keycloak per-agent credentials e2e test.",
-					"head": "%s",
-					"base": "main",
-					"draft": true
-				}
-			}`, githubOwner, githubRepo, branchName)
-
-			proxyReq, err := http.NewRequest("POST", fmt.Sprintf("http://localhost:%s/mcp-proxy/github/create_pull_request", kc8GWPort), strings.NewReader(prBody))
-			Expect(err).NotTo(HaveOccurred())
-			proxyReq.Header.Set("Content-Type", "application/json")
-			proxyReq.Header.Set("X-AIP-Authorization", "Bearer "+aipJWT)
-
-			proxyResp, err := http.DefaultClient.Do(proxyReq)
-			Expect(err).NotTo(HaveOccurred())
-			defer proxyResp.Body.Close()
-			Expect(proxyResp.StatusCode).To(Equal(http.StatusOK))
-
-			var proxyResult struct {
-				Content []struct {
-					Text string `json:"text"`
-				} `json:"content"`
-			}
-			Expect(json.NewDecoder(proxyResp.Body).Decode(&proxyResult)).To(Succeed())
-			Expect(proxyResult.Content).NotTo(BeEmpty())
-			prURL := proxyResult.Content[0].Text
-			Expect(prURL).To(ContainSubstring("/pull/"))
-
-			parts := strings.Split(prURL, "/")
-			prNum := parts[len(parts)-1]
-
-			respPR, err := githubAPI("GET", fmt.Sprintf("/repos/%s/%s/pulls/%s", githubOwner, githubRepo, prNum), nil, pat)
-			Expect(err).NotTo(HaveOccurred())
-			defer respPR.Body.Close()
-			Expect(respPR.StatusCode).To(Equal(http.StatusOK))
-
-			var prInfo struct {
-				User struct {
-					Login string `json:"login"`
-				} `json:"user"`
-			}
-			Expect(json.NewDecoder(respPR.Body).Decode(&prInfo)).To(Succeed())
-			Expect(prInfo.User.Login).To(Equal(expectedUser))
+			testPerAgentCredentialBrokering(
+				"aip-agent-2",
+				"AIP_E2E_GITHUB_PAT_AGENT2",
+				"aip-agent-2",
+				"agent-2-secret",
+				"[Phase 8b] E2E test PR agent-2",
+			)
 		})
 
 		It("unregistered agent in warn mode → admitted with annotation", func() {
@@ -1096,7 +1035,12 @@ func deployGitHubMCPServer() {
 	projDir, err := utils.GetProjectDir()
 	Expect(err).NotTo(HaveOccurred())
 
-	// Create aip-github-token secret in aip-k8s-system namespace
+	// Create aip-github-token secret in aip-k8s-system namespace.
+	// This secret provides a default/fallback GitHub PAT for the MCP server
+	// when per-agent credential brokering is not configured. During Phase 8b
+	// tests, per-agent credential brokering (via AgentRegistration and
+	// github-pat-agent1 / github-pat-agent2 secrets) is the primary path;
+	// this shared secret is expected to be unused in those cases.
 	secretJSON := fmt.Sprintf(`{
 		"apiVersion": "v1",
 		"kind":       "Secret",

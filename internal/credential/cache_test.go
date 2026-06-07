@@ -8,7 +8,10 @@ import (
 	"time"
 )
 
-const token1Val = "token-1"
+const (
+	token1Val = "token-1"
+	token2Val = "token-2"
+)
 
 func TestTokenCache_FreshEntry(t *testing.T) {
 	cache := NewTokenCache()
@@ -74,15 +77,15 @@ func TestTokenCache_StaleEntry(t *testing.T) {
 	// Update fetch mock to return a new token
 	fetch2 := func(ctx context.Context) (string, time.Time, error) {
 		atomic.AddInt32(&fetchCalls, 1)
-		return "token-2", currentTime.Add(10 * time.Minute), nil
+		return token2Val, currentTime.Add(10 * time.Minute), nil
 	}
 
 	tok, err = cache.GetOrFetch(context.Background(), "key1", fetch2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if tok != "token-2" {
-		t.Errorf("expected token-2, got %q", tok)
+	if tok != token2Val {
+		t.Errorf("expected %s, got %q", token2Val, tok)
 	}
 	if atomic.LoadInt32(&fetchCalls) != 2 {
 		t.Errorf("expected 2 fetch calls, got %d", fetchCalls)
@@ -169,5 +172,113 @@ func TestTokenCache_Delete(t *testing.T) {
 	}
 	if atomic.LoadInt32(&fetchCalls) != 2 {
 		t.Errorf("expected 2 fetch calls, got %d", fetchCalls)
+	}
+}
+
+func TestTokenCache_LegacyGet(t *testing.T) {
+	cache := NewTokenCache()
+	baseTime := time.Now()
+	cache.Clock = func() time.Time { return baseTime }
+
+	var fetchCalls int32
+	fetch := func(ctx context.Context) (string, time.Time, error) {
+		atomic.AddInt32(&fetchCalls, 1)
+		return token1Val, baseTime.Add(10 * time.Minute), nil
+	}
+	cache.fetch = fetch
+
+	// Initial Get should fetch
+	tok, err := cache.Get(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tok != token1Val {
+		t.Errorf("expected token-1, got %q", tok)
+	}
+	if atomic.LoadInt32(&fetchCalls) != 1 {
+		t.Fatalf("expected 1 fetch call, got %d", fetchCalls)
+	}
+
+	// Second Get should return cached token without fetching
+	tok, err = cache.Get(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tok != token1Val {
+		t.Errorf("expected token-1, got %q", tok)
+	}
+	if atomic.LoadInt32(&fetchCalls) != 1 {
+		t.Errorf("expected 1 fetch call (cached), got %d", fetchCalls)
+	}
+}
+
+func TestTokenCache_LegacyIsExpired(t *testing.T) {
+	cache := NewTokenCache()
+	baseTime := time.Now()
+	cache.Clock = func() time.Time { return baseTime }
+
+	// No token set: not expired
+	if cache.IsExpired() {
+		t.Error("expected not expired when token is empty")
+	}
+
+	// Set token with future expiry
+	cache.token = token1Val
+	cache.expiresAt = baseTime.Add(10 * time.Minute)
+
+	// Fresh: not expired
+	if cache.IsExpired() {
+		t.Error("expected not expired when token is fresh")
+	}
+
+	// Advance time past expiry
+	cache.Clock = func() time.Time { return baseTime.Add(11 * time.Minute) }
+	if !cache.IsExpired() {
+		t.Error("expected expired when time is past expiry")
+	}
+}
+
+func TestTokenCache_LegacyGetExpired(t *testing.T) {
+	cache := NewTokenCache()
+	baseTime := time.Now()
+	currentTime := baseTime
+	cache.Clock = func() time.Time { return currentTime }
+
+	var fetchCalls int32
+	fetch := func(ctx context.Context) (string, time.Time, error) {
+		atomic.AddInt32(&fetchCalls, 1)
+		return token1Val, baseTime.Add(10 * time.Minute), nil
+	}
+	cache.fetch = fetch
+
+	// First Get: fetch
+	tok, err := cache.Get(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tok != token1Val {
+		t.Errorf("expected token-1, got %q", tok)
+	}
+
+	// Advance time past expiry
+	currentTime = baseTime.Add(11 * time.Minute)
+
+	// Second Get: should fetch again because token is expired
+	atomic.StoreInt32(&fetchCalls, 0)
+	fetch2 := func(ctx context.Context) (string, time.Time, error) {
+		atomic.AddInt32(&fetchCalls, 1)
+		return token2Val, currentTime.Add(10 * time.Minute), nil
+	}
+	cache.fetch = fetch2
+
+	tok, err = cache.Get(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tok != "token-2" {
+		t.Errorf("expected %s after expiry, got %q", token2Val, tok)
+	}
+	if atomic.LoadInt32(&fetchCalls) != 1 {
+		t.Errorf("expected 1 fetch call after expiry, got %d", fetchCalls)
 	}
 }

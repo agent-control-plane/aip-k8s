@@ -8,7 +8,10 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-const refreshBuffer = 5 * time.Minute
+const (
+	refreshBuffer       = 5 * time.Minute
+	legacyRefreshBuffer = 30 * time.Second
+)
 
 type TokenCache struct {
 	// Legacy single-value cache fields (for backward compatibility)
@@ -119,8 +122,8 @@ func (c *TokenCache) IsExpired() bool {
 // Get retrieves the legacy token, either from the cache if valid or by calling the fetch function.
 func (c *TokenCache) Get(ctx context.Context) (string, error) {
 	c.mu.RLock()
-	// Reuse token if it is valid and has at least 30 seconds left.
-	if c.token != "" && c.now().Add(30*time.Second).Before(c.expiresAt) {
+	// Reuse token if it is valid and has at least legacyRefreshBuffer left.
+	if c.token != "" && c.now().Add(legacyRefreshBuffer).Before(c.expiresAt) {
 		token := c.token
 		c.mu.RUnlock()
 		return token, nil
@@ -129,7 +132,7 @@ func (c *TokenCache) Get(ctx context.Context) (string, error) {
 
 	val, err, _ := c.sf.Do("fetch", func() (any, error) {
 		c.mu.RLock()
-		if c.token != "" && c.now().Add(30*time.Second).Before(c.expiresAt) {
+		if c.token != "" && c.now().Add(legacyRefreshBuffer).Before(c.expiresAt) {
 			token := c.token
 			c.mu.RUnlock()
 			return token, nil
