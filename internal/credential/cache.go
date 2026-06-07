@@ -15,12 +15,15 @@ type TokenCache struct {
 	fetch     func(ctx context.Context) (string, time.Time, error)
 	token     string
 	expiresAt time.Time
-	sf        singleflight.Group
 
 	// New multi-value cache fields (Step 3)
 	mu    sync.RWMutex
 	store map[string]*cachedEntry
-	group singleflight.Group
+
+	// Shared singleflight group for both legacy Get() and multi-key GetOrFetch().
+	// Get uses the fixed key "fetch"; GetOrFetch uses the caller-supplied key.
+	// The two methods do not collide because their key spaces are disjoint.
+	sf    singleflight.Group
 	Clock func() time.Time
 }
 
@@ -66,7 +69,7 @@ func (c *TokenCache) GetOrFetch(
 	c.mu.RUnlock()
 
 	// Use singleflight to deduplicate concurrent fetch calls.
-	val, err, _ := c.group.Do(key, func() (any, error) {
+	val, err, _ := c.sf.Do(key, func() (any, error) {
 		// Double check cache inside singleflight block in case another concurrent fetch finished
 		c.mu.RLock()
 		entry, exists := c.store[key]
@@ -108,8 +111,8 @@ func (c *TokenCache) Delete(key string) {
 
 // IsExpired reports whether the legacy cached token has passed its expiry time.
 func (c *TokenCache) IsExpired() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.token != "" && c.now().After(c.expiresAt)
 }
 

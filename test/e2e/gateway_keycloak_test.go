@@ -374,10 +374,10 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 			deployGitHubMCPServer()
 
 			// 4. Port-forward github-mcp-server to localhost:18086
-			_ = exec.Command("pkill", "-f", "port-forward.*github-mcp-server.*18086").Run()
+			_ = exec.Command("pkill", "-f", "port-forward.*github-mcp.*18086").Run()
 			time.Sleep(time.Second)
 			mcpPfProc = exec.Command("kubectl", "port-forward",
-				"svc/github-mcp-server", "18086:8080", "-n", "aip-k8s-system")
+				"svc/github-mcp", "18086:80", "-n", "aip-k8s-system")
 			mcpPfProc.Stdout = GinkgoWriter
 			mcpPfProc.Stderr = GinkgoWriter
 			Expect(mcpPfProc.Start()).To(Succeed())
@@ -461,6 +461,8 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 			_ = exec.Command("kubectl", "delete", "secret", "github-pat-agent1", "github-pat-agent2", "-n", "aip-k8s-system", "--ignore-not-found").Run()
 
 			kcDeleteClient(kcPort, kcRealm, "aip-agent-2")
+			kcDeleteClient(kcPort, kcRealm, "completely-unknown-agent")
+			kcDeleteClient(kcPort, kcRealm, "aip-agent-1")
 		})
 
 		It("aip-agent-1 Keycloak token → gateway admits, MCP call uses agent-1 PAT", func() {
@@ -664,10 +666,12 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 			reqName, _ := body["name"].(string)
 			Expect(reqName).NotTo(BeEmpty())
 
-			var ar governancev1alpha1.AgentRequest
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: reqName, Namespace: "default"}, &ar)).To(Succeed())
-			Expect(ar.Annotations).NotTo(BeNil())
-			Expect(ar.Annotations["governance.aip.io/unregistered"]).To(Equal("true"))
+			Eventually(func(g Gomega) {
+				var ar governancev1alpha1.AgentRequest
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: reqName, Namespace: "default"}, &ar)).To(Succeed())
+				g.Expect(ar.Annotations).NotTo(BeNil())
+				g.Expect(ar.Annotations["governance.aip.io/unregistered"]).To(Equal("true"))
+			}, 30*time.Second, 2*time.Second).Should(Succeed())
 		})
 
 		It("--unregistered-agent-policy=strict rejects unknown agent", func() {

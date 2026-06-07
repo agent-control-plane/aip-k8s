@@ -157,7 +157,7 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 			apiReader:               directClient,
 			dedupWindow:             0,
 			waitTimeout:             serverWaitTimeout,
-			roles:                   newRoleConfig("agent-1", "", "", "", "", ""),
+			roles:                   newRoleConfig("agent-1,sub-ok-2,sub-wrong", "", "", "", "", ""),
 			authRequired:            true,
 			regCache:                regCache,
 			unregisteredAgentPolicy: "strict",
@@ -272,7 +272,8 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		}
 		jsonBodyEmptyOIDC, _ := json.Marshal(bodyEmptyOIDC)
 		reqEmptyOIDCPost := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBodyEmptyOIDC))
-		reqEmptyOIDCPostCtx := withCallerSub(reqEmptyOIDCPost.Context(), "any-sub-again")
+		// When AllowedSubjects is empty, sub must match agentIdentity (or be empty).
+		reqEmptyOIDCPostCtx := withCallerSub(reqEmptyOIDCPost.Context(), "agent-empty-oidc")
 		reqEmptyOIDCPostCtx = withCallerGroups(reqEmptyOIDCPostCtx, []string{})
 		reqEmptyOIDCPost = reqEmptyOIDCPost.WithContext(reqEmptyOIDCPostCtx)
 		rrEmptyOIDCPost := httptest.NewRecorder()

@@ -116,9 +116,8 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		reg = s.regCache.get(body.AgentIdentity)
 	}
 
-	// 1. Role check: skipped if registered and registration has allowed subjects.
-	hasAllowedSubjects := reg != nil && reg.Spec.OIDC != nil && len(reg.Spec.OIDC.AllowedSubjects) > 0
-	if s.authRequired && !hasAllowedSubjects {
+	// 1. Role check.
+	if s.authRequired {
 		if !requireRole(s.roles, roleAgent, sub, callerGroupsFromCtx(r.Context()), w) {
 			return
 		}
@@ -195,7 +194,7 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 				agentReq.Annotations["governance.aip.io/unregistered"] = "true"
 			}
 			// "allow": proceed silently — backward-compatible default
-		} else if sub != "" {
+		} else {
 			if err := validateOIDCSubject(reg, sub); err != nil {
 				writeError(w, http.StatusForbidden, fmt.Sprintf("IDENTITY_MISMATCH: %v", err))
 				return
@@ -839,12 +838,20 @@ func (s *Server) handleListAgentRequests(w http.ResponseWriter, r *http.Request)
 // Returns nil when the registration has no OIDC config (no subject enforcement).
 // Replaces the old equality check that used 400 and required exact agentIdentity==sub.
 func validateOIDCSubject(reg *v1alpha1.AgentRegistration, sub string) error {
-	if reg.Spec.OIDC == nil || len(reg.Spec.OIDC.AllowedSubjects) == 0 {
+	if reg.Spec.OIDC == nil {
 		return nil
 	}
-	if slices.Contains(reg.Spec.OIDC.AllowedSubjects, sub) {
+	if len(reg.Spec.OIDC.AllowedSubjects) > 0 {
+		if slices.Contains(reg.Spec.OIDC.AllowedSubjects, sub) {
+			return nil
+		}
+		return fmt.Errorf("token subject %q not in allowedSubjects for agent %q",
+			sub, reg.Spec.AgentIdentity)
+	}
+	// Fallback when AllowedSubjects is empty: sub must match the agent identity (or sub is empty)
+	if sub == "" || sub == reg.Spec.AgentIdentity {
 		return nil
 	}
-	return fmt.Errorf("token subject %q not in allowedSubjects for agent %q",
+	return fmt.Errorf("token subject %q does not match agentIdentity %q",
 		sub, reg.Spec.AgentIdentity)
 }
