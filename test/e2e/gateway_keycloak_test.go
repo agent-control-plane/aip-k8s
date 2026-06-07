@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,13 +12,16 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/types"
 
+	governancev1alpha1 "github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 	"github.com/agent-control-plane/aip-k8s/test/utils"
 )
 
@@ -48,6 +52,9 @@ const (
 	// kcFakeMCPServerName matches the ExternalIdentityBinding.service field in
 	// the AgentRegistration and the "name" key in MCP_REGISTRY.
 	kcFakeMCPServerName = "kc-fake-mcp"
+
+	githubOwner = "agent-control-plane"
+	githubRepo  = "aip-demo-infra"
 )
 
 // Phase 8 extends the Keycloak OIDC integration with registration policy enforcement
@@ -346,6 +353,382 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 		Expect(fakeMCP.lastAuth()).To(Equal("Bearer " + kcStaticUpstreamToken),
 			"upstream should receive per-agent static credential, not shared MCPServer token")
 	})
+
+	Context("Phase 8b: per-agent AgentRegistration credentials", Ordered, func() {
+		var mcpPfProc *exec.Cmd
+
+		BeforeAll(func() {
+			if os.Getenv("AIP_E2E_GITHUB_PAT_AGENT1") == "" ||
+				os.Getenv("AIP_E2E_GITHUB_PAT_AGENT2") == "" {
+				Skip("AIP_E2E_GITHUB_PAT_AGENT1 and AIP_E2E_GITHUB_PAT_AGENT2 required for Phase 8b")
+			}
+
+			// 1. Register aip-agent-2 as a new Keycloak client (reuse existing kcSetup helpers from Phase 8)
+			kcSetupClient(kcPort, kcRealm, "aip-agent-2", "agent-2-secret")
+
+			// 2. Create K8s Secrets in aip-k8s-system: github-pat-agent1 and github-pat-agent2, each with key token
+			createSecretInNamespace("github-pat-agent1", "aip-k8s-system", os.Getenv("AIP_E2E_GITHUB_PAT_AGENT1"))
+			createSecretInNamespace("github-pat-agent2", "aip-k8s-system", os.Getenv("AIP_E2E_GITHUB_PAT_AGENT2"))
+
+			// 3. Deploy github-mcp-server to the cluster if it isn't deployed
+			deployGitHubMCPServer()
+
+			// 4. Port-forward github-mcp-server to localhost:18086
+			_ = exec.Command("pkill", "-f", "port-forward.*github-mcp-server.*18086").Run()
+			time.Sleep(time.Second)
+			mcpPfProc = exec.Command("kubectl", "port-forward",
+				"svc/github-mcp-server", "18086:8080", "-n", "aip-k8s-system")
+			mcpPfProc.Stdout = GinkgoWriter
+			mcpPfProc.Stderr = GinkgoWriter
+			Expect(mcpPfProc.Start()).To(Succeed())
+
+			// Wait for the port-forward to be responsive
+			Eventually(func() error {
+				resp, err := http.Get("http://localhost:18086") //nolint:noctx
+				if err != nil {
+					return err
+				}
+				resp.Body.Close()
+				return nil
+			}, 30*time.Second, time.Second).Should(Succeed())
+
+			// 5. kubectl apply AgentRegistration for aip-agent-1
+			applyAgentRegistration("aip-agent-1", "github-pat-agent1")
+			// Same for aip-agent-2 pointing at github-pat-agent2
+			applyAgentRegistration("aip-agent-2", "github-pat-agent2")
+
+			// 6. Eventually (30s, 2s interval): verify ATP exists for both agentIdentities via k8sClient.Get
+			Eventually(func(g Gomega) {
+				var atp1, atp2 governancev1alpha1.AgentTrustProfile
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "tp-aip-agent-1", Namespace: "default"}, &atp1)).To(Succeed())
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "tp-aip-agent-2", Namespace: "default"}, &atp2)).To(Succeed())
+			}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+			// 7. Restart the gateway subprocess adding --unregistered-agent-policy=warn
+			By("stopping gateway subprocess")
+			if gwProc != nil && gwProc.Process != nil {
+				_ = gwProc.Process.Kill()
+				_, _ = gwProc.Process.Wait()
+			}
+			time.Sleep(2 * time.Second)
+
+			By("starting gateway with unregistered-agent-policy=warn")
+			mcpRegistry := `[{"name":"github","url":"http://localhost:18086","tools":[{"name":"create_pull_request","read_only":false}]}]`
+			agentSubjects := strings.Join([]string{
+				kcRegisteredAgentID,
+				"aip-agent-1",
+				"aip-agent-2",
+				kcWrongSubjectID,
+				"completely-unknown-agent",
+			}, ",")
+			projDir, err := utils.GetProjectDir()
+			Expect(err).NotTo(HaveOccurred())
+			binPath := projDir + "/bin/gateway"
+
+			gwProc = exec.Command(binPath,
+				"--addr=:"+kc8GWPort,
+				"--oidc-issuer-url="+kcIssuer,
+				"--oidc-audience=aip-gateway",
+				"--oidc-identity-claim=azp",
+				"--agent-subjects="+agentSubjects,
+				"--unregistered-agent-policy=warn",
+			)
+			gwProc.Dir = projDir
+			gwProc.Env = append(os.Environ(), "MCP_REGISTRY="+mcpRegistry)
+			gwProc.Stdout = GinkgoWriter
+			gwProc.Stderr = GinkgoWriter
+			Expect(gwProc.Start()).To(Succeed())
+
+			// Wait for gateway healthz
+			Eventually(func() int {
+				resp, err := http.Get("http://localhost:" + kc8GWPort + "/healthz") //nolint:noctx
+				if err != nil {
+					return 0
+				}
+				defer resp.Body.Close() //nolint:errcheck
+				return resp.StatusCode
+			}, 30*time.Second, time.Second).Should(Equal(http.StatusOK))
+		})
+
+		AfterAll(func() {
+			if mcpPfProc != nil && mcpPfProc.Process != nil {
+				_ = mcpPfProc.Process.Kill()
+				_, _ = mcpPfProc.Process.Wait()
+			}
+
+			_ = exec.Command("kubectl", "delete", "agentregistration", "--all", "-n", "default", "--ignore-not-found").Run()
+			_ = exec.Command("kubectl", "delete", "agentregistration", "--all", "-n", "aip-k8s-system", "--ignore-not-found").Run()
+			_ = exec.Command("kubectl", "delete", "secret", "github-pat-agent1", "github-pat-agent2", "-n", "aip-k8s-system", "--ignore-not-found").Run()
+
+			kcDeleteClient(kcPort, kcRealm, "aip-agent-2")
+		})
+
+		It("aip-agent-1 Keycloak token → gateway admits, MCP call uses agent-1 PAT", func() {
+			pat := os.Getenv("AIP_E2E_GITHUB_PAT_AGENT1")
+			expectedUser, err := getGitHubUser(pat)
+			Expect(err).NotTo(HaveOccurred())
+
+			branchName := fmt.Sprintf("phase8b-agent1-%d", time.Now().UnixNano())
+			createGitHubBranch(pat, branchName)
+			defer deleteGitHubBranch(pat, branchName)
+
+			token := kcFetchToken(kcPort, kcRealm, "aip-agent-1", "agent-1-secret")
+
+			resp, err := gwPostWithToken(kc8GWPort, "/agent-requests", fmt.Sprintf(`{
+				"agentIdentity": "aip-agent-1",
+				"action":        "github/create_pull_request",
+				"targetURI":     "github://%s/%s",
+				"reason":        "Phase 8b e2e test agent-1"
+			}`, githubOwner, githubRepo), token)
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+
+			var createResp struct {
+				Name string `json:"name"`
+			}
+			Expect(json.NewDecoder(resp.Body).Decode(&createResp)).To(Succeed())
+			reqName := createResp.Name
+			Expect(reqName).NotTo(BeEmpty())
+
+			reviewerToken := kcFetchToken(kcPort, kcRealm, "aip-reviewer-1", "reviewer-1-secret")
+			approveResp, err := gwPostWithToken(kc8GWPort, "/agent-requests/"+reqName+"/approve", `{"reason":"Phase 8b approval agent-1"}`, reviewerToken)
+			Expect(err).NotTo(HaveOccurred())
+			defer approveResp.Body.Close()
+			Expect(approveResp.StatusCode).To(Equal(http.StatusOK))
+
+			var aprBody struct {
+				Token string `json:"token"`
+			}
+			Expect(json.NewDecoder(approveResp.Body).Decode(&aprBody)).To(Succeed())
+			aipJWT := aprBody.Token
+			Expect(aipJWT).NotTo(BeEmpty())
+
+			prBody := fmt.Sprintf(`{
+				"name": "create_pull_request",
+				"arguments": {
+					"owner": "%s",
+					"repo": "%s",
+					"title": "[Phase 8b] E2E test PR agent-1",
+					"body": "PR created during Keycloak per-agent credentials e2e test.",
+					"head": "%s",
+					"base": "main",
+					"draft": true
+				}
+			}`, githubOwner, githubRepo, branchName)
+
+			proxyReq, err := http.NewRequest("POST", fmt.Sprintf("http://localhost:%s/mcp-proxy/github/create_pull_request", kc8GWPort), strings.NewReader(prBody))
+			Expect(err).NotTo(HaveOccurred())
+			proxyReq.Header.Set("Content-Type", "application/json")
+			proxyReq.Header.Set("X-AIP-Authorization", "Bearer "+aipJWT)
+
+			proxyResp, err := http.DefaultClient.Do(proxyReq)
+			Expect(err).NotTo(HaveOccurred())
+			defer proxyResp.Body.Close()
+			Expect(proxyResp.StatusCode).To(Equal(http.StatusOK))
+
+			var proxyResult struct {
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			}
+			Expect(json.NewDecoder(proxyResp.Body).Decode(&proxyResult)).To(Succeed())
+			Expect(proxyResult.Content).NotTo(BeEmpty())
+			prURL := proxyResult.Content[0].Text
+			Expect(prURL).To(ContainSubstring("/pull/"))
+
+			parts := strings.Split(prURL, "/")
+			prNum := parts[len(parts)-1]
+
+			respPR, err := githubAPI("GET", fmt.Sprintf("/repos/%s/%s/pulls/%s", githubOwner, githubRepo, prNum), nil, pat)
+			Expect(err).NotTo(HaveOccurred())
+			defer respPR.Body.Close()
+			Expect(respPR.StatusCode).To(Equal(http.StatusOK))
+
+			var prInfo struct {
+				User struct {
+					Login string `json:"login"`
+				} `json:"user"`
+			}
+			Expect(json.NewDecoder(respPR.Body).Decode(&prInfo)).To(Succeed())
+			Expect(prInfo.User.Login).To(Equal(expectedUser))
+		})
+
+		It("aip-agent-2 Keycloak token → gateway admits, MCP call uses agent-2 PAT", func() {
+			pat := os.Getenv("AIP_E2E_GITHUB_PAT_AGENT2")
+			expectedUser, err := getGitHubUser(pat)
+			Expect(err).NotTo(HaveOccurred())
+
+			branchName := fmt.Sprintf("phase8b-agent2-%d", time.Now().UnixNano())
+			createGitHubBranch(pat, branchName)
+			defer deleteGitHubBranch(pat, branchName)
+
+			token := kcFetchToken(kcPort, kcRealm, "aip-agent-2", "agent-2-secret")
+
+			resp, err := gwPostWithToken(kc8GWPort, "/agent-requests", fmt.Sprintf(`{
+				"agentIdentity": "aip-agent-2",
+				"action":        "github/create_pull_request",
+				"targetURI":     "github://%s/%s",
+				"reason":        "Phase 8b e2e test agent-2"
+			}`, githubOwner, githubRepo), token)
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+
+			var createResp struct {
+				Name string `json:"name"`
+			}
+			Expect(json.NewDecoder(resp.Body).Decode(&createResp)).To(Succeed())
+			reqName := createResp.Name
+			Expect(reqName).NotTo(BeEmpty())
+
+			reviewerToken := kcFetchToken(kcPort, kcRealm, "aip-reviewer-1", "reviewer-1-secret")
+			approveResp, err := gwPostWithToken(kc8GWPort, "/agent-requests/"+reqName+"/approve", `{"reason":"Phase 8b approval agent-2"}`, reviewerToken)
+			Expect(err).NotTo(HaveOccurred())
+			defer approveResp.Body.Close()
+			Expect(approveResp.StatusCode).To(Equal(http.StatusOK))
+
+			var aprBody struct {
+				Token string `json:"token"`
+			}
+			Expect(json.NewDecoder(approveResp.Body).Decode(&aprBody)).To(Succeed())
+			aipJWT := aprBody.Token
+			Expect(aipJWT).NotTo(BeEmpty())
+
+			prBody := fmt.Sprintf(`{
+				"name": "create_pull_request",
+				"arguments": {
+					"owner": "%s",
+					"repo": "%s",
+					"title": "[Phase 8b] E2E test PR agent-2",
+					"body": "PR created during Keycloak per-agent credentials e2e test.",
+					"head": "%s",
+					"base": "main",
+					"draft": true
+				}
+			}`, githubOwner, githubRepo, branchName)
+
+			proxyReq, err := http.NewRequest("POST", fmt.Sprintf("http://localhost:%s/mcp-proxy/github/create_pull_request", kc8GWPort), strings.NewReader(prBody))
+			Expect(err).NotTo(HaveOccurred())
+			proxyReq.Header.Set("Content-Type", "application/json")
+			proxyReq.Header.Set("X-AIP-Authorization", "Bearer "+aipJWT)
+
+			proxyResp, err := http.DefaultClient.Do(proxyReq)
+			Expect(err).NotTo(HaveOccurred())
+			defer proxyResp.Body.Close()
+			Expect(proxyResp.StatusCode).To(Equal(http.StatusOK))
+
+			var proxyResult struct {
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			}
+			Expect(json.NewDecoder(proxyResp.Body).Decode(&proxyResult)).To(Succeed())
+			Expect(proxyResult.Content).NotTo(BeEmpty())
+			prURL := proxyResult.Content[0].Text
+			Expect(prURL).To(ContainSubstring("/pull/"))
+
+			parts := strings.Split(prURL, "/")
+			prNum := parts[len(parts)-1]
+
+			respPR, err := githubAPI("GET", fmt.Sprintf("/repos/%s/%s/pulls/%s", githubOwner, githubRepo, prNum), nil, pat)
+			Expect(err).NotTo(HaveOccurred())
+			defer respPR.Body.Close()
+			Expect(respPR.StatusCode).To(Equal(http.StatusOK))
+
+			var prInfo struct {
+				User struct {
+					Login string `json:"login"`
+				} `json:"user"`
+			}
+			Expect(json.NewDecoder(respPR.Body).Decode(&prInfo)).To(Succeed())
+			Expect(prInfo.User.Login).To(Equal(expectedUser))
+		})
+
+		It("unregistered agent in warn mode → admitted with annotation", func() {
+			kcSetupClient(kcPort, kcRealm, "completely-unknown-agent", "unknown-secret")
+			token := kcFetchToken(kcPort, kcRealm, "completely-unknown-agent", "unknown-secret")
+
+			resp, err := gwPostWithToken(kc8GWPort, "/agent-requests", `{
+				"agentIdentity": "completely-unknown-agent",
+				"action":        "test-action-warn",
+				"targetURI":     "k8s://prod/default/deployment/warn-app",
+				"reason":        "warn policy e2e"
+			}`, token)
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+
+			var body map[string]interface{}
+			Expect(json.NewDecoder(resp.Body).Decode(&body)).To(Succeed())
+			reqName, _ := body["name"].(string)
+			Expect(reqName).NotTo(BeEmpty())
+
+			var ar governancev1alpha1.AgentRequest
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: reqName, Namespace: "default"}, &ar)).To(Succeed())
+			Expect(ar.Annotations).NotTo(BeNil())
+			Expect(ar.Annotations["governance.aip.io/unregistered"]).To(Equal("true"))
+		})
+
+		It("--unregistered-agent-policy=strict rejects unknown agent", func() {
+			kc8GWPortStrict := "18087"
+			mcpRegistry := `[{"name":"github","url":"http://localhost:18086","tools":[{"name":"create_pull_request","read_only":false}]}]`
+			agentSubjects := strings.Join([]string{
+				kcRegisteredAgentID,
+				"aip-agent-1",
+				"aip-agent-2",
+				kcWrongSubjectID,
+				"completely-unknown-agent",
+			}, ",")
+			projDir, err := utils.GetProjectDir()
+			Expect(err).NotTo(HaveOccurred())
+			binPath := projDir + "/bin/gateway"
+
+			gwProcStrict := exec.Command(binPath,
+				"--addr=:"+kc8GWPortStrict,
+				"--oidc-issuer-url="+kcIssuer,
+				"--oidc-audience=aip-gateway",
+				"--oidc-identity-claim=azp",
+				"--agent-subjects="+agentSubjects,
+				"--unregistered-agent-policy=strict",
+			)
+			gwProcStrict.Dir = projDir
+			gwProcStrict.Env = append(os.Environ(), "MCP_REGISTRY="+mcpRegistry)
+			gwProcStrict.Stdout = GinkgoWriter
+			gwProcStrict.Stderr = GinkgoWriter
+			Expect(gwProcStrict.Start()).To(Succeed())
+
+			defer func() {
+				if gwProcStrict != nil && gwProcStrict.Process != nil {
+					_ = gwProcStrict.Process.Kill()
+					_, _ = gwProcStrict.Process.Wait()
+				}
+			}()
+
+			Eventually(func() int {
+				resp, err := http.Get("http://localhost:" + kc8GWPortStrict + "/healthz") //nolint:noctx
+				if err != nil {
+					return 0
+				}
+				defer resp.Body.Close() //nolint:errcheck
+				return resp.StatusCode
+			}, 30*time.Second, time.Second).Should(Equal(http.StatusOK))
+
+			token := kcFetchToken(kcPort, kcRealm, "completely-unknown-agent", "unknown-secret")
+			resp, err := gwPostWithToken(kc8GWPortStrict, "/agent-requests", `{
+				"agentIdentity": "completely-unknown-agent",
+				"action":        "test-action-strict",
+				"targetURI":     "k8s://prod/default/deployment/strict-app",
+				"reason":        "strict policy e2e"
+			}`, token)
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+			Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+
+			b, _ := io.ReadAll(resp.Body)
+			Expect(string(b)).To(ContainSubstring("AGENT_NOT_REGISTERED"))
+		})
+	})
 })
 
 // kcSetupRegistrationClients adds the aip-registered-agent and aip-wrong-subject
@@ -559,4 +942,188 @@ func kcFetchToken(port, realm, clientID, secret string) string {
 	token, ok := result["access_token"].(string)
 	Expect(ok).To(BeTrue(), "missing access_token in Keycloak response for %s", clientID)
 	return token
+}
+
+func kcSetupClient(port, realm, clientID, secret string) {
+	adminToken := kcAdminToken(port)
+	internalID := kcCreateClient(port, adminToken, realm, clientID, secret)
+	kcAddMapper(port, adminToken, realm, internalID, map[string]interface{}{
+		"name":           "audience-aip-gateway-" + clientID,
+		"protocol":       "openid-connect",
+		"protocolMapper": "oidc-audience-mapper",
+		"config": map[string]string{
+			"included.custom.audience": "aip-gateway",
+			"id.token.claim":           "true",
+			"access.token.claim":       "true",
+		},
+	})
+}
+
+func kcDeleteClient(port, realm, clientID string) {
+	adminToken := kcAdminToken(port)
+	req, _ := http.NewRequest("GET", //nolint:noctx
+		fmt.Sprintf("http://localhost:%s/admin/realms/%s/clients?clientId=%s", port, realm, clientID), nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	var clients []map[string]interface{}
+	if json.NewDecoder(resp.Body).Decode(&clients) != nil || len(clients) == 0 {
+		return
+	}
+	internalID := clients[0]["id"].(string)
+
+	reqDel, _ := http.NewRequest("DELETE", //nolint:noctx
+		fmt.Sprintf("http://localhost:%s/admin/realms/%s/clients/%s", port, realm, internalID), nil)
+	reqDel.Header.Set("Authorization", "Bearer "+adminToken)
+	respDel, err := http.DefaultClient.Do(reqDel)
+	if err == nil {
+		respDel.Body.Close()
+	}
+}
+
+func githubAPI(method, path string, body []byte, pat string) (*http.Response, error) {
+	var bodyReader io.Reader
+	if body != nil {
+		bodyReader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, "https://api.github.com"+path, bodyReader)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+pat)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+	return http.DefaultClient.Do(req)
+}
+
+func getGitHubUser(pat string) (string, error) {
+	resp, err := githubAPI("GET", "/user", nil, pat)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("GitHub /user returned %d: %s", resp.StatusCode, string(b))
+	}
+	var res struct {
+		Login string `json:"login"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return "", err
+	}
+	return res.Login, nil
+}
+
+func createGitHubBranch(pat, branchName string) {
+	resp, err := githubAPI("GET", fmt.Sprintf("/repos/%s/%s/git/refs/heads/main", githubOwner, githubRepo), nil, pat)
+	Expect(err).NotTo(HaveOccurred())
+	defer resp.Body.Close()
+	Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+	var refInfo struct {
+		Object struct {
+			SHA string `json:"sha"`
+		} `json:"object"`
+	}
+	Expect(json.NewDecoder(resp.Body).Decode(&refInfo)).To(Succeed())
+	sha := refInfo.Object.SHA
+
+	bodyJSON := fmt.Sprintf(`{"ref":"refs/heads/%s","sha":"%s"}`, branchName, sha)
+	resp2, err := githubAPI("POST", fmt.Sprintf("/repos/%s/%s/git/refs", githubOwner, githubRepo), []byte(bodyJSON), pat)
+	Expect(err).NotTo(HaveOccurred())
+	defer resp2.Body.Close()
+	Expect(resp2.StatusCode).To(BeElementOf(http.StatusCreated, http.StatusUnprocessableEntity))
+}
+
+func deleteGitHubBranch(pat, branchName string) {
+	resp, err := githubAPI("DELETE", fmt.Sprintf("/repos/%s/%s/git/refs/heads/%s", githubOwner, githubRepo, branchName), nil, pat)
+	if err == nil {
+		resp.Body.Close()
+	}
+}
+
+func createSecretInNamespace(name, ns, token string) {
+	secretJSON := fmt.Sprintf(`{
+		"apiVersion": "v1",
+		"kind":       "Secret",
+		"metadata":   {"name": %q, "namespace": %q},
+		"stringData": {"token": %q}
+	}`, name, ns, token)
+	applySecret := exec.Command("kubectl", "apply", "-f", "-")
+	applySecret.Stdin = strings.NewReader(secretJSON)
+	out, err := applySecret.CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), "create Secret %s/%s: %s", ns, name, string(out))
+}
+
+func applyAgentRegistration(agentIdentity, secretName string) {
+	regJSON := fmt.Sprintf(`{
+		"apiVersion": "governance.aip.io/v1alpha1",
+		"kind":       "AgentRegistration",
+		"metadata":   {"name": %q, "namespace": "default"},
+		"spec": {
+			"agentIdentity": %q,
+			"oidc": {
+				"issuer":          %q,
+				"subjectClaim":    "azp",
+				"allowedSubjects": [%q]
+			},
+			"externalIdentities": [{
+				"service": "github",
+				"type":    "StaticSecret",
+				"staticSecret": {
+					"name":      %q,
+					"namespace": "aip-k8s-system",
+					"key":       "token"
+				}
+			}]
+		}
+	}`, "reg-"+agentIdentity, agentIdentity, kcIssuer, agentIdentity, secretName)
+	applyReg := exec.Command("kubectl", "apply", "-f", "-")
+	applyReg.Stdin = strings.NewReader(regJSON)
+	out, err := applyReg.CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), "apply AgentRegistration for %s: %s", agentIdentity, string(out))
+}
+
+func deployGitHubMCPServer() {
+	projDir, err := utils.GetProjectDir()
+	Expect(err).NotTo(HaveOccurred())
+
+	// Create aip-github-token secret in aip-k8s-system namespace
+	secretJSON := fmt.Sprintf(`{
+		"apiVersion": "v1",
+		"kind":       "Secret",
+		"metadata":   {"name": "aip-github-token", "namespace": "aip-k8s-system"},
+		"stringData": {"token": %q}
+	}`, os.Getenv("AIP_E2E_GITHUB_PAT_AGENT1"))
+	applySecret := exec.Command("kubectl", "apply", "-f", "-")
+	applySecret.Stdin = strings.NewReader(secretJSON)
+	out, err := applySecret.CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), "create aip-github-token: %s", string(out))
+
+	// Apply github-mcp-server manifests
+	applyCmd := exec.Command("kubectl", "apply", "-f", filepath.Join(projDir, "config", "mcp"))
+	out, err = applyCmd.CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), "apply github-mcp-server: %s", string(out))
+
+	// Wait for the deployment to be ready
+	Eventually(func(g Gomega) {
+		cmd := exec.Command("kubectl", "get", "deployment", "github-mcp-server", "-n", "aip-k8s-system",
+			"-o", "jsonpath={.status.conditions[?(@.type=='Available')].status}")
+		status, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(status)).To(Equal("True"))
+	}, 3*time.Minute, 3*time.Second).Should(Succeed())
+
+	// Wait for endpoints
+	Eventually(func(g Gomega) {
+		cmd := exec.Command("kubectl", "get", "endpoints", "github-mcp", "-n", "aip-k8s-system",
+			"-o", "jsonpath={.subsets[0].addresses[0].ip}")
+		ip, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(ip)).NotTo(BeEmpty())
+	}, 2*time.Minute, 2*time.Second).Should(Succeed())
 }
