@@ -49,6 +49,7 @@ const (
 	e2eTestBranch2         = "e2e-mcp-scale-17-v2"
 	e2eTestBranch3         = "e2e-mcp-scale-17-v3"
 	mcpServerCRDName       = "github"
+	mcpPort                = "18081"
 )
 
 var (
@@ -313,8 +314,6 @@ spec:
 	err = jwt.GenerateEd25519Key(jwtKeyFile)
 	Expect(err).NotTo(HaveOccurred(), "Failed to generate JWT signing key")
 	jwtKeyPath = jwtKeyFile
-
-	mcpPort := "18081"
 
 	By("port-forwarding github-mcp service for local gateway access")
 	mcpPFCmd = exec.Command("kubectl", "port-forward", "-n", namespace,

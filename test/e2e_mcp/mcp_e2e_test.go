@@ -643,7 +643,7 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 					Name: "github-scenario-e",
 				},
 				Spec: governancev1alpha1.MCPServerSpec{
-					URL:             fmt.Sprintf("http://localhost:%s", "18081"),
+					URL:             fmt.Sprintf("http://localhost:%s", mcpPort),
 					SecretNamespace: namespace,
 				},
 			}
@@ -704,7 +704,7 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 			By("waiting for registrationCache to pick up mcp-e2e-agent-e")
 			Eventually(func(g Gomega) {
 				probeReq, err := http.NewRequest("POST", fmt.Sprintf("%s/mcp", gwURL),
-					strings.NewReader(`{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"github-scenario-e/get_file_contents","arguments":{"owner":"agent-control-plane","repo":"aip-k8s","path":"README.md"}}}`))
+					strings.NewReader(`{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"github-scenario-e/get_file_contents","arguments":{"owner":"agent-control-plane","repo":"aip-k8s","path":"go.mod"}}}`))
 				g.Expect(err).NotTo(HaveOccurred())
 				probeReq.Header.Set("Content-Type", "application/json")
 				probeReq.Header.Set("X-Remote-User", "e2e-mcp-agent-e")
@@ -752,7 +752,10 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 			Expect(listResp.StatusCode).To(Equal(http.StatusOK))
 			Expect(string(listBody)).To(ContainSubstring("github-scenario-e/get_file_contents"))
 
-			By("calling github-scenario-e/get_file_contents on a known file")
+			By("calling github-scenario-e/get_file_contents on a known small file")
+			// go.mod is always small enough for the github-mcp-server to return inline
+			// content (README.md can exceed the server's inline-content threshold and
+			// return only a "successfully downloaded text file" summary instead).
 			callRPC := `{
 				"jsonrpc": "2.0",
 				"id": 81,
@@ -762,7 +765,7 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 					"arguments": {
 						"owner": "agent-control-plane",
 						"repo": "aip-k8s",
-						"path": "README.md"
+						"path": "go.mod"
 					}
 				}
 			}`
@@ -793,7 +796,7 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 			Expect(rpcResp.Error).To(BeNil(), "JSON-RPC error: %+v", rpcResp.Error)
 			Expect(rpcResp.Result).NotTo(BeNil())
 			Expect(rpcResp.Result.Content).NotTo(BeEmpty())
-			Expect(rpcResp.Result.Content[0].Text).To(ContainSubstring("aip-k8s"))
+			Expect(rpcResp.Result.Content[0].Text).To(ContainSubstring("agent-control-plane/aip-k8s"))
 		})
 	})
 })
