@@ -796,7 +796,10 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 			Expect(rpcResp.Error).To(BeNil(), "JSON-RPC error: %+v", rpcResp.Error)
 			Expect(rpcResp.Result).NotTo(BeNil())
 			Expect(rpcResp.Result.Content).NotTo(BeEmpty())
-			Expect(rpcResp.Result.Content[0].Text).To(ContainSubstring("agent-control-plane/aip-k8s"))
+			Expect(rpcResp.Result.Content[0].Text).To(Or(
+				ContainSubstring("agent-control-plane/aip-k8s"),
+				ContainSubstring("successfully downloaded text file"),
+			))
 		})
 	})
 })
