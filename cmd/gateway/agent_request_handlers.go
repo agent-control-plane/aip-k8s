@@ -184,7 +184,8 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		if reg == nil {
 			switch s.unregisteredAgentPolicy {
 			case "strict":
-				writeError(w, http.StatusForbidden, fmt.Sprintf("AGENT_NOT_REGISTERED: agent %q has no AgentRegistration", body.AgentIdentity))
+				writeError(w, http.StatusForbidden,
+					fmt.Sprintf("AGENT_NOT_REGISTERED: agent %q has no AgentRegistration", body.AgentIdentity))
 				return
 			case "warn":
 				log.Printf("warn: unregistered agent %q submitted AgentRequest", body.AgentIdentity)

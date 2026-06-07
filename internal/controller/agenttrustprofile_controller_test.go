@@ -637,7 +637,7 @@ var _ = Describe("AgentTrustProfile Controller", Ordered, func() {
 			},
 		}
 		Expect(k8sClient.Create(ctx, ar)).To(Succeed())
-		
+
 		// Set it to terminal phase (Completed)
 		arBase := ar.DeepCopy()
 		ar.Status.Phase = governancev1alpha1.PhaseCompleted
@@ -654,4 +654,3 @@ var _ = Describe("AgentTrustProfile Controller", Ordered, func() {
 		Expect(p.Spec.AgentIdentity).To(Equal(agentID))
 	})
 })
-
