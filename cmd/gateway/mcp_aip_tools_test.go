@@ -204,6 +204,7 @@ func TestAIPAwaitApproval_Timeout(t *testing.T) {
 
 	s := &Server{
 		client:      &stubGetClient{ar: pendingAR},
+		apiReader:   &stubGetClient{ar: pendingAR},                   // direct-read path used by handleAIPAwaitApproval
 		watchClient: &stubWatchClient{ch: make(chan k8swatch.Event)}, // never sends
 		waitTimeout: 50 * time.Millisecond,
 	}

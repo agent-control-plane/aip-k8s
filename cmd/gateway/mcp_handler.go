@@ -9,9 +9,9 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 
+	"github.com/agent-control-plane/aip-k8s/internal/credential"
 	"github.com/agent-control-plane/aip-k8s/internal/jwt"
 	"github.com/agent-control-plane/aip-k8s/internal/mcp"
 )
@@ -185,7 +185,16 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *mc
 		action = prefixedAction
 	}
 
-	result, errMsg := s.forwardToolCall(r.Context(), mcpServer, params.Arguments, toolName, req.ID, agent)
+	result, errMsg, done := s.forwardToolCall(r.Context(), w, mcpServer, params.Arguments, toolName, req.ID, agent)
+	if done {
+		// forwardToolCall already wrote the error response. For JWT-authorized write
+		// tools the AgentRequest must still be advanced to Failed so the OpsLock is
+		// released; the response body is already committed so this is a side-effect only.
+		if requestRef != "" {
+			s.failAgentRequest(r.Context(), requestRef, "MCP tool credential error")
+		}
+		return
+	}
 	if errMsg != "" {
 		// JWT-authorized write tool failed: advance AR to Failed to release the lock.
 		if requestRef != "" {
@@ -311,12 +320,12 @@ func (s *Server) enforceResourceClaimForTool(serverName, resource string, args m
 }
 
 func (s *Server) forwardToolCall(
-	ctx context.Context, mcpServer *MCPServer, args map[string]any,
+	ctx context.Context, w http.ResponseWriter, mcpServer *MCPServer, args map[string]any,
 	toolName string, id any, agentIdentity string,
-) (mcpProxyResult, string) {
+) (mcpProxyResult, string, bool) {
 	rpcBody, err := buildJSONRPCRequestBody(args, toolName, id)
 	if err != nil {
-		return mcpProxyResult{}, "failed to build request: " + err.Error()
+		return mcpProxyResult{}, "failed to build request: " + err.Error(), false
 	}
 
 	callCtx, cancel := context.WithTimeout(ctx, mcpRequestTimeout)
@@ -326,7 +335,7 @@ func (s *Server) forwardToolCall(
 	// not to a /tools/call sub-path.
 	req, err := http.NewRequestWithContext(callCtx, "POST", mcpServer.URL, bytes.NewReader(rpcBody))
 	if err != nil {
-		return mcpProxyResult{}, "failed to create request"
+		return mcpProxyResult{}, "failed to create request", false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
@@ -334,23 +343,26 @@ func (s *Server) forwardToolCall(
 		req.Header.Set("Mcp-Session-Id", mcpServer.SessionID)
 	}
 	rawOIDCToken := rawOIDCTokenFromCtx(ctx)
-	bearerToken := mcpServer.BearerToken
+
+	var p credential.Provider
 	if s.regCache != nil {
-		if provider := s.regCache.providerFor(agentIdentity, mcpServer.Name); provider != nil {
-			tok, err := provider.Token(ctx, rawOIDCToken)
-			if err != nil {
-				// A per-agent provider is configured — fail closed. Falling back to the
-				// shared super-token would defeat per-agent scoping and is a privilege escalation.
-				log.Printf("Credential resolution failed for registered agent, agentIdentity=%s, server=%s, err=%v",
-					agentIdentity, mcpServer.Name, err)
-				return mcpProxyResult{}, fmt.Sprintf("credential resolution failed for agent %s on %s",
-					agentIdentity, mcpServer.Name)
-			}
-			bearerToken = tok
-		}
+		p = s.regCache.providerFor(agentIdentity, mcpServer.Name)
 	}
-	if bearerToken == "" {
-		bearerToken = os.Getenv("AIP_MCP_TOKEN")
+	if p == nil {
+		writeError(w, http.StatusForbidden,
+			fmt.Sprintf("no credential binding for agent %q on server %q: "+
+				"register an AgentRegistration with an ExternalIdentityBinding",
+				agentIdentity, mcpServer.Name))
+		return mcpProxyResult{}, "", true
+	}
+	bearerToken, err := p.Token(callCtx, rawOIDCToken)
+	if err != nil {
+		// Log server-side so operators can grep without relying on client-visible error text.
+		log.Printf("Credential resolution failed: server=%q agent=%q err=%v", mcpServer.Name, agentIdentity, err)
+		writeError(w, http.StatusInternalServerError,
+			fmt.Sprintf("failed to resolve credential for agent %q on server %q",
+				agentIdentity, mcpServer.Name))
+		return mcpProxyResult{}, "", true
 	}
 	if bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+bearerToken)
@@ -359,17 +371,17 @@ func (s *Server) forwardToolCall(
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		log.Printf("MCP forward error: %v", err)
-		return mcpProxyResult{}, "MCP server unavailable"
+		return mcpProxyResult{}, "MCP server unavailable", false
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	const maxMCPResponseSize = 10 << 20
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxMCPResponseSize+1))
 	if err != nil {
-		return mcpProxyResult{}, "failed to read MCP response"
+		return mcpProxyResult{}, "failed to read MCP response", false
 	}
 	if len(respBody) > maxMCPResponseSize {
-		return mcpProxyResult{}, "MCP response too large"
+		return mcpProxyResult{}, "MCP response too large", false
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -384,14 +396,14 @@ func (s *Server) forwardToolCall(
 				s.mcpCache.resetSession(mcpServer.Name, mcpServer.URL)
 			}
 		}
-		return mcpProxyResult{}, fmt.Sprintf("MCP server returned status %d", resp.StatusCode)
+		return mcpProxyResult{}, fmt.Sprintf("MCP server returned status %d", resp.StatusCode), false
 	}
 
 	result, rpcErr := extractMCPResult(respBody)
 	if rpcErr != "" {
-		return mcpProxyResult{}, rpcErr
+		return mcpProxyResult{}, rpcErr, false
 	}
-	return result, ""
+	return result, "", false
 }
 
 func buildJSONRPCRequestBody(args map[string]any, toolName string, id any) ([]byte, error) {

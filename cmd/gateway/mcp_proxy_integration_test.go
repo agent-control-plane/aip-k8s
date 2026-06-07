@@ -88,7 +88,12 @@ func TestMCPProxy_FullFlow_ValidJWT(t *testing.T) {
 
 	mcpServers, err := loadMCPRegistry()
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	s := &Server{jwtManager: mgr, httpClient: &http.Client{Timeout: 5 * time.Second}, mcpServers: mcpServers}
+	s := &Server{
+		jwtManager: mgr,
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+		mcpServers: mcpServers,
+		regCache:   setupTestRegCache(),
+	}
 	req := httptest.NewRequest("POST", "/mcp-proxy/github/get_file_contents",
 		strings.NewReader(`{"name":"get_file_contents","arguments":{"owner":"acme","repo":"demo"}}`))
 	req.SetPathValue("server", "github")
@@ -118,6 +123,7 @@ func TestMCPProxy_ReadOnlyNoAuth(t *testing.T) {
 			{Name: "github", URL: upstream.URL, Status: "available",
 				Tools: []MCPTool{{Name: "get_file_contents", ReadOnly: true}}},
 		},
+		regCache: setupTestRegCache(),
 	}
 	req := httptest.NewRequest("POST", "/mcp-proxy/github/get_file_contents",
 		strings.NewReader(`{"name":"get_file_contents","arguments":{"owner":"acme","repo":"demo"}}`))

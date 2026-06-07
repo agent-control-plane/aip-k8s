@@ -49,6 +49,7 @@ const (
 	e2eTestBranch2         = "e2e-mcp-scale-17-v2"
 	e2eTestBranch3         = "e2e-mcp-scale-17-v3"
 	mcpServerCRDName       = "github"
+	mcpPort                = "18081"
 )
 
 var (
@@ -239,12 +240,58 @@ var _ = BeforeSuite(func() {
 	tokenSecret := fmt.Sprintf(`{"apiVersion":"v1","kind":"Secret","metadata":{"name":"%s","namespace":"%s"},"type":"Opaque","stringData":{"token":"%s"}}`, githubTokenSecret, namespace, githubPAT)
 	Expect(kubectlApply(tokenSecret)).To(Succeed(), "Failed to create github token Secret")
 
-	By("patching controller deployment with AIP_MCP_TOKEN env var")
-	patchJSON := fmt.Sprintf(`{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"AIP_MCP_TOKEN","valueFrom":{"secretKeyRef":{"name":"%s","key":"token"}}}]}]}}}}`, githubTokenSecret)
-	cmd = exec.Command("kubectl", "patch", "deployment", controllerDeployment, "-n", namespace,
-		"--type=strategic", "-p", patchJSON)
-	_, err = runCmd(cmd)
-	Expect(err).NotTo(HaveOccurred(), "Failed to patch controller deployment with AIP_MCP_TOKEN")
+	By("creating AgentRegistrations for MCP e2e agents")
+	// These agents authenticate via X-Remote-User proxy header (no OIDC tokens).
+	// Omit the oidc field entirely: an empty oidc: {} is non-nil and activates
+	// AllowedSubjects enforcement with an empty list, which has subtly different
+	// semantics. Omitting it is the explicit "no OIDC validation" signal.
+	agentRegs := fmt.Sprintf(`
+apiVersion: governance.aip.io/v1alpha1
+kind: AgentRegistration
+metadata:
+  name: mcp-e2e-agent
+  namespace: %s
+spec:
+  agentIdentity: "e2e-mcp-agent"
+  externalIdentities:
+    - service: "github"
+      type: StaticSecret
+      staticSecret:
+        name: %s
+        namespace: %s
+        key: token
+---
+apiVersion: governance.aip.io/v1alpha1
+kind: AgentRegistration
+metadata:
+  name: mcp-e2e-agent-c
+  namespace: %s
+spec:
+  agentIdentity: "e2e-mcp-agent-c"
+  externalIdentities:
+    - service: "github"
+      type: StaticSecret
+      staticSecret:
+        name: %s
+        namespace: %s
+        key: token
+---
+apiVersion: governance.aip.io/v1alpha1
+kind: AgentRegistration
+metadata:
+  name: mcp-e2e-agent-d
+  namespace: %s
+spec:
+  agentIdentity: "e2e-mcp-agent-d"
+  externalIdentities:
+    - service: "github"
+      type: StaticSecret
+      staticSecret:
+        name: %s
+        namespace: %s
+        key: token
+`, namespace, githubTokenSecret, namespace, namespace, githubTokenSecret, namespace, namespace, githubTokenSecret, namespace)
+	Expect(kubectlApply(agentRegs)).To(Succeed(), "Failed to create AgentRegistration CRs")
 
 	By("deploying github-mcp-server into aip-k8s-system namespace")
 	cmd = exec.Command("kubectl", "apply", "-f", filepath.Join(projDir, "config", "mcp"))
@@ -267,8 +314,6 @@ var _ = BeforeSuite(func() {
 	err = jwt.GenerateEd25519Key(jwtKeyFile)
 	Expect(err).NotTo(HaveOccurred(), "Failed to generate JWT signing key")
 	jwtKeyPath = jwtKeyFile
-
-	mcpPort := "18081"
 
 	By("port-forwarding github-mcp service for local gateway access")
 	mcpPFCmd = exec.Command("kubectl", "port-forward", "-n", namespace,
@@ -352,9 +397,16 @@ var _ = AfterSuite(func() {
 	cmd := exec.Command("kubectl", "delete", "-f", filepath.Join(getProjectDir(), "config", "mcp"), "--ignore-not-found", "--wait=false")
 	_, _ = runCmd(cmd)
 
-	By("deleting MCPServer CR")
+	By("deleting MCPServer CRs")
 	err := k8sClient.Delete(ctx, &governancev1alpha1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: mcpServerCRDName}})
 	Expect(client.IgnoreNotFound(err)).To(Succeed(), "deleting MCPServer %s", mcpServerCRDName)
+	// Defensive cleanup for Scenario E's MCPServer; its AfterAll deletes it too,
+	// but if that AfterAll was skipped or panicked this ensures no leak between runs.
+	_ = client.IgnoreNotFound(k8sClient.Delete(ctx, &governancev1alpha1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: "github-scenario-e"}}))
+
+	By("deleting AgentRegistration CRs")
+	cmd = exec.Command("kubectl", "delete", "agentregistration", "--all", "-n", namespace, "--ignore-not-found")
+	_, _ = runCmd(cmd)
 
 	By("deleting aip-github-token Secret")
 	cmd = exec.Command("kubectl", "delete", "secret", githubTokenSecret, "-n", namespace, "--ignore-not-found", "--wait=false")

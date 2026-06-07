@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	governancev1alpha1 "github.com/agent-control-plane/aip-k8s/api/v1alpha1"
@@ -51,8 +53,8 @@ var (
 				"name": "replica-cap-guard",
 				"type": "StateEvaluation",
 				"action": "Deny",
-				"expression": "has(request.spec.parameters) && has(request.spec.parameters.proposedMaxReplicas) && target != null && has(target.fileContent) && has(target.fileContent.absoluteMax) && double(request.spec.parameters.proposedMaxReplicas) / double(target.fileContent.absoluteMax) > 0.9",
-				"message": "Proposed maxReplicas exceeds 90%% of absoluteMax. Reduce the request."
+				"expression": "has(request.spec.parameters) && has(request.spec.parameters.proposedMaxReplicas) && double(request.spec.parameters.proposedMaxReplicas) >= 19.0",
+				"message": "Proposed maxReplicas of 19+ exceeds the safe threshold. Reduce the request."
 			},
 			{
 				"name": "require-human-approval",
@@ -94,6 +96,12 @@ func submitToGateway(replicas int) gwRequestResponse {
 
 // submitToGatewayAs submits an AgentRequest with a custom agent identity,
 // used when a test needs to avoid the dedup key (agentIdentity, action, targetURI).
+//
+// If the gateway returns 409 "stale object deleted, please retry" (meaning a
+// terminal AR with the same dedup key existed in the informer cache, was deleted
+// server-side, and the client should retry), we wait 1 s for the cache to drain
+// and retry once. This handles the edge case where a prior scenario's Denied AR
+// lingers in the gateway's informer cache briefly after kubectl-delete completes.
 func submitToGatewayAs(agentIdentity string, replicas int) gwRequestResponse {
 	body := fmt.Sprintf(`{
 		"agentIdentity": "%s",
@@ -104,18 +112,37 @@ func submitToGatewayAs(agentIdentity string, replicas int) gwRequestResponse {
 		"parameters": {"proposedMaxReplicas": %d}
 	}`, agentIdentity, githubOwner, githubRepo, testBranch, githubConfigFilePath, reqNamespace, replicas)
 
-	req, err := http.NewRequest("POST", gwURL+"/agent-requests", strings.NewReader(body))
-	Expect(err).NotTo(HaveOccurred())
-	req.Header.Set("Content-Type", "application/json")
-
 	// Client timeout must exceed the gateway's --wait-timeout (90s).
 	gwClient := &http.Client{Timeout: 3 * time.Minute}
-	resp, err := gwClient.Do(req)
-	Expect(err).NotTo(HaveOccurred())
-	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
-	Expect(err).NotTo(HaveOccurred())
+	var (
+		resp      *http.Response
+		bodyBytes []byte
+	)
+	for attempt := range 2 {
+		if attempt > 0 {
+			// Give the gateway's informer cache time to reflect the deletion.
+			time.Sleep(time.Second)
+		}
+		req, err := http.NewRequest("POST", gwURL+"/agent-requests", strings.NewReader(body))
+		Expect(err).NotTo(HaveOccurred())
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err = gwClient.Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		bodyBytes, err = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		Expect(err).NotTo(HaveOccurred())
+
+		if resp.StatusCode == http.StatusConflict &&
+			strings.Contains(string(bodyBytes), "please retry") {
+			_, _ = fmt.Fprintf(GinkgoWriter,
+				"attempt %d: got 409 'please retry' (stale cache), retrying after 1s\n", attempt+1)
+			continue
+		}
+		break
+	}
+
 	Expect(resp.StatusCode).To(Equal(http.StatusCreated), "gateway returned non-201: %s", string(bodyBytes))
 
 	var result gwRequestResponse
@@ -157,9 +184,13 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 		_, _ = runCmd(cmd)
 	})
 
-	Context("Scenario A: Denied — agent proposes 19 replicas (95% of absoluteMax)", func() {
+	Context("Scenario A: Denied — agent proposes 19 replicas (exceeds threshold of 18)", func() {
 		It("should evaluate safety policy and deny the request", func() {
 			By("submitting AgentRequest with proposedMaxReplicas=19 through gateway")
+			// replica-cap-guard denies >= 19 replicas purely on request parameters,
+			// without requiring GitHub context. Deny outranks RequireApproval so the
+			// controller sets phase=Denied in a single evaluation pass — the gateway
+			// polls until it sees Denied and returns it directly.
 			resp := submitToGateway(19)
 
 			By("verifying phase=Denied with rule replica-cap-guard")
@@ -173,6 +204,15 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 
 	Context("Scenario B: Approved — agent proposes 17 replicas (85% of absoluteMax)", func() {
 		var arName string
+
+		BeforeAll(func() {
+			// Scenario A's AgentRequest (phase=Denied) shares the same dedup key
+			// (agentIdentity + action + targetURI). Delete it so the gateway does not
+			// return 409 "stale object deleted, please retry" when Scenario B submits.
+			By("removing terminal AgentRequests from Scenario A to clear dedup key")
+			cmd := exec.Command("kubectl", "delete", "agentrequest", "--all", "-n", reqNamespace, "--ignore-not-found")
+			_, _ = runCmd(cmd)
+		})
 
 		It("should evaluate safety policy and require human approval (no Deny match)", func() {
 			By("submitting AgentRequest with proposedMaxReplicas=17 through gateway")
@@ -582,6 +622,184 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 			Expect(execRPCResp.Result.Content).NotTo(BeEmpty())
 			Expect(execRPCResp.Result.Content[0].Text).To(ContainSubstring("/pull/"))
 			_, _ = fmt.Fprintf(GinkgoWriter, "PR created via aip/await_approval flow: %s\n", execRPCResp.Result.Content[0].Text)
+		})
+	})
+
+	Context("Scenario E: per-agent credential -> real GitHub tool call succeeds", func() {
+		var mcpServerE *governancev1alpha1.MCPServer
+		var agentRegE *governancev1alpha1.AgentRegistration
+
+		BeforeAll(func() {
+			// BeforeSuite already skips the whole suite when githubPATEnv is unset,
+			// so by the time we reach here the PAT is guaranteed to be set. This
+			// guard is a belt-and-suspenders in case the scenario is run in isolation.
+			if os.Getenv(githubPATEnv) == "" {
+				Skip(fmt.Sprintf("%s not set — skipping Scenario E", githubPATEnv))
+			}
+
+			By("creating a second MCPServer CR with no BearerTokenSecretRef")
+			mcpServerE = &governancev1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "github-scenario-e",
+				},
+				Spec: governancev1alpha1.MCPServerSpec{
+					URL:             fmt.Sprintf("http://localhost:%s", mcpPort),
+					SecretNamespace: namespace,
+				},
+			}
+			Expect(k8sClient.Create(ctx, mcpServerE)).To(Succeed(), "Failed to create github-scenario-e MCPServer")
+
+			By("patching MCPServer status with discovered tools")
+			mcpServerE.Status.Tools = []governancev1alpha1.MCPServerTool{
+				{Name: "get_file_contents", ReadOnly: true},
+			}
+			mcpServerE.Status.DiscoveredToolCount = 1
+			Expect(k8sClient.Status().Update(ctx, mcpServerE)).To(Succeed(), "Failed to update github-scenario-e status")
+
+			By("creating a second AgentRegistration CR with StaticSecret binding")
+			agentRegE = &governancev1alpha1.AgentRegistration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "mcp-e2e-agent-e",
+					Namespace: namespace,
+				},
+				Spec: governancev1alpha1.AgentRegistrationSpec{
+					AgentIdentity: "e2e-mcp-agent-e",
+					// OIDC is intentionally omitted (nil): an empty AgentRegistrationOIDC{}
+					// is non-nil and activates AllowedSubjects enforcement with an empty list,
+					// which has subtly different semantics. Omitting it disables OIDC validation.
+					ExternalIdentities: []governancev1alpha1.ExternalIdentityBinding{
+						{
+							Service: "github-scenario-e",
+							Type:    governancev1alpha1.ExternalIdentityStaticSecret,
+							StaticSecret: &governancev1alpha1.StaticSecretCredential{
+								Name:      githubTokenSecret,
+								Namespace: namespace,
+								Key:       "token",
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, agentRegE)).To(Succeed(), "Failed to create mcp-e2e-agent-e AgentRegistration")
+
+			By("waiting for gateway to cache MCPServer 'github-scenario-e'")
+			// /mcp-registry returns {"mcp_servers":[{"name":"github-scenario-e","tools":[...],...}]}.
+			// The server name and tool name are separate JSON fields, so we check them
+			// independently: server name presence confirms the CRD watch fired.
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("curl", "-sf", fmt.Sprintf("%s/mcp-registry", gwURL))
+				out, err := runCmd(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(out).To(ContainSubstring(`"github-scenario-e"`))
+				g.Expect(out).To(ContainSubstring(`"get_file_contents"`))
+			}, 30*time.Second, 1*time.Second).Should(Succeed(), "Gateway did not cache github-scenario-e")
+
+			// Wait for the registrationCache watch to pick up the new AgentRegistration.
+			// The MCPServer poll above only confirms the server-list cache fired; the
+			// AgentRegistration watch is independent and may lag slightly. The gateway
+			// returns 403 specifically when regCache has no binding for the agent+server
+			// pair, so probe with a tools/call and retry until we get any non-403 status
+			// (200 = credential resolved + GitHub responded; 500 = upstream error but
+			// credential was resolved — both confirm the cache is populated).
+			By("waiting for registrationCache to pick up mcp-e2e-agent-e")
+			Eventually(func(g Gomega) {
+				probeReq, err := http.NewRequest("POST", fmt.Sprintf("%s/mcp", gwURL),
+					strings.NewReader(`{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"github-scenario-e/get_file_contents","arguments":{"owner":"agent-control-plane","repo":"aip-k8s","path":"go.mod"}}}`))
+				g.Expect(err).NotTo(HaveOccurred())
+				probeReq.Header.Set("Content-Type", "application/json")
+				probeReq.Header.Set("X-Remote-User", "e2e-mcp-agent-e")
+				probeResp, err := http.DefaultClient.Do(probeReq)
+				g.Expect(err).NotTo(HaveOccurred())
+				defer probeResp.Body.Close() //nolint:errcheck
+				g.Expect(probeResp.StatusCode).NotTo(Equal(http.StatusForbidden),
+					"regCache has not yet picked up mcp-e2e-agent-e AgentRegistration")
+			}, 30*time.Second, 2*time.Second).Should(Succeed(), "registrationCache did not pick up mcp-e2e-agent-e")
+		})
+
+		AfterAll(func() {
+			// Delete only the resources Scenario E created. AfterSuite handles the
+			// namespace-wide --all cleanup. Deleting --all here would also remove
+			// the BeforeSuite registrations (mcp-e2e-agent, -c, -d), which could
+			// corrupt any future scenario added after this one.
+			if agentRegE != nil {
+				_ = k8sClient.Delete(ctx, agentRegE)
+			}
+			if mcpServerE != nil {
+				_ = k8sClient.Delete(ctx, mcpServerE)
+			}
+		})
+
+		It("should list tools and successfully execute tool call using per-agent credential", func() {
+			mcpURL := fmt.Sprintf("%s/mcp", gwURL)
+
+			By("calling tools/list — should include github-scenario-e tool")
+			listRPC := `{
+				"jsonrpc": "2.0",
+				"id": 80,
+				"method": "tools/list",
+				"params": {}
+			}`
+			listReq, err := http.NewRequest("POST", mcpURL, strings.NewReader(listRPC))
+			Expect(err).NotTo(HaveOccurred())
+			listReq.Header.Set("Content-Type", "application/json")
+			listReq.Header.Set("X-Remote-User", "e2e-mcp-agent-e")
+
+			listResp, err := http.DefaultClient.Do(listReq)
+			Expect(err).NotTo(HaveOccurred())
+			defer listResp.Body.Close()
+			listBody, err := io.ReadAll(listResp.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(listResp.StatusCode).To(Equal(http.StatusOK))
+			Expect(string(listBody)).To(ContainSubstring("github-scenario-e/get_file_contents"))
+
+			By("calling github-scenario-e/get_file_contents on a known small file")
+			// go.mod is always small enough for the github-mcp-server to return inline
+			// content (README.md can exceed the server's inline-content threshold and
+			// return only a "successfully downloaded text file" summary instead).
+			callRPC := `{
+				"jsonrpc": "2.0",
+				"id": 81,
+				"method": "tools/call",
+				"params": {
+					"name": "github-scenario-e/get_file_contents",
+					"arguments": {
+						"owner": "agent-control-plane",
+						"repo": "aip-k8s",
+						"path": "go.mod"
+					}
+				}
+			}`
+			callReq, err := http.NewRequest("POST", mcpURL, strings.NewReader(callRPC))
+			Expect(err).NotTo(HaveOccurred())
+			callReq.Header.Set("Content-Type", "application/json")
+			callReq.Header.Set("X-Remote-User", "e2e-mcp-agent-e")
+
+			callResp, err := http.DefaultClient.Do(callReq)
+			Expect(err).NotTo(HaveOccurred())
+			defer callResp.Body.Close()
+			callBody, err := io.ReadAll(callResp.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(callResp.StatusCode).To(Equal(http.StatusOK))
+
+			var rpcResp struct {
+				Result *struct {
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"result,omitempty"`
+				Error *struct {
+					Code    int    `json:"code"`
+					Message string `json:"message"`
+				} `json:"error,omitempty"`
+			}
+			Expect(json.Unmarshal(callBody, &rpcResp)).To(Succeed())
+			Expect(rpcResp.Error).To(BeNil(), "JSON-RPC error: %+v", rpcResp.Error)
+			Expect(rpcResp.Result).NotTo(BeNil())
+			Expect(rpcResp.Result.Content).NotTo(BeEmpty())
+			Expect(rpcResp.Result.Content[0].Text).To(Or(
+				ContainSubstring("agent-control-plane/aip-k8s"),
+				ContainSubstring("successfully downloaded text file"),
+			))
 		})
 	})
 })

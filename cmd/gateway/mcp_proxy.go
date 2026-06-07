@@ -93,7 +93,10 @@ func (s *Server) handleMCPProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result, errMsg := s.forwardToolCall(r.Context(), mcpServer, args, toolName, 1, agent)
+	result, errMsg, done := s.forwardToolCall(r.Context(), w, mcpServer, args, toolName, 1, agent)
+	if done {
+		return
+	}
 	if errMsg != "" {
 		if !tool.ReadOnly && requestRef != "" {
 			s.failAgentRequest(r.Context(), requestRef, "MCP tool execution failed: "+errMsg)
