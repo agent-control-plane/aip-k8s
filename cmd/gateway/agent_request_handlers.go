@@ -131,10 +131,10 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 			agentIdentity = sub
 		} else {
 			if body.AgentIdentity == "" {
-				writeError(w, http.StatusBadRequest, "agentIdentity is required when running without authentication")
-				return
+				agentIdentity = "unauthenticated"
+			} else {
+				agentIdentity = body.AgentIdentity
 			}
-			agentIdentity = body.AgentIdentity
 		}
 	}
 

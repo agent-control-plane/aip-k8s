@@ -360,6 +360,65 @@ func runAuthAndApprovalTests(t *testing.T, mgrClient, directClient client.Client
 		cleanup(ctx, gm, directClient)
 	})
 
+	t.Run("Auth - missing agentIdentity defaults to unauthenticated when authRequired: false", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
+		s := &Server{
+			client:       mgrClient,
+			apiReader:    mgrClient,
+			dedupWindow:  0,
+			waitTimeout:  2 * time.Second,
+			roles:        newRoleConfig("", "", "", "", "", ""),
+			authRequired: false,
+		}
+
+		body := createAgentRequestBody{
+			Action:    "restart",
+			TargetURI: "k8s://prod/default/deployment/auth-unauthenticated-default-test",
+			Reason:    "test",
+			Namespace: testDefaultNS,
+		}
+		jsonBody, err := json.Marshal(body)
+		gm.Expect(err).NotTo(gomega.HaveOccurred())
+
+		req := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody))
+		rr := httptest.NewRecorder()
+
+		s.handleCreateAgentRequest(rr, req)
+		gm.Expect(rr.Code).To(gomega.Or(gomega.Equal(http.StatusCreated), gomega.Equal(http.StatusOK)))
+
+		var list v1alpha1.AgentRequestList
+		gm.Eventually(func() error {
+			if err := directClient.List(ctx, &list, client.InNamespace(testDefaultNS)); err != nil {
+				return err
+			}
+			found := false
+			for _, ar := range list.Items {
+				if ar.Spec.Target.URI == "k8s://prod/default/deployment/auth-unauthenticated-default-test" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return errors.New("AgentRequest not created yet")
+			}
+			return nil
+		}, eventuallyTimeout).Should(gomega.Succeed())
+
+		var found *v1alpha1.AgentRequest
+		for _, ar := range list.Items {
+			if ar.Spec.Target.URI == "k8s://prod/default/deployment/auth-unauthenticated-default-test" {
+				found = &ar
+				break
+			}
+		}
+		gm.Expect(found).NotTo(gomega.BeNil())
+		gm.Expect(found.Spec.AgentIdentity).To(gomega.Equal("unauthenticated"))
+		gm.Expect(found.Labels["aip.io/agentIdentity"]).To(gomega.Equal(sanitizeLabelValue("unauthenticated")))
+		gm.Expect(found.Labels["aip.io/profileName"]).To(gomega.Equal(v1alpha1.ProfileNameForAgent("unauthenticated")))
+
+		cleanup(ctx, gm, directClient)
+	})
+
 	t.Run("Auth - body.AgentIdentity wins over proxy callerSub when authRequired: false", func(t *testing.T) {
 		// Regression test: when authRequired=false the proxy-header middleware can
 		// populate callerSub via X-Remote-User. The handler must still use
