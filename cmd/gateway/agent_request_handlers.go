@@ -111,47 +111,23 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	var agentIdentity string
-	var unregistered bool
 	var reg *v1alpha1.AgentRegistration
-	if s.regCache != nil {
-		reg = s.regCache.getForSubject(body.AgentIdentity, sub)
+	if s.regCache != nil && body.AgentIdentity != "" {
+		reg = s.regCache.get(body.AgentIdentity)
 	}
 
-	if reg != nil {
-		agentIdentity = reg.Spec.AgentIdentity
-		// getForSubject already verified identity: sub ∈ AllowedSubjects (when set)
-		// or sub == agentIdentity (when AllowedSubjects is empty). No re-validation needed.
-		// For registrations without AllowedSubjects, require the agent role as defense-in-depth.
-		if s.authRequired && (reg.Spec.OIDC == nil || len(reg.Spec.OIDC.AllowedSubjects) == 0) {
-			if !requireRole(s.roles, roleAgent, sub, callerGroupsFromCtx(r.Context()), w) {
-				return
-			}
-		}
-	} else {
-		// getForSubject returned nil: either no registration exists for this agent, or one
-		// exists but the caller's OIDC subject is not in its AllowedSubjects list.
-		if s.regCache != nil && body.AgentIdentity != "" && s.regCache.exists(body.AgentIdentity) {
-			writeError(w, http.StatusForbidden, "IDENTITY_MISMATCH: OIDC subject not in allowedSubjects")
-			return
-		}
-
+	// 1. Role check: skipped if registered and registration has allowed subjects.
+	hasAllowedSubjects := reg != nil && reg.Spec.OIDC != nil && len(reg.Spec.OIDC.AllowedSubjects) > 0
+	if s.authRequired && !hasAllowedSubjects {
 		if !requireRole(s.roles, roleAgent, sub, callerGroupsFromCtx(r.Context()), w) {
 			return
 		}
+	}
 
-		if s.regCache != nil {
-			unregistered = true
-			switch s.unregisteredAgentPolicy {
-			case policyStrict:
-				writeError(w, http.StatusForbidden, "AGENT_NOT_REGISTERED")
-				return
-			case policyWarn:
-				log.Printf("Unregistered agent, policy=warn, agentIdentity=%q", body.AgentIdentity)
-			}
-		}
-
-		// Resolve default/open identity
+	var agentIdentity string
+	if reg != nil {
+		agentIdentity = reg.Spec.AgentIdentity
+	} else {
 		if s.authRequired {
 			agentIdentity = sub
 		} else {
@@ -204,11 +180,26 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		},
 	}
 
-	if unregistered && s.unregisteredAgentPolicy == policyWarn {
-		if agentReq.Annotations == nil {
-			agentReq.Annotations = make(map[string]string)
+	if s.regCache != nil {
+		if reg == nil {
+			switch s.unregisteredAgentPolicy {
+			case "strict":
+				writeError(w, http.StatusForbidden, fmt.Sprintf("AGENT_NOT_REGISTERED: agent %q has no AgentRegistration", body.AgentIdentity))
+				return
+			case "warn":
+				log.Printf("warn: unregistered agent %q submitted AgentRequest", body.AgentIdentity)
+				if agentReq.Annotations == nil {
+					agentReq.Annotations = map[string]string{}
+				}
+				agentReq.Annotations["governance.aip.io/unregistered"] = "true"
+			}
+			// "allow": proceed silently — backward-compatible default
+		} else if sub != "" {
+			if err := validateOIDCSubject(reg, sub); err != nil {
+				writeError(w, http.StatusForbidden, fmt.Sprintf("IDENTITY_MISMATCH: %v", err))
+				return
+			}
 		}
-		agentReq.Annotations["governance.aip.io/unregistered"] = annotationValueTrue
 	}
 
 	// GovernedResource admission: URI → agent identity → action (per design doc order).
@@ -841,4 +832,18 @@ func (s *Server) handleListAgentRequests(w http.ResponseWriter, r *http.Request)
 	} else {
 		writeJSON(w, http.StatusOK, items)
 	}
+}
+
+// validateOIDCSubject checks whether sub appears in reg.Spec.OIDC.AllowedSubjects.
+// Returns nil when the registration has no OIDC config (no subject enforcement).
+// Replaces the old equality check that used 400 and required exact agentIdentity==sub.
+func validateOIDCSubject(reg *v1alpha1.AgentRegistration, sub string) error {
+	if reg.Spec.OIDC == nil || len(reg.Spec.OIDC.AllowedSubjects) == 0 {
+		return nil
+	}
+	if slices.Contains(reg.Spec.OIDC.AllowedSubjects, sub) {
+		return nil
+	}
+	return fmt.Errorf("token subject %q not in allowedSubjects for agent %q",
+		sub, reg.Spec.AgentIdentity)
 }
