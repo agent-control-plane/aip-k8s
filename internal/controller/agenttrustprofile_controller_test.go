@@ -236,6 +236,12 @@ var _ = Describe("AgentTrustProfile Controller", Ordered, func() {
 			var atp governancev1alpha1.AgentTrustProfile
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: profileName, Namespace: ns}, &atp)).To(Succeed())
 			Expect(atp.Spec.AgentIdentity).To(Equal(agentID))
+
+			// Reconcile again to verify idempotency (no error, no duplicate).
+			_, err = r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: profileName, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
 		})
 
 		It("uses AgentRegistration identity over DiagnosticAccuracySummary when both exist", func() {
@@ -540,4 +546,5 @@ var _ = Describe("AgentTrustProfile Controller", Ordered, func() {
 		}
 		Expect(found).To(BeTrue(), "expected RequestSubmitted condition with Reason=TrustGateBlock")
 	})
+
 })

@@ -25,39 +25,50 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 	t.Run("AgentRegistration - Admission Policies (strict/warn/allow)", func(t *testing.T) {
 		gm := gomega.NewWithT(t)
 
-		// Create a strict server
-		sStrict := &Server{
+		// 1. Allow mode (default): unregistered agent -> 201, annotation absent
+		sAllow := &Server{
 			client:                  directClient,
 			apiReader:               directClient,
 			dedupWindow:             0,
-			waitTimeout:             200 * time.Millisecond,
+			waitTimeout:             serverWaitTimeout,
 			roles:                   newRoleConfig("", "", "", "", "", ""),
 			authRequired:            false,
 			regCache:                newRegistrationCache(directClient),
-			unregisteredAgentPolicy: "strict",
+			unregisteredAgentPolicy: "allow",
 		}
 
-		// Try to create unregistered agent request on strict server -> Forbidden
-		body := createAgentRequestBody{
-			AgentIdentity: "unregistered-agent-strict",
+		bodyAllow := createAgentRequestBody{
+			AgentIdentity: "unregistered-agent-allow",
 			Action:        "restart",
-			TargetURI:     "k8s://prod/default/deployment/approval-test",
+			TargetURI:     "k8s://prod/default/deployment/approval-test-allow",
 			Reason:        "test",
 			Namespace:     testDefaultNS,
 		}
-		jsonBody, _ := json.Marshal(body)
-		req := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody))
-		rr := httptest.NewRecorder()
-		sStrict.handleCreateAgentRequest(rr, req)
-		gm.Expect(rr.Code).To(gomega.Equal(http.StatusForbidden))
-		gm.Expect(rr.Body.String()).To(gomega.ContainSubstring("AGENT_NOT_REGISTERED"))
+		jsonBodyAllow, _ := json.Marshal(bodyAllow)
+		reqAllow := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBodyAllow))
+		rrAllow := httptest.NewRecorder()
+		sAllow.handleCreateAgentRequest(rrAllow, reqAllow)
+		gm.Expect(rrAllow.Code).To(gomega.Equal(http.StatusCreated))
 
-		// Create a warn server
+		// Check that the request was created and annotation is absent
+		var list v1alpha1.AgentRequestList
+		gm.Expect(directClient.List(ctx, &list)).To(gomega.Succeed())
+		var foundAllowReq *v1alpha1.AgentRequest
+		for _, item := range list.Items {
+			if item.Spec.AgentIdentity == "unregistered-agent-allow" {
+				foundAllowReq = &item
+				break
+			}
+		}
+		gm.Expect(foundAllowReq).NotTo(gomega.BeNil())
+		gm.Expect(foundAllowReq.Annotations["governance.aip.io/unregistered"]).To(gomega.Equal(""))
+
+		// 2. Warn mode: unregistered agent -> 201, created AgentRequest has annotation governance.aip.io/unregistered=true
 		sWarn := &Server{
 			client:                  directClient,
 			apiReader:               directClient,
 			dedupWindow:             0,
-			waitTimeout:             100 * time.Millisecond,
+			waitTimeout:             serverWaitTimeout,
 			roles:                   newRoleConfig("", "", "", "", "", ""),
 			authRequired:            false,
 			regCache:                newRegistrationCache(directClient),
@@ -67,7 +78,7 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		bodyWarn := createAgentRequestBody{
 			AgentIdentity: "unregistered-agent-warn",
 			Action:        "restart",
-			TargetURI:     "k8s://prod/default/deployment/approval-test",
+			TargetURI:     "k8s://prod/default/deployment/approval-test-warn",
 			Reason:        "test",
 			Namespace:     testDefaultNS,
 		}
@@ -75,10 +86,9 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		reqWarn := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBodyWarn))
 		rrWarn := httptest.NewRecorder()
 		sWarn.handleCreateAgentRequest(rrWarn, reqWarn)
-		gm.Expect(rrWarn.Code).To(gomega.Equal(http.StatusGatewayTimeout))
+		gm.Expect(rrWarn.Code).To(gomega.Equal(http.StatusCreated))
 
 		// Check that the request was created and has the unregistered annotation
-		var list v1alpha1.AgentRequestList
 		gm.Expect(directClient.List(ctx, &list)).To(gomega.Succeed())
 		var foundWarnReq *v1alpha1.AgentRequest
 		for _, item := range list.Items {
@@ -90,42 +100,31 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		gm.Expect(foundWarnReq).NotTo(gomega.BeNil())
 		gm.Expect(foundWarnReq.Annotations["governance.aip.io/unregistered"]).To(gomega.Equal("true"))
 
-		// Create an allow server
-		sAllow := &Server{
+		// 3. Strict mode: unregistered agent -> 403, body contains AGENT_NOT_REGISTERED
+		sStrict := &Server{
 			client:                  directClient,
 			apiReader:               directClient,
 			dedupWindow:             0,
-			waitTimeout:             100 * time.Millisecond,
+			waitTimeout:             serverWaitTimeout,
 			roles:                   newRoleConfig("", "", "", "", "", ""),
 			authRequired:            false,
 			regCache:                newRegistrationCache(directClient),
-			unregisteredAgentPolicy: "allow",
+			unregisteredAgentPolicy: "strict",
 		}
 
-		bodyAllow := createAgentRequestBody{
-			AgentIdentity: "unregistered-agent-allow",
+		bodyStrict := createAgentRequestBody{
+			AgentIdentity: "unregistered-agent-strict",
 			Action:        "restart",
-			TargetURI:     "k8s://prod/default/deployment/approval-test",
+			TargetURI:     "k8s://prod/default/deployment/approval-test-strict",
 			Reason:        "test",
 			Namespace:     testDefaultNS,
 		}
-		jsonBodyAllow, _ := json.Marshal(bodyAllow)
-		reqAllow := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBodyAllow))
-		rrAllow := httptest.NewRecorder()
-		sAllow.handleCreateAgentRequest(rrAllow, reqAllow)
-		gm.Expect(rrAllow.Code).To(gomega.Equal(http.StatusGatewayTimeout))
-
-		// Check that the request was created without the unregistered annotation
-		gm.Expect(directClient.List(ctx, &list)).To(gomega.Succeed())
-		var foundAllowReq *v1alpha1.AgentRequest
-		for _, item := range list.Items {
-			if item.Spec.AgentIdentity == "unregistered-agent-allow" {
-				foundAllowReq = &item
-				break
-			}
-		}
-		gm.Expect(foundAllowReq).NotTo(gomega.BeNil())
-		gm.Expect(foundAllowReq.Annotations["governance.aip.io/unregistered"]).To(gomega.Equal(""))
+		jsonBodyStrict, _ := json.Marshal(bodyStrict)
+		reqStrict := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBodyStrict))
+		rrStrict := httptest.NewRecorder()
+		sStrict.handleCreateAgentRequest(rrStrict, reqStrict)
+		gm.Expect(rrStrict.Code).To(gomega.Equal(http.StatusForbidden))
+		gm.Expect(rrStrict.Body.String()).To(gomega.ContainSubstring("AGENT_NOT_REGISTERED"))
 
 		cleanup(ctx, gm, directClient)
 	})
@@ -157,8 +156,8 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 			client:                  directClient,
 			apiReader:               directClient,
 			dedupWindow:             0,
-			waitTimeout:             100 * time.Millisecond,
-			roles:                   newRoleConfig("agent-1", "", "", "", "", ""),
+			waitTimeout:             serverWaitTimeout,
+			roles:                   newRoleConfig("agent-1,sub-ok-2,sub-wrong", "", "", "", "", ""),
 			authRequired:            true,
 			regCache:                regCache,
 			unregisteredAgentPolicy: "strict",
@@ -167,13 +166,22 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		body := createAgentRequestBody{
 			AgentIdentity: "agent-1",
 			Action:        "restart",
-			TargetURI:     "k8s://prod/default/deployment/approval-test",
+			TargetURI:     "k8s://prod/default/deployment/approval-test-oidc",
 			Reason:        "test",
 			Namespace:     testDefaultNS,
 		}
 		jsonBody, _ := json.Marshal(body)
 
-		// 1. Call with wrong subject -> Forbidden
+		// 4. Call with correct subject -> 201
+		reqOk := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody))
+		reqOkCtx := withCallerSub(reqOk.Context(), "sub-ok-2")
+		reqOkCtx = withCallerGroups(reqOkCtx, []string{})
+		reqOk = reqOk.WithContext(reqOkCtx)
+		rrOk := httptest.NewRecorder()
+		s.handleCreateAgentRequest(rrOk, reqOk)
+		gm.Expect(rrOk.Code).To(gomega.Equal(http.StatusCreated))
+
+		// 5. Call with wrong subject -> 403, body contains IDENTITY_MISMATCH
 		reqWrong := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody))
 		reqWrongCtx := withCallerSub(reqWrong.Context(), "sub-wrong")
 		reqWrongCtx = withCallerGroups(reqWrongCtx, []string{})
@@ -183,14 +191,104 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		gm.Expect(rrWrong.Code).To(gomega.Equal(http.StatusForbidden))
 		gm.Expect(rrWrong.Body.String()).To(gomega.ContainSubstring("IDENTITY_MISMATCH"))
 
-		// 2. Call with correct subject -> proceed to GatewayTimeout (not Forbidden)
-		reqOk := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody))
-		reqOkCtx := withCallerSub(reqOk.Context(), "sub-ok-2")
-		reqOkCtx = withCallerGroups(reqOkCtx, []string{})
-		reqOk = reqOk.WithContext(reqOkCtx)
-		rrOk := httptest.NewRecorder()
-		s.handleCreateAgentRequest(rrOk, reqOk)
-		gm.Expect(rrOk.Code).To(gomega.Equal(http.StatusGatewayTimeout))
+		// 6. Registered agent, OIDC == nil on registration -> 201 (nil OIDC = no subject enforcement)
+		regNilOIDC := &v1alpha1.AgentRegistration{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-agent-nil-oidc",
+				Namespace: testDefaultNS,
+			},
+			Spec: v1alpha1.AgentRegistrationSpec{
+				AgentIdentity: "agent-nil-oidc",
+			},
+		}
+		gm.Expect(directClient.Create(ctx, regNilOIDC)).To(gomega.Succeed())
+		defer func() { _ = directClient.Delete(ctx, regNilOIDC) }()
+
+		regCache.upsert(regNilOIDC)
+
+		sNilOIDC := &Server{
+			client:                  directClient,
+			apiReader:               directClient,
+			dedupWindow:             0,
+			waitTimeout:             serverWaitTimeout,
+			roles:                   newRoleConfig("any-sub,agent-nil-oidc", "", "", "", "", ""),
+			authRequired:            true,
+			regCache:                regCache,
+			unregisteredAgentPolicy: "strict",
+		}
+
+		bodyNilOIDC := createAgentRequestBody{
+			AgentIdentity: "agent-nil-oidc",
+			Action:        "restart",
+			TargetURI:     "k8s://prod/default/deployment/approval-test-nil-oidc",
+			Reason:        "test",
+			Namespace:     testDefaultNS,
+		}
+		jsonBodyNilOIDC, _ := json.Marshal(bodyNilOIDC)
+		reqNilOIDCPost := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBodyNilOIDC))
+		reqNilOIDCPostCtx := withCallerSub(reqNilOIDCPost.Context(), "any-sub")
+		reqNilOIDCPostCtx = withCallerGroups(reqNilOIDCPostCtx, []string{})
+		reqNilOIDCPost = reqNilOIDCPost.WithContext(reqNilOIDCPostCtx)
+		rrNilOIDCPost := httptest.NewRecorder()
+		sNilOIDC.handleCreateAgentRequest(rrNilOIDCPost, reqNilOIDCPost)
+		gm.Expect(rrNilOIDCPost.Code).To(gomega.Equal(http.StatusCreated))
+
+		// 7. Registered agent, OIDC.AllowedSubjects empty -> 201 (empty list = no enforcement)
+		regEmptyOIDC := &v1alpha1.AgentRegistration{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-agent-empty-oidc",
+				Namespace: testDefaultNS,
+			},
+			Spec: v1alpha1.AgentRegistrationSpec{
+				AgentIdentity: "agent-empty-oidc",
+				OIDC: &v1alpha1.AgentRegistrationOIDC{
+					Issuer:          "https://oidc.example.com",
+					AllowedSubjects: []string{},
+				},
+			},
+		}
+		gm.Expect(directClient.Create(ctx, regEmptyOIDC)).To(gomega.Succeed())
+		defer func() { _ = directClient.Delete(ctx, regEmptyOIDC) }()
+
+		regCache.upsert(regEmptyOIDC)
+
+		sEmptyOIDC := &Server{
+			client:                  directClient,
+			apiReader:               directClient,
+			dedupWindow:             0,
+			waitTimeout:             serverWaitTimeout,
+			roles:                   newRoleConfig("any-sub-again,agent-empty-oidc,someone-else", "", "", "", "", ""),
+			authRequired:            true,
+			regCache:                regCache,
+			unregisteredAgentPolicy: "strict",
+		}
+
+		bodyEmptyOIDC := createAgentRequestBody{
+			AgentIdentity: "agent-empty-oidc",
+			Action:        "restart",
+			TargetURI:     "k8s://prod/default/deployment/approval-test-empty-oidc",
+			Reason:        "test",
+			Namespace:     testDefaultNS,
+		}
+		jsonBodyEmptyOIDC, _ := json.Marshal(bodyEmptyOIDC)
+		reqEmptyOIDCPost := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBodyEmptyOIDC))
+		// When AllowedSubjects is empty, sub must match agentIdentity (or be empty).
+		reqEmptyOIDCPostCtx := withCallerSub(reqEmptyOIDCPost.Context(), "agent-empty-oidc")
+		reqEmptyOIDCPostCtx = withCallerGroups(reqEmptyOIDCPostCtx, []string{})
+		reqEmptyOIDCPost = reqEmptyOIDCPost.WithContext(reqEmptyOIDCPostCtx)
+		rrEmptyOIDCPost := httptest.NewRecorder()
+		sEmptyOIDC.handleCreateAgentRequest(rrEmptyOIDCPost, reqEmptyOIDCPost)
+		gm.Expect(rrEmptyOIDCPost.Code).To(gomega.Equal(http.StatusCreated))
+
+		// 8. Registered agent, empty AllowedSubjects, mismatched sub -> 403 IDENTITY_MISMATCH
+		reqEmptyOIDCWrong := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBodyEmptyOIDC))
+		reqEmptyOIDCWrongCtx := withCallerSub(reqEmptyOIDCWrong.Context(), "someone-else")
+		reqEmptyOIDCWrongCtx = withCallerGroups(reqEmptyOIDCWrongCtx, []string{})
+		reqEmptyOIDCWrong = reqEmptyOIDCWrong.WithContext(reqEmptyOIDCWrongCtx)
+		rrEmptyOIDCWrong := httptest.NewRecorder()
+		sEmptyOIDC.handleCreateAgentRequest(rrEmptyOIDCWrong, reqEmptyOIDCWrong)
+		gm.Expect(rrEmptyOIDCWrong.Code).To(gomega.Equal(http.StatusForbidden))
+		gm.Expect(rrEmptyOIDCWrong.Body.String()).To(gomega.ContainSubstring("IDENTITY_MISMATCH"))
 
 		cleanup(ctx, gm, directClient)
 	})

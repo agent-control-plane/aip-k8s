@@ -90,6 +90,13 @@ func (c *registrationCache) getForSubject(agentIdentity, sub string) *v1alpha1.A
 	return match
 }
 
+// get returns the Registration for agentIdentity, or nil if not found.
+func (c *registrationCache) get(agentIdentity string) *v1alpha1.AgentRegistration {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.byAgent[agentIdentity]
+}
+
 // exists reports whether a registration exists for the given agent identity,
 // regardless of AllowedSubjects. Use this to distinguish "agent not registered"
 // from "agent registered but subject claim did not match".

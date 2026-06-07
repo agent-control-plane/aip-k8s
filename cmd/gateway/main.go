@@ -73,14 +73,8 @@ const (
 func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 	flag.Parse()
 
-	// Validate --unregistered-agent-policy early: an unknown value silently falls through
-	// all policy switch statements and behaves like "allow", defeating a "strict" intent.
-	switch *unregisteredAgentPolicy {
-	case policyAllow, policyWarn, policyStrict:
-		// valid
-	default:
-		log.Fatalf("invalid --unregistered-agent-policy %q: must be %q, %q, or %q",
-			*unregisteredAgentPolicy, policyAllow, policyWarn, policyStrict)
+	if *unregisteredAgentPolicy != "allow" && *unregisteredAgentPolicy != "warn" && *unregisteredAgentPolicy != "strict" {
+		log.Fatalf("invalid --unregistered-agent-policy %q: must be allow, warn, or strict", *unregisteredAgentPolicy)
 	}
 
 	// Load KubeConfig — use the standard loading rules which handle
