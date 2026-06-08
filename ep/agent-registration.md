@@ -1,6 +1,6 @@
 # Design: AgentRegistration and Scoped External Credentials
 
-Status: Draft
+Status: In Progress — Phases 1–4 + Phase 8b merged (PR #245)
 
 ---
 
@@ -198,13 +198,17 @@ spec:
         roleSessionName: "payment-bot"
         region: "us-east-1"
 
-    # K8s MCP server: OIDC token passthrough.
-    # The agent's Keycloak JWT is forwarded directly to the K8s API server.
-    # Requires cluster --oidc-issuer-url to match the AIP gateway issuer.
-    # K8s RBAC is enforced against the agent's actual sub/groups claims.
+    # K8s MCP server: RFC 8693 token exchange.
+    # The agent's Keycloak JWT (aud=aip-gateway) is exchanged at Keycloak's
+    # token exchange endpoint for a new JWT scoped to the kubernetes audience.
+    # The K8s MCP server forwards this token to the K8s API server.
+    # Requires: cluster --oidc-issuer-url=keycloak, --oidc-client-id=kubernetes.
+    # K8s RBAC is enforced against the agent's actual sub claim.
     - service: k8s-mcp-server
       type: KubernetesOIDC
-      kubernetesOIDC: {}   # passthrough mode; no exchange URL needed
+      kubernetesOIDC:
+        tokenExchangeURL: https://keycloak.company.com/realms/aip/protocol/openid-connect/token
+        audience: kubernetes
 ```
 
 #### Go types
@@ -282,29 +286,36 @@ type AWSWebIdentityCredential struct {
     STSEndpoint string `json:"stsEndpoint,omitempty"`
 }
 
-// KubernetesOIDCCredential configures OIDC token passthrough (or RFC 8693
-// TokenExchange) for Kubernetes API servers acting as MCP server targets.
+// KubernetesOIDCCredential configures RFC 8693 token exchange for Kubernetes
+// API servers acting as MCP server targets.
 //
 // K8s is treated as any other downstream service: the credential provider
-// returns a Bearer token that the gateway uses in the Authorization header
+// returns a Bearer token that the gateway injects in the Authorization header
 // when proxying to the K8s MCP server. No impersonation verbs needed on the
 // gateway service account.
 //
-// Passthrough mode (default, TokenExchangeURL empty):
-//   The agent's validated OIDC JWT is forwarded directly. Requires the cluster's
-//   --oidc-issuer-url to match the AIP gateway's OIDC provider. K8s RBAC is
-//   enforced against the agent's actual sub/groups claims.
+// Passthrough mode is intentionally NOT supported. The inbound OIDC token is
+// scoped to the gateway audience (aud=aip-gateway). Forwarding it to upstream
+// servers would allow a compromised MCP server to replay the token against the
+// gateway. TokenExchangeURL is therefore required.
 //
-// Exchange mode (TokenExchangeURL set):
-//   Calls the RFC 8693 token-exchange endpoint with the agent's JWT as
-//   subject_token. Used when gateway and K8s cluster use different issuers.
+// Exchange mode (TokenExchangeURL required):
+//   Posts an RFC 8693 token exchange to tokenExchangeURL with the agent's JWT
+//   as subject_token. The response token (scoped to `audience`) is injected
+//   into the upstream MCP server call. Keycloak natively supports RFC 8693
+//   when token exchange is enabled in the realm.
+//
+//   K8s cluster must be configured with:
+//     --oidc-issuer-url=<keycloak-realm-url>
+//     --oidc-client-id=<audience>       (e.g. "kubernetes")
+//     --oidc-username-claim=sub
 type KubernetesOIDCCredential struct {
-    // TokenExchangeURL is an optional RFC 8693 token exchange endpoint.
-    // When empty, the agent's JWT is forwarded to K8s directly (passthrough).
-    // +optional
-    TokenExchangeURL string `json:"tokenExchangeURL,omitempty"`
-    // Audience overrides the aud claim for the forwarded or exchanged token.
-    // Defaults to the cluster's expected OIDC audience when empty.
+    // TokenExchangeURL is the RFC 8693 token exchange endpoint.
+    // Required — passthrough is not supported for security reasons.
+    // For Keycloak: https://<host>/realms/<realm>/protocol/openid-connect/token
+    TokenExchangeURL string `json:"tokenExchangeURL"`
+    // Audience is the target audience for the exchanged token.
+    // Must match the K8s API server's --oidc-client-id value (e.g. "kubernetes").
     // +optional
     Audience string `json:"audience,omitempty"`
 }
@@ -420,45 +431,33 @@ AWS SDK `WebIdentityRoleProvider` default.
 
 #### `KubernetesOIDCProvider`
 
-K8s is just another target service that accepts Bearer tokens. The provider operates in
-two modes based on whether `tokenExchangeURL` is set.
+K8s is just another target service that accepts Bearer tokens. The provider always
+operates in exchange mode — passthrough is intentionally not supported because the
+inbound token is scoped to `aud=aip-gateway` and forwarding it would allow a
+compromised upstream server to replay it against the gateway.
 
-**Passthrough mode** (`tokenExchangeURL` empty):
+**Exchange mode** (`tokenExchangeURL` required):
 
-The agent's validated OIDC JWT is returned as-is. The gateway uses it as the Bearer
-token when proxying to the K8s MCP server:
+Posts an RFC 8693 token exchange request to the configured endpoint (e.g. Keycloak):
 
-```go
-// In mcp_handler.go: per-agent K8s client uses agent token, not gateway SA.
-agentCfg := rest.CopyConfig(s.baseK8sCfg)
-agentCfg.BearerToken = agentOIDCToken
-agentCfg.BearerTokenFile = ""
-agentK8sClient, _ := client.New(agentCfg, client.Options{Scheme: scheme})
-```
-
-Requires the K8s cluster's `--oidc-issuer-url` to match the AIP gateway's OIDC
-provider. K8s RBAC is enforced against the agent's actual `sub` and `groups` claims.
-The gateway service account requires no additional privileges.
-
-**Exchange mode** (`tokenExchangeURL` set):
-
-Posts an RFC 8693 token exchange request:
 ```http
 POST {tokenExchangeURL}
   grant_type=urn:ietf:params:oauth:grant-type:token-exchange
-  subject_token={agentOIDCToken}
+  subject_token={agentOIDCToken}        ← agent's Keycloak JWT (aud=aip-gateway)
   subject_token_type=urn:ietf:params:oauth:token-type:jwt
-  audience={audience}
+  audience={audience}                   ← e.g. "kubernetes"
 ```
 
-Returns a K8s-valid token scoped to the target cluster. Used when gateway and cluster
-use different OIDC issuers.
+Keycloak returns a new JWT scoped to `aud=kubernetes` with the same `sub` as the
+original token. This token is injected as the Bearer credential when proxying to
+the K8s MCP server. The K8s MCP server passes it to the K8s API server, which
+validates it via Keycloak's OIDC discovery endpoint.
 
-Cache key: `(agentIdentity, service)` — the JWT itself is not the cache key since it
-rotates with each request. In passthrough mode caching is a no-op (the token is
-caller-supplied). In exchange mode the output token is cached until expiry.
+Cache key: `sha256(rawOIDCToken)` — each distinct agent token gets its own
+`TokenCache` entry. Cached entries are evicted amortized on each `Token()` call
+when the exchanged token has expired.
 
-No impersonation verbs needed on the gateway service account in either mode.
+No impersonation verbs needed on the gateway service account.
 
 #### Token cache (shared infrastructure)
 
@@ -649,7 +648,7 @@ rules:
 
 ## E2E Test Plan
 
-### Phase 8b — per-agent Keycloak credentials for GitHub MCP
+### Phase 8b — per-agent Keycloak credentials for GitHub MCP ✅ DONE (PR #245)
 
 Extends `test/e2e/gateway_keycloak_test.go` (existing Phase 8) with a new Context.
 No new suite file. Requires `AIP_E2E_GITHUB_PAT_AGENT1` and `AIP_E2E_GITHUB_PAT_AGENT2`.
@@ -657,34 +656,133 @@ No new suite file. Requires `AIP_E2E_GITHUB_PAT_AGENT1` and `AIP_E2E_GITHUB_PAT_
 ```text
 BeforeAll:
   - Register aip-agent-2 in Keycloak (new client, reuses kcSetup helpers)
-  - Create per-agent PAT Secrets (agent1, agent2)
-  - kubectl apply AgentRegistration for each with externalIdentities[github] set
+  - Create per-agent PAT Secrets (agent1, agent2) via kubectl (infra-level Secret,
+    not an AIP object — kubectl is acceptable for Secret management by cluster ops)
+  - Create AgentRegistrations via gateway API (admin JWT):
+      POST /agent-registrations  ← Phase 5 endpoint; no kubectl needed
   - Wait for ATP to exist (controller bootstrap from Registration)
   - Gateway subprocess already running with --oidc-issuer-url=keycloak (Phase 8 setup)
 
-It "agent-1 Keycloak token → GitHub MCP call uses agent-1 PAT":
-  - Fetch Keycloak token for aip-agent-1
-  - Submit + approve AgentRequest via gateway
-  - Call POST /mcp github/create_pull_request with AIP JWT
-  - Verify PR created; verify GitHub PR creator == agent-1's PAT owner
-
-It "agent-2 Keycloak token → GitHub MCP call uses agent-2 PAT":
-  - Same shape; different token, PAT, expected GitHub login
-
-It "unregistered agent falls back to shared MCPServer token (warn mode)":
-  - Unknown agentIdentity; no AgentRegistration
-  - MCP call succeeds using shared MCPServer PAT
-  - AgentRequest.metadata.annotations["governance.aip.io/unregistered"] == "true"
-
-It "--unregistered-agent-policy=strict rejects unknown agent":
-  - New gateway subprocess with --unregistered-agent-policy=strict
-  - POST /agent-requests with unregistered identity → 403 AGENT_NOT_REGISTERED
+It "agent-1 Keycloak token → GitHub MCP call uses agent-1 PAT":       ✅
+It "agent-2 Keycloak token → GitHub MCP call uses agent-2 PAT":       ✅
+It "unregistered agent warn mode → annotated, admitted":               ✅
+It "--unregistered-agent-policy=strict rejects unknown agent":         ✅
 ```
 
-### Phase 8c — token exchange mechanics (stub servers, no cloud accounts)
+Note: Phase 8b was implemented before Phase 5 (gateway CRUD endpoints) landed.
+The actual test code still uses `kubectl apply` for AgentRegistrations. Phase 5
+will add a migration step to switch Phase 8b to use `POST /agent-registrations`.
 
-Tests `AzureWorkloadIdentityProvider` and `AWSWebIdentityProvider` without real Azure or
-AWS accounts. Uses `httptest.NewServer` stubs. Lives in `gateway_keycloak_test.go`.
+### Phase 9 — Full identity propagation E2E + provider exchange mechanics
+
+New `Describe` block in `test/e2e/gateway_keycloak_test.go`, gated behind
+`OIDC_KIND_CLUSTER=true`. Requires a Kind cluster created with OIDC config
+(see `test/fixtures/kind-oidc.yaml` below).
+
+This phase consolidates:
+- K8s MCP identity propagation with full audit trail verification (new)
+- Azure WIF + AWS WebIdentity stub tests (moved from planned Phase 8c)
+
+#### 9a — K8s MCP: Keycloak → token exchange → K8s audit trail
+
+```text
+Prerequisites (BeforeAll):
+  - Kind cluster created from test/fixtures/kind-oidc.yaml:
+      API server: --oidc-issuer-url=http://keycloak.keycloak.svc/realms/aip
+                  --oidc-client-id=kubernetes
+                  --oidc-username-claim=sub
+                  --audit-log-path=/var/log/kubernetes/audit.log
+  - Keycloak deployed with token exchange enabled:
+      kcEnableTokenExchange(port, realm)           ← new helper
+      kcCreateAudienceClient(port, realm, "kubernetes")  ← new helper
+  - K8s MCP server deployed via kubectl apply -f config/mcp/k8s-mcp-server.yaml
+    (infra-level Deployment/Service — kubectl acceptable here, same as AIP itself)
+  - MCPServer CR picked up automatically by gateway's existing mcp_watch.go
+  - Admin Keycloak JWT obtained; AgentRegistration created via gateway API:
+      POST /agent-registrations   (adminToken)   ← Phase 5 endpoint, no kubectl
+      {
+        "agentIdentity": "aip-agent-1",
+        "oidc": {"issuer": "...", "subjectClaim": "azp", "allowedSubjects": ["aip-agent-1"]},
+        "externalIdentities": [{
+          "service": "k8s-mcp",
+          "type": "KubernetesOIDC",
+          "kubernetesOIDC": {
+            "tokenExchangeURL": "http://keycloak.keycloak.svc/realms/aip/protocol/openid-connect/token",
+            "audience": "kubernetes"
+          }
+        }]
+      }
+  - K8s RBAC: ClusterRoleBinding binding aip-agent-1 (sub claim) to a Role
+    that permits list/get on ConfigMaps in the test namespace
+
+It "Keycloak JWT → KubernetesOIDC exchange → K8s audit shows agent identity":
+  - Fetch Keycloak token for aip-agent-1 (aud=aip-gateway)
+  - Submit AgentRequest, approve, execute MCP tool (e.g. list_configmaps)
+  - Gateway: exchanges JWT at Keycloak → gets aud=kubernetes JWT
+  - K8s MCP server: forwards aud=kubernetes token to K8s API
+  - Read audit log from Kind control-plane node
+  - Assert: audit entry user.username == "aip-agent-1" (the Keycloak sub)
+  - Assert: NOT user.username == "system:serviceaccount:aip-k8s-system:aip-k8s-controller"
+
+It "token exchange is cached: second call within TTL skips re-exchange":
+  - Make two sequential MCP calls for same agent
+  - Instrument Keycloak exchange endpoint call count via audit log
+  - Assert exchange called exactly once; second call hits TokenCache
+
+AfterAll:
+  - DELETE /agent-registrations/reg-aip-agent-1 (adminToken) ← gateway API, no kubectl
+  - kubectl delete clusterrolebinding aip-agent-1-k8s-mcp --ignore-not-found
+  (MCPServer CR cleanup handled by existing gwCleanup helper)
+```
+
+#### Kind cluster config: `test/fixtures/kind-oidc.yaml`
+
+```yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  kubeadmConfigPatches:
+  - |
+    kind: ClusterConfiguration
+    apiServer:
+      extraArgs:
+        oidc-issuer-url: http://keycloak.keycloak.svc.cluster.local:8080/realms/aip
+        oidc-client-id: kubernetes
+        oidc-username-claim: sub
+        audit-log-path: /var/log/kubernetes/audit/audit.log
+        audit-policy-file: /etc/kubernetes/audit-policy.yaml
+      extraVolumes:
+      - name: audit-logs
+        hostPath: /var/log/kubernetes/audit
+        mountPath: /var/log/kubernetes/audit
+        readOnly: false
+        pathType: DirectoryOrCreate
+      - name: audit-policy
+        hostPath: /etc/kubernetes/audit-policy
+        mountPath: /etc/kubernetes/audit-policy
+        readOnly: true
+        pathType: DirectoryOrCreate
+```
+
+Note: The K8s API server fetches Keycloak's OIDC discovery document lazily (on
+first token validation), not at startup. Keycloak can therefore be deployed after
+the cluster is up — no chicken-and-egg problem.
+
+#### K8s MCP server
+
+Manifests at `config/mcp/k8s-mcp-server.yaml`. The server must forward the
+incoming Bearer token to the K8s API (not use its own ServiceAccount). Add a
+`deployK8sMCPServer()` helper in the test suite following the same pattern as
+`deployGitHubMCPServer()`.
+
+Candidate image: `ghcr.io/manusa/kubernetes-mcp-server:latest` — verify it
+forwards the incoming Bearer token before committing.
+
+#### 9b — Provider exchange stubs (no cloud accounts)
+
+Tests `AzureWorkloadIdentityProvider` and `AWSWebIdentityProvider` with
+`httptest.NewServer` stubs. Lives in `gateway_keycloak_test.go`.
 
 ```text
 It "AzureWorkloadIdentity uses client_credentials + federated identity, not OBO":
@@ -694,18 +792,21 @@ It "AzureWorkloadIdentity uses client_credentials + federated identity, not OBO"
   - AgentRegistration with AzureWorkloadIdentity pointing at stub endpoint
   - Submit + approve + execute MCP call
   - Assert stub MCP received the exchanged token (not the raw OIDC token)
-  - Assert stub token endpoint received client_credentials grant (not jwt-bearer OBO)
+  - Assert stub endpoint received client_credentials grant (not OBO)
 
 It "AWSWebIdentity calls STS and uses session token for upstream MCP call":
   - Stub STS endpoint: validates Action=AssumeRoleWithWebIdentity,
     WebIdentityToken == agent OIDC token; returns synthetic temp credentials
   - Stub upstream MCP server: captures credential bundle in Authorization header
-  - Assert STS stub was called once; second request within TTL hits the cache
+  - Assert STS stub was called once; second request within TTL hits cache
 
-It "token cache: second request for same agent within TTL skips re-exchange":
-  - Two concurrent requests for same agent (singleflight test)
+It "token cache: concurrent requests for same agent deduplicate exchange calls":
+  - 10 concurrent MCP calls for same agent (singleflight)
   - Assert stub exchange endpoint called exactly once
 ```
+
+These tests do NOT require `OIDC_KIND_CLUSTER=true` — they use httptest stubs
+and run in any e2e environment.
 
 ### Cloud e2e suites (env-var gated, separate suite files)
 
@@ -779,13 +880,56 @@ Files:
 - `cmd/gateway/mcp_handler.go` — `resolveAgentCredential` call; K8s MCP path builds
   per-agent client from `KubernetesOIDCProvider` token instead of gateway SA credentials
 
-### Phase 4 — E2e tests
+### Phase 4 — E2e tests ✅ DONE (Phase 8b merged in PR #245)
+
+Files completed:
+- `test/e2e/gateway_keycloak_test.go` — Phase 8b (per-agent GitHub MCP credentials)
+
+### Phase 5 — Gateway AgentRegistration CRUD endpoints
+
+Admins must never need `kubectl` or direct K8s API access. `AgentRegistration`
+objects are created, updated, and deleted via the gateway HTTP API using an admin
+JWT — the same gateway that agents use for `AgentRequest` submission.
+
+New routes:
+```
+POST   /agent-registrations           roleAdmin
+GET    /agent-registrations           roleAdmin, roleReviewer
+GET    /agent-registrations/{name}    roleAdmin, roleReviewer
+PUT    /agent-registrations/{name}    roleAdmin
+DELETE /agent-registrations/{name}    roleAdmin
+```
 
 Files:
-- `test/e2e/gateway_keycloak_test.go` — Phase 8b + 8c contexts
+- `cmd/gateway/agent_registration_handlers.go` — handler implementations
+- `cmd/gateway/main.go` — register routes
+- `cmd/gateway/integration_agent_registration_test.go` — integration tests using
+  an in-process test OIDC provider (real JWT signing, no Keycloak needed):
+    - Admin JWT → POST → 201; registrationCache upserted
+    - Agent JWT → POST → 403
+    - Admin DELETE → cache removes entry; next unregistered AgentRequest gets policy treatment
+    - Reviewer GET → 200 (read-only access)
+- `docs/api-reference.md` + auth rules table; `make docs-lint` passes
+- Phase 8b test code migrated from `kubectl apply AgentRegistration` →
+  `POST /agent-registrations` with admin JWT
+
+### Phase 9 — Full identity propagation E2E
+
+Prerequisites: Phase 5 landed; Kind cluster with OIDC + audit log config;
+Keycloak token exchange enabled; K8s MCP server deployed.
+
+Files:
+- `test/fixtures/kind-oidc.yaml` — Kind cluster config with `--oidc-issuer-url` +
+  audit log enabled
+- `config/mcp/k8s-mcp-server.yaml` — K8s MCP server Deployment + Service
+- `test/e2e/gateway_keycloak_test.go` — Phase 9 `Describe` block gated behind
+  `OIDC_KIND_CLUSTER=true`, covering:
+  - 9a: K8s MCP identity propagation + audit trail verification
+  - 9b: Azure WIF + AWS WebIdentity httptest stub tests
 - `test/e2e_azure/` — suite skeleton (build tag `azure_e2e`, skipped by default)
 - `test/e2e_aws/` — suite skeleton (build tag `aws_e2e`, skipped by default)
-- `.github/workflows/e2e.yml` — document env var requirements
+- `.github/workflows/chart-e2e.yml` — document `OIDC_KIND_CLUSTER` env var
+  requirement and note cluster recreation needed
 
 ---
 

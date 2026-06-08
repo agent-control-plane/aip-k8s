@@ -39,6 +39,18 @@ rules:
 - apiGroups:
   - governance.aip.io
   resources:
+  - agentregistrations
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - governance.aip.io
+  resources:
   - mcpservers
   verbs:
   - get
