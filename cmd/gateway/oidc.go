@@ -129,6 +129,27 @@ func requireRole(rc *roleConfig, role, sub string, groups []string, w http.Respo
 	return true
 }
 
+func requireAnyRole(rc *roleConfig, roles []string, sub string, groups []string, w http.ResponseWriter) bool {
+	for _, r := range roles {
+		switch r {
+		case roleAgent:
+			if rc.isAgent(sub, groups) {
+				return true
+			}
+		case roleReviewer:
+			if rc.isReviewer(sub, groups) {
+				return true
+			}
+		case roleAdmin:
+			if rc.isAdmin(sub, groups) {
+				return true
+			}
+		}
+	}
+	writeError(w, http.StatusForbidden, fmt.Sprintf("%s role required", strings.Join(roles, " or ")))
+	return false
+}
+
 // newOIDCMiddleware creates JWT validation middleware.
 // identityClaim is the token claim used as the caller identity (e.g. "azp",
 // "sub", "appid", "email"). If the claim is absent the middleware falls back

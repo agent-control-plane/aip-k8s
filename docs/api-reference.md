@@ -21,21 +21,26 @@ make build-gateway
 | `POST` | `/agent-requests/{name}/approve` | Approve an AgentRequest |
 | `POST` | `/agent-requests/{name}/completed` | Signal agent completed the action |
 | `POST` | `/agent-graduation-policies` | Create an AgentGraduationPolicy |
+| `POST` | `/agent-registrations` | Create an AgentRegistration |
 | `POST` | `/agent-requests` | Submit an AgentRequest |
 | `POST` | `/governed-resources` | Create a GovernedResource |
 | `POST` | `/safety-policies` | Create a SafetyPolicy |
 | `DELETE` | `/agent-graduation-policies/{name}` | Delete an AgentGraduationPolicy |
+| `DELETE` | `/agent-registrations/{name}` | Delete an AgentRegistration |
 | `DELETE` | `/governed-resources/{name}` | Delete a GovernedResource |
 | `DELETE` | `/safety-policies/{name}` | Delete a SafetyPolicy |
 | `POST` | `/agent-requests/{name}/deny` | Deny an AgentRequest |
 | `POST` | `/agent-requests/{name}/executing` | Signal agent started executing |
 | `GET` | `/agent-graduation-policies/{name}` | Get an AgentGraduationPolicy by name |
+| `GET` | `/agent-registrations/{name}` | Get an AgentRegistration by name |
 | `GET` | `/agent-requests/{name}` | Get an AgentRequest by name |
+| `POST` | `/agent-requests/{name}/token` | Get a brokered token for an AgentRequest |
 | `GET` | `/agent-trust-profiles/{name}` | Get an AgentTrustProfile by name |
 | `GET` | `/governed-resources/{name}` | Get a GovernedResource by name |
 | `GET` | `/safety-policies/{name}` | Get a SafetyPolicy by name |
 | `GET` | `/diagnostic-accuracy-summaries` | List DiagnosticAccuracySummaries |
 | `GET` | `/agent-graduation-policies` | List AgentGraduationPolicies |
+| `GET` | `/agent-registrations` | List AgentRegistrations |
 | `GET` | `/agent-requests` | List AgentRequests |
 | `GET` | `/agent-trust-profiles` | List AgentTrustProfiles |
 | `GET` | `/audit-records` | List AuditRecords |
@@ -47,6 +52,7 @@ make build-gateway
 | `PUT` | `/agent-requests/{name}/result` | Record execution result for an AgentRequest |
 | `POST` | `/agent-requests/recompute-accuracy` | Trigger accuracy recomputation |
 | `PUT` | `/agent-graduation-policies/{name}` | Replace an AgentGraduationPolicy |
+| `PUT` | `/agent-registrations/{name}` | Replace an AgentRegistration |
 | `PUT` | `/governed-resources/{name}` | Replace a GovernedResource |
 | `PUT` | `/safety-policies/{name}` | Replace a SafetyPolicy |
 | `PATCH` | `/agent-requests/{name}/verdict` | Submit a verdict (correct/incorrect) |
@@ -112,6 +118,7 @@ The gateway supports OIDC/JWT authentication. When enabled, every non-healthz re
 | `POST /agent-requests/{name}/executing` | `agent` (creator only) |
 | `POST /agent-requests/{name}/completed` | `agent` (creator only) |
 | `PUT /agent-requests/{name}/result` | `agent` (creator only) |
+| `POST /agent-requests/{name}/token` | `agent` |
 | `POST /agent-requests/{name}/approve` | `reviewer` |
 | `POST /agent-requests/{name}/deny` | `reviewer` |
 | `PATCH /agent-requests/{name}/verdict` | `reviewer` |
@@ -130,6 +137,10 @@ The gateway supports OIDC/JWT authentication. When enabled, every non-healthz re
 | `GET /safety-policies`, `GET /safety-policies/{name}` | `admin` |
 | `PUT /safety-policies/{name}` | `admin` |
 | `DELETE /safety-policies/{name}` | `admin` |
+| `POST /agent-registrations` | `admin` |
+| `GET /agent-registrations`, `GET /agent-registrations/{name}` | `reviewer` or `admin` |
+| `PUT /agent-registrations/{name}` | `admin` |
+| `DELETE /agent-registrations/{name}` | `admin` |
 | `POST /agent-graduation-policies` | `admin` |
 | `GET /agent-graduation-policies`, `GET /agent-graduation-policies/{name}` | `admin` |
 | `PUT /agent-graduation-policies/{name}` | `admin` |
