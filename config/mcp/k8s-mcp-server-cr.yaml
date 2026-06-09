@@ -1,0 +1,9 @@
+apiVersion: governance.aip.io/v1alpha1
+kind: MCPServer
+metadata:
+  name: k8s-mcp
+  namespace: aip-k8s-system
+spec:
+  url: http://k8s-mcp.aip-k8s-system.svc.cluster.local/mcp
+  readOnlyTools:
+  - resources_list

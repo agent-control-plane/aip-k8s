@@ -1,0 +1,34 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  extraMounts:
+  - hostPath: test/fixtures/audit-policy.yaml
+    containerPath: /etc/kubernetes/audit-policy/policy.yaml
+    readOnly: true
+  - hostPath: test/fixtures/certs/ca.crt
+    containerPath: /etc/ssl/certs/keycloak-ca.pem
+    readOnly: true
+  kubeadmConfigPatches:
+  - |
+    kind: ClusterConfiguration
+    apiServer:
+      extraArgs:
+        oidc-issuer-url: https://127.0.0.1:18091/realms/aip
+        oidc-client-id: kubernetes
+        oidc-username-claim: preferred_username
+        oidc-username-prefix: "-"
+        oidc-ca-file: /etc/ssl/certs/keycloak-ca.pem
+        audit-log-path: /var/log/kubernetes/audit/audit.log
+        audit-policy-file: /etc/kubernetes/audit-policy/policy.yaml
+      extraVolumes:
+      - name: audit-logs
+        hostPath: /var/log/kubernetes/audit
+        mountPath: /var/log/kubernetes/audit
+        readOnly: false
+        pathType: DirectoryOrCreate
+      - name: audit-policy
+        hostPath: /etc/kubernetes/audit-policy
+        mountPath: /etc/kubernetes/audit-policy
+        readOnly: true
+        pathType: DirectoryOrCreate

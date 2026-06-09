@@ -1,0 +1,165 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aip-gateway
+  namespace: aip-k8s-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aip-gateway
+rules:
+- apiGroups:
+  - governance.aip.io
+  resources:
+  - agentrequests
+  - agentrequests/status
+  - agenttrustprofiles
+  - agenttrustprofiles/status
+  - auditrecords
+  - diagnosticaccuracysummaries
+  - diagnosticaccuracysummaries/status
+  - governedresources
+  - governedresources/status
+  - safetypolicies
+  - agentgraduationpolicies
+  - agentgraduationpolicies/status
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+- apiGroups:
+  - governance.aip.io
+  resources:
+  - agentregistrations
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - governance.aip.io
+  resources:
+  - mcpservers
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aip-gateway
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: aip-gateway
+subjects:
+- kind: ServiceAccount
+  name: aip-gateway
+  namespace: aip-k8s-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aip-gateway
+  namespace: aip-k8s-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aip-gateway
+  template:
+    metadata:
+      labels:
+        app: aip-gateway
+    spec:
+      serviceAccountName: aip-gateway
+      containers:
+      - name: gateway
+        image: example.com/aip-gateway:v0.0.1
+        command: ["/gateway"]
+        args:
+        - --addr=:18088
+        - --oidc-issuer-url=https://127.0.0.1:18091/realms/aip
+        - --oidc-audience=aip-gateway
+        - --oidc-identity-claim=azp
+        - --agent-subjects=aip-agent-1
+        - --reviewer-subjects=aip-reviewer-1
+        - --admin-subjects=aip-reviewer-1
+        - --unregistered-agent-policy=strict
+        env:
+        - name: SSL_CERT_FILE
+          value: /etc/ssl/certs/ca.crt
+        - name: OIDC_CLIENT_ID
+          value: aip-gateway
+        - name: OIDC_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: aip-gateway-secret
+              key: client-secret
+        ports:
+        - containerPort: 18088
+        volumeMounts:
+        - name: ca-cert
+          mountPath: /etc/ssl/certs
+          readOnly: true
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65532
+          allowPrivilegeEscalation: false
+          seccompProfile:
+            type: RuntimeDefault
+          capabilities:
+            drop: ["ALL"]
+      - name: socat-tunnel
+        image: alpine/socat:latest
+        command: ["socat", "TCP-LISTEN:18091,fork,reuseaddr", "TCP:keycloak.keycloak.svc.cluster.local:8443"]
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65532
+          allowPrivilegeEscalation: false
+          seccompProfile:
+            type: RuntimeDefault
+          capabilities:
+            drop: ["ALL"]
+      volumes:
+      - name: ca-cert
+        secret:
+          secretName: gateway-ca-cert
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aip-gateway
+  namespace: aip-k8s-system
+spec:
+  selector:
+    app: aip-gateway
+  ports:
+  - port: 8080
+    targetPort: 18088
