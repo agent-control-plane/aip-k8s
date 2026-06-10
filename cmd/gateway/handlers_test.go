@@ -121,6 +121,8 @@ func TestCreateAgentRequest_MissingAgentIdentityUsesUnauthenticatedRegistration(
 
 	g.Expect(created).NotTo(gomega.BeNil())
 	g.Expect(created.Spec.AgentIdentity).To(gomega.Equal("unauthenticated"))
+	g.Expect(created.Labels["aip.io/agentIdentity"]).To(gomega.Equal("unauthenticated"))
+	g.Expect(created.Labels["aip.io/profileName"]).To(gomega.Equal(v1alpha1.ProfileNameForAgent("unauthenticated")))
 	g.Expect(created.Annotations["governance.aip.io/unregistered"]).To(gomega.Equal(""))
 }
 
