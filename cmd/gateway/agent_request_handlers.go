@@ -111,11 +111,6 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	var reg *v1alpha1.AgentRegistration
-	if s.regCache != nil && body.AgentIdentity != "" {
-		reg = s.regCache.get(body.AgentIdentity)
-	}
-
 	// 1. Role check.
 	if s.authRequired {
 		if !requireRole(s.roles, roleAgent, sub, callerGroupsFromCtx(r.Context()), w) {
@@ -123,18 +118,20 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	var agentIdentity string
-	if reg != nil {
-		agentIdentity = reg.Spec.AgentIdentity
-	} else {
+	agentIdentity := body.AgentIdentity
+	if agentIdentity == "" {
 		if s.authRequired {
 			agentIdentity = sub
 		} else {
-			if body.AgentIdentity == "" {
-				agentIdentity = "unauthenticated"
-			} else {
-				agentIdentity = body.AgentIdentity
-			}
+			agentIdentity = "unauthenticated"
+		}
+	}
+
+	var reg *v1alpha1.AgentRegistration
+	if s.regCache != nil {
+		reg = s.regCache.get(agentIdentity)
+		if reg != nil {
+			agentIdentity = reg.Spec.AgentIdentity
 		}
 	}
 
@@ -184,11 +181,11 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 			switch s.unregisteredAgentPolicy {
 			case "strict":
 				writeError(w, http.StatusForbidden,
-					fmt.Sprintf("AGENT_NOT_REGISTERED: agent %q has no AgentRegistration", body.AgentIdentity))
+					fmt.Sprintf("AGENT_NOT_REGISTERED: agent %q has no AgentRegistration", agentIdentity))
 				return
 			case "warn":
 				log.Printf("Unregistered AgentRequest submitted agentIdentity=%q policy=%q",
-					body.AgentIdentity, s.unregisteredAgentPolicy)
+					agentIdentity, s.unregisteredAgentPolicy)
 				if agentReq.Annotations == nil {
 					agentReq.Annotations = map[string]string{}
 				}
