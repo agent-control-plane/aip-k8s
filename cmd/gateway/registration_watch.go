@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"slices"
 	"sync"
 	"time"
@@ -163,13 +164,21 @@ func (c *registrationCache) upsert(reg *v1alpha1.AgentRegistration) {
 				)
 			}
 		case v1alpha1.ExternalIdentityAWSWebIdentity:
-			provider = credential.NewAWSWebIdentityProvider()
+			if binding.AWSWebIdentity != nil {
+				provider = credential.NewAWSWebIdentityProvider(
+					binding.AWSWebIdentity.RoleARN,
+					binding.AWSWebIdentity.RoleSessionName,
+					binding.AWSWebIdentity.Region,
+					binding.AWSWebIdentity.DurationSeconds,
+					binding.AWSWebIdentity.STSEndpoint,
+				)
+			}
 		case v1alpha1.ExternalIdentityKubernetesOIDC:
 			if binding.KubernetesOIDC != nil {
 				provider = credential.NewKubernetesOIDCProvider(
 					binding.KubernetesOIDC.TokenExchangeURL,
 					binding.KubernetesOIDC.Audience,
-				)
+				).WithCredentials(os.Getenv("OIDC_CLIENT_ID"), os.Getenv("OIDC_CLIENT_SECRET"))
 			}
 		case v1alpha1.ExternalIdentityKubernetesTokenRequest:
 			if binding.KubernetesTokenRequest != nil {

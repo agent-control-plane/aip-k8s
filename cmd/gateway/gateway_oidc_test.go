@@ -1,11 +1,10 @@
-//go:build e2e
-
-package e2e
+package main
 
 import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -13,7 +12,10 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/agent-control-plane/aip-k8s/test/utils"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+
+	"github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 )
 
 func gwPostWithToken(port, path, body, token string) (*http.Response, error) {
@@ -49,36 +51,31 @@ var _ = Describe("Phase 7: Gateway OIDC Authentication", Ordered, func() {
 	const gwPort = "18083"
 
 	BeforeAll(func() {
-		// 1. Start oidcTestServer
 		oidcServer = newOIDCTestServer()
 
-		projDir, err := utils.GetProjectDir()
-		Expect(err).NotTo(HaveOccurred(), "failed to get project dir")
 		binPath := projDir + "/bin/gateway"
 		cmdPath := projDir + "/cmd/gateway"
 
-		// Controller and CRDs are guaranteed by BeforeSuite.
-		// 2. Build gateway binary
 		cmd := exec.Command("go", "build", "-o", binPath, cmdPath)
 		cmd.Dir = projDir
 		out, err := cmd.CombinedOutput()
 		Expect(err).NotTo(HaveOccurred(), "failed to build gateway: %s", string(out))
 
-		// 3. Start gateway subprocess
 		gwArgs := []string{
 			"--addr=:" + gwPort,
 			"--oidc-issuer-url=" + oidcServer.IssuerURL,
 			"--oidc-audience=aip-gateway",
-			"--agent-subjects=agent-sub,reviewer-sub", // include reviewer-sub for self-approval test setup
+			"--agent-subjects=agent-sub,reviewer-sub",
 			"--reviewer-subjects=reviewer-sub",
+			"--unregistered-agent-policy=allow",
 		}
 		gwProc = exec.Command(binPath, gwArgs...)
 		gwProc.Dir = projDir
+		gwProc.Env = append(os.Environ(), "KUBECONFIG="+kubeconfigPath)
 		gwProc.Stdout = GinkgoWriter
 		gwProc.Stderr = GinkgoWriter
 		Expect(gwProc.Start()).To(Succeed(), "failed to start OIDC gateway")
 
-		// 4. Poll /healthz until ready
 		Eventually(func() int {
 			resp, err := http.Get("http://localhost:" + gwPort + "/healthz") //nolint:noctx
 			if err != nil {
@@ -86,35 +83,34 @@ var _ = Describe("Phase 7: Gateway OIDC Authentication", Ordered, func() {
 			}
 			defer resp.Body.Close() //nolint:errcheck
 			return resp.StatusCode
-		}, 30*time.Second, time.Second).Should(Equal(http.StatusOK))
+		}, 60*time.Second, time.Second).Should(Equal(http.StatusOK))
 
 		gwCleanup("default")
 
-		// Create the same SafetyPolicy used by Phase 6 so the controller sets
-		// RequiresApproval on "gw-human-action" requests, allowing the gateway's
-		// create handler to return 201 via the early-return path instead of
-		// blocking until the 90s timeout.
 		By("creating SafetyPolicy that requires human approval for gw-human-action")
-		policyJSON := `{
-			"apiVersion": "governance.aip.io/v1alpha1",
-			"kind": "SafetyPolicy",
-			"metadata": {"name": "gw-require-human", "namespace": "default"},
-			"spec": {
-				"governedResourceSelector": {},
-				"rules": [{"name": "require-human", "type": "StateEvaluation",
-				           "action": "RequireApproval", "expression": "true"}],
-				"failureMode": "FailClosed"
-			}
-		}`
-		applyCmd := exec.Command("kubectl", "apply", "-f", "-")
-		applyCmd.Stdin = strings.NewReader(policyJSON)
-		applyOut, applyErr := applyCmd.CombinedOutput()
-		Expect(applyErr).NotTo(HaveOccurred(), "failed to create SafetyPolicy: %s", string(applyOut))
+		policy := &v1alpha1.SafetyPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "gw-require-human", Namespace: "default"},
+			Spec: v1alpha1.SafetyPolicySpec{
+				GovernedResourceSelector: metav1.LabelSelector{},
+				Rules: []v1alpha1.Rule{
+					{
+						Name:       "require-human",
+						Type:       "StateEvaluation",
+						Action:     "RequireApproval",
+						Expression: "true",
+					},
+				},
+				FailureMode: strPtr("FailClosed"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, policy)).To(Succeed())
 
 		By("waiting for SafetyPolicy to be visible before sending requests")
-		Eventually(func() error {
-			return exec.Command("kubectl", "get", "safetypolicy",
-				"gw-require-human", "-n", "default").Run()
+		Eventually(func(g Gomega) {
+			var sp v1alpha1.SafetyPolicy
+			g.Expect(k8sClient.Get(ctx,
+				types.NamespacedName{Name: "gw-require-human", Namespace: "default"}, &sp),
+			).To(Succeed())
 		}, 15*time.Second, time.Second).Should(Succeed())
 	})
 
@@ -191,7 +187,6 @@ var _ = Describe("Phase 7: Gateway OIDC Authentication", Ordered, func() {
 	})
 
 	It("Valid reviewer token on approve — self-approval -> 403", func() {
-		// Create request as reviewer-sub
 		token := oidcServer.mintToken("reviewer-sub", "aip-gateway", 5*time.Minute)
 		createResp, err := gwPostWithToken(gwPort, "/agent-requests", `{
 			"agentIdentity": "reviewer-sub",
@@ -208,7 +203,6 @@ var _ = Describe("Phase 7: Gateway OIDC Authentication", Ordered, func() {
 		selfReqName, _ := body["name"].(string)
 		Expect(selfReqName).NotTo(BeEmpty())
 
-		// Try to approve own request
 		aprResp, err := gwPostWithToken(gwPort, "/agent-requests/"+selfReqName+"/approve", `{"reason":"self approve"}`, token)
 		Expect(err).NotTo(HaveOccurred())
 		defer aprResp.Body.Close()

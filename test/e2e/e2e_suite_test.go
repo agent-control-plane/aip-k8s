@@ -41,6 +41,12 @@ import (
 	"github.com/agent-control-plane/aip-k8s/test/utils"
 )
 
+const (
+	namespace                = "aip-k8s-system"
+	serviceAccountName       = "aip-k8s-controller"
+	controllerDeploymentName = "aip-k8s-controller"
+)
+
 var (
 	// managerImage is the manager image to be built and loaded for testing.
 	managerImage = "example.com/aip-k8s:v0.0.1"
@@ -106,6 +112,9 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	SetDefaultEventuallyTimeout(2 * time.Minute)
+	SetDefaultEventuallyPollingInterval(time.Second)
+
 	// When GATEWAY_URL is set the suite is running against an already-deployed
 	// release (Helm or otherwise). Skip image build/load and CertManager.
 	if os.Getenv("GATEWAY_URL") == "" {

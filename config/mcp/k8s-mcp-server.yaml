@@ -40,6 +40,7 @@ spec:
       containers:
       - name: k8s-mcp
         image: ghcr.io/containers/kubernetes-mcp-server:latest
+        imagePullPolicy: IfNotPresent
         env:
         - name: KUBECONFIG
           value: /etc/kubeconfig/kubeconfig

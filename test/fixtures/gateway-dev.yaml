@@ -105,10 +105,16 @@ spec:
         command: ["/gateway"]
         args:
         - --addr=:18088
-        - --oidc-issuer-url=https://127.0.0.1:18091/realms/aip
+        # Matches KC_HOSTNAME in keycloak-dev.yaml. The gateway pod resolves this
+        # via cluster DNS directly — no socat sidecar required.
+        - --oidc-issuer-url=https://keycloak.keycloak.svc.cluster.local:8443/realms/aip
         - --oidc-audience=aip-gateway
         - --oidc-identity-claim=azp
-        - --agent-subjects=aip-agent-1
+        # Phase 8 tests use aip-agent-1 (unregistered policy), aip-registered-agent
+        # (registration match), and aip-wrong-subject (IDENTITY_MISMATCH). All three
+        # must be in the agent allowlist so they pass the role check before the
+        # registration check runs.
+        - --agent-subjects=aip-agent-1,aip-registered-agent,aip-wrong-subject
         - --reviewer-subjects=aip-reviewer-1
         - --admin-subjects=aip-reviewer-1
         - --unregistered-agent-policy=strict
@@ -128,17 +134,6 @@ spec:
         - name: ca-cert
           mountPath: /etc/ssl/certs
           readOnly: true
-        securityContext:
-          runAsNonRoot: true
-          runAsUser: 65532
-          allowPrivilegeEscalation: false
-          seccompProfile:
-            type: RuntimeDefault
-          capabilities:
-            drop: ["ALL"]
-      - name: socat-tunnel
-        image: alpine/socat:latest
-        command: ["socat", "TCP-LISTEN:18091,fork,reuseaddr", "TCP:keycloak.keycloak.svc.cluster.local:8443"]
         securityContext:
           runAsNonRoot: true
           runAsUser: 65532

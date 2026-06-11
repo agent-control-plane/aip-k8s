@@ -14,7 +14,9 @@ nodes:
     kind: ClusterConfiguration
     apiServer:
       extraArgs:
-        oidc-issuer-url: https://127.0.0.1:18091/realms/aip
+        # Must match KC_HOSTNAME in keycloak-dev.yaml. Phase 9 BeforeAll adds an
+        # /etc/hosts entry in the Kind node so the API server can resolve this name.
+        oidc-issuer-url: https://keycloak.keycloak.svc.cluster.local:8443/realms/aip
         oidc-client-id: kubernetes
         oidc-username-claim: preferred_username
         oidc-username-prefix: "-"

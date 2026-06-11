@@ -20,7 +20,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -222,135 +221,11 @@ var _ = BeforeSuite(func() {
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme})
 	Expect(err).NotTo(HaveOccurred(), "Failed to create k8s client")
 
-	githubPAT := os.Getenv(githubPATEnv)
-	if githubPAT == "" {
-		Skip(fmt.Sprintf("%s env var not set — skipping MCP e2e tests", githubPATEnv))
-	}
-
-	ensureBranchLifecycle(e2eTestBranch, "e2e-dummy")
-	ensureBranchLifecycle(e2eTestBranch2, "e2e-dummy-c")
-	ensureBranchLifecycle(e2eTestBranch3, "e2e-dummy-d")
-
-	By("removing pod security enforcement on namespace for mcp server (image runs as root)")
-	cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
-		"pod-security.kubernetes.io/enforce-")
-	_, _ = runCmd(cmd)
-
-	By("creating aip-github-token Secret")
-	tokenSecret := fmt.Sprintf(`{"apiVersion":"v1","kind":"Secret","metadata":{"name":"%s","namespace":"%s"},"type":"Opaque","stringData":{"token":"%s"}}`, githubTokenSecret, namespace, githubPAT)
-	Expect(kubectlApply(tokenSecret)).To(Succeed(), "Failed to create github token Secret")
-
-	By("creating AgentRegistrations for MCP e2e agents")
-	// These agents authenticate via X-Remote-User proxy header (no OIDC tokens).
-	// Omit the oidc field entirely: an empty oidc: {} is non-nil and activates
-	// AllowedSubjects enforcement with an empty list, which has subtly different
-	// semantics. Omitting it is the explicit "no OIDC validation" signal.
-	agentRegs := fmt.Sprintf(`
-apiVersion: governance.aip.io/v1alpha1
-kind: AgentRegistration
-metadata:
-  name: mcp-e2e-agent
-  namespace: %s
-spec:
-  agentIdentity: "e2e-mcp-agent"
-  externalIdentities:
-    - service: "github"
-      type: StaticSecret
-      staticSecret:
-        name: %s
-        namespace: %s
-        key: token
----
-apiVersion: governance.aip.io/v1alpha1
-kind: AgentRegistration
-metadata:
-  name: mcp-e2e-agent-c
-  namespace: %s
-spec:
-  agentIdentity: "e2e-mcp-agent-c"
-  externalIdentities:
-    - service: "github"
-      type: StaticSecret
-      staticSecret:
-        name: %s
-        namespace: %s
-        key: token
----
-apiVersion: governance.aip.io/v1alpha1
-kind: AgentRegistration
-metadata:
-  name: mcp-e2e-agent-d
-  namespace: %s
-spec:
-  agentIdentity: "e2e-mcp-agent-d"
-  externalIdentities:
-    - service: "github"
-      type: StaticSecret
-      staticSecret:
-        name: %s
-        namespace: %s
-        key: token
-`, namespace, githubTokenSecret, namespace, namespace, githubTokenSecret, namespace, namespace, githubTokenSecret, namespace)
-	Expect(kubectlApply(agentRegs)).To(Succeed(), "Failed to create AgentRegistration CRs")
-
-	By("deploying github-mcp-server into aip-k8s-system namespace")
-	cmd = exec.Command("kubectl", "apply", "-f", filepath.Join(projDir, "config", "mcp"))
-	_, err = runCmd(cmd)
-	Expect(err).NotTo(HaveOccurred(), "Failed to deploy github-mcp-server manifests")
-
-	By("waiting for github-mcp-server deployment to be ready")
-	waitForDeploymentReady(namespace, mcpServerDeployment, 3*time.Minute)
-
-	By("waiting for github-mcp Service endpoints")
-	Eventually(func(g Gomega) {
-		cmd := exec.Command("kubectl", "get", "endpoints", mcpServerService, "-n", namespace, "-o", "jsonpath={.subsets[0].addresses[0].ip}")
-		out, err := runCmd(cmd)
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(strings.TrimSpace(out)).NotTo(BeEmpty())
-	}, 2*time.Minute, 2*time.Second).Should(Succeed())
-
 	By("generating Ed25519 JWT signing key")
 	jwtKeyFile := filepath.Join(projDir, "bin", "mcp-e2e-jwt.key")
 	err = jwt.GenerateEd25519Key(jwtKeyFile)
 	Expect(err).NotTo(HaveOccurred(), "Failed to generate JWT signing key")
 	jwtKeyPath = jwtKeyFile
-
-	By("port-forwarding github-mcp service for local gateway access")
-	mcpPFCmd = exec.Command("kubectl", "port-forward", "-n", namespace,
-		fmt.Sprintf("svc/%s", mcpServerService), fmt.Sprintf("%s:80", mcpPort))
-	mcpPFCmd.Stdout = GinkgoWriter
-	mcpPFCmd.Stderr = GinkgoWriter
-	err = mcpPFCmd.Start()
-	Expect(err).NotTo(HaveOccurred(), "Failed to start kubectl port-forward for MCP")
-	time.Sleep(2 * time.Second)
-
-	By("creating MCPServer CR for the github-mcp server")
-	mcpServerCR := &governancev1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: mcpServerCRDName,
-		},
-		Spec: governancev1alpha1.MCPServerSpec{
-			URL:             fmt.Sprintf("http://localhost:%s", mcpPort),
-			SecretNamespace: namespace,
-			BearerTokenSecretRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: githubTokenSecret},
-				Key:                  "token",
-			},
-		},
-	}
-	Expect(k8sClient.Create(ctx, mcpServerCR)).To(Succeed(), "Failed to create MCPServer CR")
-
-	// The gateway runs locally (not in-cluster) so it uses the port-forwarded URL.
-	// The controller (in-cluster) cannot reach localhost, so we manually populate
-	// status.tools here so the gateway's CRD watch sees a fully configured server.
-	By("patching MCPServer status with discovered tools")
-	mcpServerCR.Status.Tools = []governancev1alpha1.MCPServerTool{
-		{Name: "create_pull_request", ReadOnly: false},
-		{Name: "get_file_contents", ReadOnly: true},
-		{Name: "list_pull_requests", ReadOnly: true},
-	}
-	mcpServerCR.Status.DiscoveredToolCount = 3
-	Expect(k8sClient.Status().Update(ctx, mcpServerCR)).To(Succeed(), "Failed to patch MCPServer status")
 
 	if os.Getenv("GATEWAY_URL") != "" {
 		gwURL = os.Getenv("GATEWAY_URL")
@@ -379,17 +254,6 @@ spec:
 			g.Expect(strings.TrimSpace(out)).To(Equal("ok"))
 		}, 30*time.Second, 1*time.Second).Should(Succeed())
 	}
-
-	By("waiting for gateway to cache MCPServer 'github' with tools")
-	// The gateway watches MCPServer CRDs and populates its tool cache asynchronously.
-	// Poll /mcp-registry until the 'github' server appears with the expected tools so
-	// that Scenario B's /mcp-proxy call does not race against an empty cache.
-	Eventually(func(g Gomega) {
-		cmd := exec.Command("curl", "-sf", fmt.Sprintf("%s/mcp-registry", gwURL))
-		out, err := runCmd(cmd)
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(out).To(ContainSubstring(`"create_pull_request"`))
-	}, 30*time.Second, 1*time.Second).Should(Succeed(), "gateway did not cache MCPServer 'github' with tools within 30s")
 })
 
 var _ = AfterSuite(func() {

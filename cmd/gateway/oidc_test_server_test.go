@@ -1,17 +1,19 @@
-//go:build e2e
-
-package e2e
+package main
 
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+	"k8s.io/client-go/rest"
 )
 
 // oidcTestServer is a minimal OIDC provider backed by an RSA keypair.
@@ -96,4 +98,70 @@ func (s *oidcTestServer) Close() {
 	if s.server != nil {
 		s.server.Close()
 	}
+}
+
+// mintTokenWithAZP returns a token that includes the azp claim.
+func (s *oidcTestServer) mintTokenWithAZP(sub, aud, azp string, ttl time.Duration) string {
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.RS256, Key: s.key},
+		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", s.kid),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	now := time.Now()
+	claims := jwt.Claims{
+		Subject:  sub,
+		Audience: jwt.Audience{aud},
+		Issuer:   s.IssuerURL,
+		IssuedAt: jwt.NewNumericDate(now),
+		Expiry:   jwt.NewNumericDate(now.Add(ttl)),
+	}
+
+	raw, err := jwt.Signed(signer).Claims(claims).Claims(map[string]interface{}{"azp": azp}).Serialize()
+	if err != nil {
+		panic(err)
+	}
+
+	return raw
+}
+
+// writeKubeconfig writes a temporary kubeconfig file from a rest.Config.
+func writeKubeconfig(cfg *rest.Config) (string, error) {
+	f, err := os.CreateTemp("", "gateway-e2e-kubeconfig-*.yaml")
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	tmpl := `apiVersion: v1
+kind: Config
+clusters:
+- name: test-cluster
+  cluster:
+    server: %s
+    certificate-authority-data: %s
+users:
+- name: test-user
+  user:
+    client-certificate-data: %s
+    client-key-data: %s
+contexts:
+- name: test-context
+  context:
+    cluster: test-cluster
+    user: test-user
+current-context: test-context
+`
+	_, err = fmt.Fprintf(f, tmpl,
+		cfg.Host,
+		base64.StdEncoding.EncodeToString(cfg.CAData),
+		base64.StdEncoding.EncodeToString(cfg.CertData),
+		base64.StdEncoding.EncodeToString(cfg.KeyData),
+	)
+	if err != nil {
+		return "", err
+	}
+	return f.Name(), nil
 }

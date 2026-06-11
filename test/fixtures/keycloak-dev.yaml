@@ -22,7 +22,7 @@ spec:
         - name: keycloak
           image: quay.io/keycloak/keycloak:26.0.7
           imagePullPolicy: IfNotPresent
-          args: ["start-dev"]
+          args: ["start-dev", "--https-certificate-file=/etc/x509/https/tls.crt", "--https-certificate-key-file=/etc/x509/https/tls.key", "--features=token-exchange,admin-fine-grained-authz"]
           env:
             - name: KEYCLOAK_ADMIN
               value: "admin"
@@ -30,8 +30,16 @@ spec:
               value: "admin"
             - name: KC_HTTP_PORT
               value: "8080"
+            # KC_HOSTNAME pins the `iss` claim in all issued tokens to the
+            # in-cluster Keycloak service URL. This lets both the gateway pod
+            # (which reaches Keycloak via cluster DNS) and the K8s API server
+            # (which uses an /etc/hosts entry added by Phase 9 BeforeAll) agree
+            # on a single stable issuer without any socat bridging.
+            - name: KC_HOSTNAME
+              value: "https://keycloak.keycloak.svc.cluster.local:8443"
           ports:
             - containerPort: 8080
+            - containerPort: 8443
           readinessProbe:
             httpGet:
               path: /realms/master
@@ -39,6 +47,14 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 5
             failureThreshold: 20
+          volumeMounts:
+            - name: tls-certs
+              mountPath: /etc/x509/https
+              readOnly: true
+      volumes:
+        - name: tls-certs
+          secret:
+            secretName: keycloak-tls
 ---
 apiVersion: v1
 kind: Service
@@ -49,5 +65,9 @@ spec:
   selector:
     app: keycloak
   ports:
-    - port: 8080
+    - name: http
+      port: 8080
       targetPort: 8080
+    - name: https
+      port: 8443
+      targetPort: 8443

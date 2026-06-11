@@ -30,6 +30,8 @@ import (
 type KubernetesOIDCProvider struct {
 	tokenExchangeURL string
 	audience         string
+	clientID         string
+	clientSecret     string
 	client           *http.Client
 
 	// caches is keyed by sha256(rawOIDCToken) hex; each value is a *TokenCache.
@@ -53,6 +55,13 @@ func NewKubernetesOIDCProvider(tokenExchangeURL, audience string) *KubernetesOID
 	}
 }
 
+// WithCredentials sets the client credentials for the OIDC token exchange.
+func (p *KubernetesOIDCProvider) WithCredentials(clientID, clientSecret string) *KubernetesOIDCProvider {
+	p.clientID = clientID
+	p.clientSecret = clientSecret
+	return p
+}
+
 // WithClient overrides the HTTP client (used for testing).
 func (p *KubernetesOIDCProvider) WithClient(httpClient *http.Client) *KubernetesOIDCProvider {
 	p.client = httpClient
@@ -71,9 +80,12 @@ func (p *KubernetesOIDCProvider) doExchange(ctx context.Context, assertion strin
 	data := url.Values{}
 	data.Set("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange")
 	data.Set("subject_token", assertion)
-	data.Set("subject_token_type", "urn:ietf:params:oauth:token-type:jwt")
+	data.Set("subject_token_type", "urn:ietf:params:oauth:token-type:access_token")
 	if p.audience != "" {
 		data.Set("audience", p.audience)
+	}
+	if p.clientID != "" {
+		data.Set("client_id", p.clientID)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", p.tokenExchangeURL, strings.NewReader(data.Encode()))
@@ -81,6 +93,9 @@ func (p *KubernetesOIDCProvider) doExchange(ctx context.Context, assertion strin
 		return "", time.Time{}, fmt.Errorf("failed to create token exchange request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if p.clientID != "" && p.clientSecret != "" {
+		req.SetBasicAuth(p.clientID, p.clientSecret)
+	}
 
 	resp, err := p.client.Do(req)
 	if err != nil {
