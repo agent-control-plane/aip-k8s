@@ -3,8 +3,10 @@ package credential
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +21,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// ErrOIDCTokenRequired is returned by KubernetesOIDCProvider.Token when no inbound
+// OIDC token is present. This indicates the gateway is not configured with
+// --oidc-issuer-url but an AgentRegistration uses the KubernetesOIDC credential type.
+var ErrOIDCTokenRequired = errors.New("KubernetesOIDC credential requires OIDC authentication on the gateway (--oidc-issuer-url)")
 
 // KubernetesOIDCProvider exchanges an agent OIDC token for a target-audience token
 // via RFC 8693 token exchange. Passthrough mode (no exchange URL) is not supported:
@@ -117,19 +124,28 @@ func (p *KubernetesOIDCProvider) doExchange(ctx context.Context, assertion strin
 		return "", time.Time{}, fmt.Errorf("token response did not contain access_token")
 	}
 
-	var expiresIn int64 = 3600
+	// Default to 60s when expires_in is absent or unparseable. 3600s would be
+	// dangerously generous if the IdP actually issued a short-lived token.
+	var expiresIn int64 = 60
 	if tokenResp.ExpiresIn != nil {
 		switch v := tokenResp.ExpiresIn.(type) {
 		case float64:
-			expiresIn = int64(v)
+			if v > 0 {
+				expiresIn = int64(v)
+			}
 		case string:
-			if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+			if parsed, err := strconv.ParseInt(v, 10, 64); err == nil && parsed > 0 {
 				expiresIn = parsed
 			}
 		}
 	}
 
 	expiresAt := time.Now().Add(time.Duration(expiresIn) * time.Second)
+	// Best-effort: clamp to the JWT's own exp claim if the token is a JWT.
+	// Protects against IdPs whose expires_in overstates the token's actual lifetime.
+	if jwtExp, ok := jwtExpClaim(tokenResp.AccessToken); ok && jwtExp.Before(expiresAt) {
+		expiresAt = jwtExp
+	}
 	return tokenResp.AccessToken, expiresAt, nil
 }
 
@@ -146,7 +162,7 @@ func (p *KubernetesOIDCProvider) Token(ctx context.Context, rawOIDCToken string)
 	}
 
 	if rawOIDCToken == "" {
-		return "", fmt.Errorf("raw OIDC token is required for Kubernetes token exchange")
+		return "", ErrOIDCTokenRequired
 	}
 
 	key := tokenKey(rawOIDCToken)
@@ -182,6 +198,27 @@ func (p *KubernetesOIDCProvider) Token(ctx context.Context, rawOIDCToken string)
 	})
 
 	return result, err
+}
+
+// jwtExpClaim parses the exp claim from a JWT payload without signature verification.
+// This is used only to set a conservative cache TTL — never for trust decisions.
+// Returns (zero, false) for any non-JWT or malformed token.
+func jwtExpClaim(token string) (time.Time, bool) {
+	parts := strings.SplitN(token, ".", 3)
+	if len(parts) != 3 {
+		return time.Time{}, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return time.Time{}, false
+	}
+	var claims struct {
+		Exp float64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil || claims.Exp <= 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(int64(claims.Exp), 0), true
 }
 
 // KubernetesTokenRequestProvider fetches tokens using the ServiceAccount TokenRequest API.

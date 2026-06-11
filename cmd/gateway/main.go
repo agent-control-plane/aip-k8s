@@ -212,7 +212,10 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 		mcpCache.seed(srv.Name, srv.URL, srv.BearerToken, srv.Tools)
 	}
 
-	regCache := newRegistrationCache(k8sClient)
+	regCache := newRegistrationCache(k8sClient).withOIDCCredentials(
+		os.Getenv("OIDC_CLIENT_ID"),
+		os.Getenv("OIDC_CLIENT_SECRET"),
+	)
 
 	server := &Server{
 		client:                  mgr.GetClient(),    // cached — field indexers work here

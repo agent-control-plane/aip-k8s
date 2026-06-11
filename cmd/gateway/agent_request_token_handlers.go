@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 
@@ -9,6 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/agent-control-plane/aip-k8s/api/v1alpha1"
+	"github.com/agent-control-plane/aip-k8s/internal/credential"
 )
 
 type tokenResponse struct {
@@ -87,7 +89,11 @@ func (s *Server) handleGetAgentRequestToken(w http.ResponseWriter, r *http.Reque
 	bearerToken, err := provider.Token(r.Context(), rawToken)
 	if err != nil {
 		log.Printf("Credential resolution failed for agent=%q service=%q: %v", agentReq.Spec.AgentIdentity, body.Service, err)
-		writeError(w, http.StatusInternalServerError, "credential resolution failed")
+		if errors.Is(err, credential.ErrOIDCTokenRequired) {
+			writeError(w, http.StatusBadRequest, err.Error())
+		} else {
+			writeError(w, http.StatusInternalServerError, "credential resolution failed")
+		}
 		return
 	}
 
