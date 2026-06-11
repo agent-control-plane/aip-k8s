@@ -1,6 +1,6 @@
 # Design: AgentRegistration and Scoped External Credentials
 
-Status: In Progress — Phases 1–4 + Phase 8b merged (PR #245)
+Status: In Progress — Phases 1–5 + 8b + 9 merged (PRs #245, #250, #252); Phases 10–12 (self-service registration, `aipctl`, client library) drafted
 
 ---
 
@@ -930,6 +930,262 @@ Files:
 - `test/e2e_aws/` — suite skeleton (build tag `aws_e2e`, skipped by default)
 - `.github/workflows/chart-e2e.yml` — document `OIDC_KIND_CLUSTER` env var
   requirement and note cluster recreation needed
+
+### Phase 10 — Registration lifecycle (status.phase + approve/deny)
+
+Files:
+- `api/v1alpha1/agentregistration_types.go` — `spec.mode`, `spec.requestedServices`,
+  `status.phase`, `status.operatedBy`, conditions; `make generate && make manifests`
+- `cmd/gateway/agent_registration_handlers.go` — self-registration carve-out
+  (identity == token subject, exempt from strict policy), approve/deny handlers
+  (mirror `agent_request_lifecycle_handlers.go`), SSE watch
+- `cmd/gateway/registration_watch.go` — cache honors only `Approved`
+- `cmd/gateway/main.go` — `--registration-policy=auto|manual` (default auto),
+  `--registration-pending-ttl`, repeatable `--oidc-issuer-url`
+- `internal/controller/` — pending-TTL deny; ATP pre-create moves to Approved transition
+- `docs/api-reference.md` + auth rules — `make docs-generate && make docs-lint`
+- Integration tests: self-register under strict → Pending; agent cannot approve own
+  registration; auto vs manual policy; deny-by-TTL
+
+### Phase 11 — `aipctl`
+
+Files:
+- `cmd/aipctl/` — login (device flow + keychain), register, kubeconfig, token
+  (ExecCredential protocol, interactive blocking wait, `--no-wait`), registrations
+  list/approve/deny/revert
+- `cmd/gateway/` — `GET /.well-known/aip` discovery endpoint
+- Session-intent convention: `action: session.k8s` AgentRequest; gateway token
+  endpoint accepts session-intent approvals; `act` claim populated in exchange
+- e2e: scripted transcript from the Acceptance demo section against Kind + Keycloak
+
+### Phase 12 — `aip-go` client library
+
+Files:
+- New module `aip-go/` (or `pkg/client/` until API settles) — `NewTransport`
+  (`transport.WrapperFunc`), projected-SA-token identity source, session mint/refresh
+  loop, `PendingApprovalError`, `WaitForApproval`
+- Example operator under `examples/` consuming the wrapper in one line
+- e2e: operator pod in governed mode exercising the wrapped client against Kind
+
+---
+
+## Self-Service Registration and External Agents (`aipctl`)
+
+Everything above assumes an operator provisions registrations via admin API and the
+agent runs where credentials can be injected. This section covers the remaining — and
+largest — agent population: **scripts, cron jobs, and developer-laptop agents** that
+hold a kubeconfig today, plus in-cluster operators that cannot change their code.
+
+Design constraint carried throughout: **the gateway never enters the K8s data path.**
+Reads and writes go directly to the apiserver with minted credentials. AIP is the
+credential mint and the audit brain, not a proxy. (A governing apiserver proxy was
+considered and deferred — see Deferred Work below.)
+
+### Registration lifecycle: `status.phase`
+
+`AgentRegistration` gains a lifecycle so agents can request registration and admins
+approve it — mirroring the AgentRequest approve/deny pattern (same roles, same audit
+records, same handler shape).
+
+Spec additions:
+
+```go
+type AgentRegistrationSpec struct {
+    // ... existing fields ...
+
+    // Mode selects the credential posture for this agent.
+    //   "Standing" (default) — agent keeps its existing access; AIP provides
+    //   attribution, shadow policies, and audit. Pure addition, zero risk.
+    //   "Governed" — writes flow through approved intents + JIT-minted tokens.
+    // +kubebuilder:validation:Enum=Standing;Governed
+    // +kubebuilder:default=Standing
+    Mode string `json:"mode,omitempty"`
+
+    // RequestedServices lists the services the agent wants credential
+    // bindings for (e.g. "k8s", "github"). Admin may approve a subset.
+    RequestedServices []string `json:"requestedServices,omitempty"`
+}
+
+type AgentRegistrationStatus struct {
+    // Phase: "" | Pending | Approved | Denied
+    Phase string `json:"phase,omitempty"`
+
+    // OperatedBy records the human identity whose login submitted this
+    // registration (laptop/script agents). Set by the gateway from the
+    // authenticated caller; immutable thereafter.
+    OperatedBy string `json:"operatedBy,omitempty"`
+
+    Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+```
+
+Behavior:
+
+- `registrationCache` only honors `Approved` registrations. Pending/Denied are inert.
+- **Bootstrap carve-out**: an authenticated-but-unregistered agent may `POST` its own
+  registration (`agentIdentity` must equal its token subject — enforced server-side)
+  even under `--unregistered-agent-policy=strict`. This is the only endpoint exempt
+  from the registration check. Authentication is still required.
+- **Approval gate is a dial, default open**: `--registration-policy=auto|manual`.
+  `auto` (default) approves immediately on creation — registration feels like
+  installing a GitHub App. `manual` holds at Pending for admin approve/deny.
+- New routes (mirror AgentRequest lifecycle handlers):
+
+```
+POST /agent-registrations/{name}/approve   roleAdmin
+POST /agent-registrations/{name}/deny      roleAdmin
+GET  /agent-registrations/{name}/watch     SSE, owner or roleAdmin/roleReviewer
+```
+
+- Pending registrations are denied-by-timeout after `--registration-pending-ttl`
+  (default 168h) so abandoned requests don't accumulate as standing approval risk.
+
+### `aipctl`
+
+A single client binary covering both agent-developer and admin verbs. Role
+enforcement is server-side; the CLI exposes explicit verbs (no role-sniffing magic).
+
+```
+aipctl login --gateway https://aip.example          # OIDC device flow; token cached in OS keychain
+aipctl register <name> [--mode governed] [--services k8s,github] [--wait]
+aipctl kubeconfig <name>                             # emits exec-credential-plugin kubeconfig
+aipctl token <name>                                  # ExecCredential protocol (used by kubectl, not humans)
+aipctl registrations list [--pending]
+aipctl registrations approve|deny <name>
+aipctl registrations revert <name>                   # governed → standing, one command
+```
+
+Key behaviors:
+
+- **Zero-config bootstrap**: the gateway serves a discovery document
+  (`GET /.well-known/aip`) carrying issuer URL, client ID, and device endpoint.
+  `aipctl login` needs only the gateway URL.
+- **Exec credential plugin**: `aipctl kubeconfig` emits a kubeconfig whose
+  `users[].user.exec` invokes `aipctl token`. kubectl/client-go calls it on demand;
+  aipctl presents the cached login token, the gateway evaluates a session intent,
+  and the minted token is returned via the `ExecCredential` JSON protocol with
+  expiry. kubectl caches until expiry. **kubectl then talks directly to the
+  apiserver** — the gateway is not in the request path.
+- **Blocking approval UX**: when a session intent requires human approval and the
+  terminal is interactive, `aipctl token` waits on the SSE stream and prints the
+  approval URL — kubectl appears to pause politely, then completes when the admin
+  approves. Non-interactive callers (`--no-wait`, no TTY) fail fast with a
+  machine-readable receipt (AgentRequest name) and a non-zero exit; cron retries
+  naturally on its next run.
+
+### Session intents (no new CRD)
+
+Laptop/script credential issuance is modeled as a plain `AgentRequest`:
+
+```
+action:    "session.k8s"
+targetURI: scope URI, e.g. "k8s://prod/payments/deployment/*"
+parameters: { "ttl": "15m" }
+```
+
+Policies, approval flow, audit records, and the dashboard apply unchanged. Approval
+authorizes a mint via the existing token endpoint. Granularity is **per-session**
+(JIT-access model, like Teleport/Azure PIM), not per-write — per-action granularity
+remains available on the MCP path. This trade is deliberate; see Deferred Work.
+
+### Two-level attribution: the `act` claim
+
+A laptop agent's actions must attribute to both the agent and the human operating
+it, or laptop agents become identity laundering. RFC 8693 — which the exchange
+already implements — defines the actor claim for exactly this:
+
+```
+sub: cleanup-script          # the agent
+act: { sub: ravi@example }   # the human whose login enabled it
+```
+
+The gateway populates `act` from the login identity during exchange and records it
+as `status.operatedBy` on the registration. The K8s audit log then answers:
+*"cleanup-script, operated by ravi, scaled payment-api, under approval X."*
+
+### Client library: `aip-go` (operators that cannot change)
+
+`rest.InClusterConfig()` does not support exec credential plugins, so the laptop
+mechanism does not translate to in-cluster operators. The equivalent is a
+transport-level wrapper — small, optional everywhere else, required only here:
+
+```go
+cfg, _ := rest.InClusterConfig()
+cfg.Wrap(aipclient.NewTransport(gatewayURL, "my-operator"))   // one line in main.go
+mgr, _ := ctrl.NewManager(cfg, opts)                          // unchanged
+```
+
+- `aipclient.NewTransport` sources the inbound identity from the pod's projected SA
+  token (`aud: aip-gateway`), maintains the session-intent/mint/refresh loop, and
+  injects the minted bearer token on outbound apiserver requests.
+- Typed `aipclient.PendingApprovalError` (carries the AgentRequest name) so
+  reconcile loops can requeue cleanly; optional `WaitForApproval(ctx, name)` helper
+  subscribes to the SSE stream.
+- **SDK is sugar, never plumbing**: nothing requires the library; an unwrapped
+  client simply sees standard 403s on expired sessions and retries.
+- Python port follows once the Go shape settles.
+
+### Multi-issuer trust
+
+`--oidc-issuer-url` becomes repeatable. One trust list covers all runtimes:
+
+| Runtime | Issuer | Credential delivery |
+|---|---|---|
+| In-cluster pods | cluster SA issuer (projected tokens, `aud: aip-gateway`) | mounted by kubelet |
+| Developer laptops | enterprise IdP (Keycloak/Entra/Okta) | `aipctl login` device flow |
+| CI pipelines | GitHub/GitLab OIDC issuer | ambient job token, zero stored secrets |
+| SaaS agents | vendor or federated IdP | MCP endpoint OAuth |
+
+The CI row is configuration plus a docs page — no code. It removes long-lived
+kubeconfigs from repository secrets entirely.
+
+### Design principles (apply to every feature in this EP)
+
+1. **Who decided?** The affected party consents or can opt out. Mode changes are
+   requested by the agent developer and countersigned by the admin — never imposed.
+2. **Can you see it?** Every automated effect is inspectable with plain kubectl.
+3. **Can you undo it?** One command back to yesterday (`aipctl registrations
+   revert`), with no dependency on AIP being up — break-glass is restoring one
+   RoleBinding.
+4. **Does it fail safe?** Loss of AIP degrades to the ungoverned world for Standing
+   agents and to read-only (not broken) for Governed agents; reads never depend on
+   the gateway.
+
+### Deferred Work
+
+- **Governing apiserver proxy** (per-action holds for unmodified kubectl/client-go;
+  agent's kubeconfig points at the gateway). Deferred: it is the only component that
+  would put the gateway in the read/WATCH data path, and the session-intent model
+  covers the same population at per-session granularity with zero data-path cost.
+  Build trigger: a customer's legacy agent requires per-action holds and cannot
+  adopt MCP.
+- **Pod env injection webhook** (mutating webhook rewrites `KUBERNETES_SERVICE_HOST`
+  on labeled pods). Only meaningful alongside the proxy; deferred with it. If built:
+  pod-level opt-in annotation only (namespace-level fails principle 1).
+- **Auto-approval registration policies as a CRD** (`match issuer/groups →
+  auto-approve with bindings`). The `--registration-policy=auto` flag covers the
+  current need without a new noun.
+
+### Acceptance demo (laptop segment)
+
+Pure terminal, no cluster-side agent. This transcript is the acceptance test:
+
+```
+$ aipctl login --gateway https://aip.corp
+$ aipctl register cleanup-script --services k8s
+$ aipctl kubeconfig cleanup-script > ~/.kube/aip.yaml
+$ export KUBECONFIG=~/.kube/aip.yaml
+
+$ kubectl scale deploy payment-api --replicas=4      # within policy
+deployment.apps/payment-api scaled                   # auto-approved, invisible
+
+$ kubectl scale deploy payment-api --replicas=20     # exceeds policy threshold
+⏳ aip: session requires approval — https://aip.corp/requests/sess-4d2a
+✓ approved by admin@corp
+deployment.apps/payment-api scaled
+
+$ kubectl get auditrecords                           # agent + operator + approval
+```
 
 ---
 
