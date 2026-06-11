@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"log"
@@ -72,6 +74,25 @@ const (
 
 func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 	flag.Parse()
+
+	// Load custom CA certs from SSL_CERT_FILE programmatically if set (primarily for macOS)
+	if sslCertFile := os.Getenv("SSL_CERT_FILE"); sslCertFile != "" {
+		pemCerts, err := os.ReadFile(sslCertFile)
+		if err == nil {
+			sysPool, err := x509.SystemCertPool()
+			if err != nil || sysPool == nil {
+				sysPool = x509.NewCertPool()
+			}
+			if sysPool.AppendCertsFromPEM(pemCerts) {
+				if transport, ok := http.DefaultTransport.(*http.Transport); ok {
+					if transport.TLSClientConfig == nil {
+						transport.TLSClientConfig = &tls.Config{}
+					}
+					transport.TLSClientConfig.RootCAs = sysPool
+				}
+			}
+		}
+	}
 
 	if *unregisteredAgentPolicy != "allow" && *unregisteredAgentPolicy != "warn" && *unregisteredAgentPolicy != "strict" {
 		log.Fatalf("invalid --unregistered-agent-policy %q: must be allow, warn, or strict", *unregisteredAgentPolicy)
@@ -191,7 +212,7 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 		mcpCache.seed(srv.Name, srv.URL, srv.BearerToken, srv.Tools)
 	}
 
-	regCache := newRegistrationCache(mgr.GetClient())
+	regCache := newRegistrationCache(k8sClient)
 
 	server := &Server{
 		client:                  mgr.GetClient(),    // cached — field indexers work here
