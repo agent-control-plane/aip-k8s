@@ -30,16 +30,6 @@ func gwPost(path, body string) (*http.Response, error) {
 	return http.Post(gwBaseURL+path, "application/json", strings.NewReader(body)) //nolint:noctx
 }
 
-// gwReadBody reads and closes the response body.
-func gwReadBody(resp *http.Response) string {
-	defer resp.Body.Close() //nolint:errcheck
-	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(b))
-}
-
 // gwGetSSE sends a GET request with Accept: text/event-stream.
 func gwGetSSE(path string) (*http.Response, error) {
 	req, err := http.NewRequest("GET", gwBaseURL+path, nil) //nolint:noctx
@@ -131,7 +121,7 @@ var _ = Describe("Phase 6: Gateway API", Ordered, func() {
 			defer resp.Body.Close() //nolint:errcheck
 			Expect(resp.StatusCode).To(Equal(http.StatusCreated), string(bodyBytes))
 
-			var body map[string]interface{}
+			var body map[string]any
 			Expect(json.NewDecoder(resp.Body).Decode(&body)).To(Succeed())
 			createdName, _ = body["name"].(string)
 			Expect(createdName).NotTo(BeEmpty())
@@ -154,10 +144,10 @@ var _ = Describe("Phase 6: Gateway API", Ordered, func() {
 				_ = resp.Body.Close()
 				g.Expect(resp.StatusCode).To(Equal(http.StatusOK),
 					"gateway returned non-200; body: %s", string(body))
-				var items []interface{}
+				var items []any
 				g.Expect(json.Unmarshal(body, &items)).To(Succeed(),
 					"failed to decode response as JSON array; body: %s", string(body))
-				g.Expect(len(items)).To(BeNumerically(">=", 1),
+				g.Expect(items).ToNot(BeEmpty(),
 					"expected at least 1 item; body: %s", string(body))
 			}, 15*time.Second, time.Second).Should(Succeed())
 		})
@@ -167,7 +157,7 @@ var _ = Describe("Phase 6: Gateway API", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close() //nolint:errcheck
 			Expect(resp.StatusCode).To(Equal(http.StatusOK))
-			var body map[string]interface{}
+			var body map[string]any
 			Expect(json.NewDecoder(resp.Body).Decode(&body)).To(Succeed())
 			Expect(body["name"]).To(Equal(createdName))
 		})
@@ -233,7 +223,7 @@ var _ = Describe("Phase 6: Gateway API", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close() //nolint:errcheck
 			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
-			var body map[string]interface{}
+			var body map[string]any
 			Expect(json.NewDecoder(resp.Body).Decode(&body)).To(Succeed())
 			pendingName, _ = body["name"].(string)
 			Expect(pendingName).NotTo(BeEmpty())
@@ -284,7 +274,7 @@ var _ = Describe("Phase 6: Gateway API", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close() //nolint:errcheck
 			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
-			var body map[string]interface{}
+			var body map[string]any
 			Expect(json.NewDecoder(resp.Body).Decode(&body)).To(Succeed())
 			denyName, _ := body["name"].(string)
 			Expect(denyName).NotTo(BeEmpty())
@@ -323,7 +313,7 @@ var _ = Describe("Phase 6: Gateway API", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close() //nolint:errcheck
 			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
-			var body map[string]interface{}
+			var body map[string]any
 			Expect(json.NewDecoder(resp.Body).Decode(&body)).To(Succeed())
 			sseCreatedName, _ = body["name"].(string)
 			Expect(sseCreatedName).NotTo(BeEmpty())

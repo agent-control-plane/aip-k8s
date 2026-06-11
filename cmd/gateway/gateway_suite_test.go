@@ -149,7 +149,7 @@ func startTestManagerForGinkgo(cfg *rest.Config, scheme *runtime.Scheme) client.
 	return mgr.GetClient()
 }
 
-func getAgentRequestPhase(name, ns string) string {
+func getAgentRequestPhase(name, ns string) string { //nolint:unparam
 	var ar v1alpha1.AgentRequest
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &ar); err != nil {
 		return ""
@@ -170,7 +170,7 @@ func auditRecordExists(reqName, ns, event string) bool {
 	return false
 }
 
-func gwCleanup(ns string) {
+func gwCleanup(ns string) { //nolint:unparam
 	_ = k8sClient.DeleteAllOf(ctx, &v1alpha1.AgentRequest{}, client.InNamespace(ns))
 	_ = k8sClient.DeleteAllOf(ctx, &coordinationv1.Lease{}, client.InNamespace(ns))
 	_ = k8sClient.DeleteAllOf(ctx, &v1alpha1.SafetyPolicy{}, client.InNamespace(ns))

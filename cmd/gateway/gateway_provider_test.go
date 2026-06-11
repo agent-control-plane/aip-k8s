@@ -23,7 +23,7 @@ var _ = Describe("Provider stub tests", func() {
 			capturedAssertionType = r.Form.Get("client_assertion_type")
 			capturedAssertion = r.Form.Get("client_assertion")
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"access_token":"azure-access-token","expires_in":3600}`))
+			_, _ = w.Write([]byte(`{"access_token":"azure-access-token","expires_in":3600}`))
 		}))
 		defer server.Close()
 
@@ -48,7 +48,7 @@ var _ = Describe("Provider stub tests", func() {
 			capturedAction = r.Form.Get("Action")
 			capturedToken = r.Form.Get("WebIdentityToken")
 			w.Header().Set("Content-Type", "application/xml")
-			w.Write([]byte(`<AssumeRoleWithWebIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+			_, _ = w.Write([]byte(`<AssumeRoleWithWebIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
   <AssumeRoleWithWebIdentityResult>
     <Credentials>
       <AccessKeyId>ASIAIOSFODNN7EXAMPLE</AccessKeyId>
@@ -61,7 +61,8 @@ var _ = Describe("Provider stub tests", func() {
 		}))
 		defer server.Close()
 
-		provider := credential.NewAWSWebIdentityProvider("arn:aws:iam::123456789012:role/test-role", "session-1", "us-east-1", nil, server.URL)
+		provider := credential.NewAWSWebIdentityProvider(
+			"arn:aws:iam::123456789012:role/test-role", "session-1", "us-east-1", nil, server.URL)
 
 		ctx := context.Background()
 		tok, err := provider.Token(ctx, "synthetic-agent-oidc-token")
@@ -78,7 +79,7 @@ var _ = Describe("Provider stub tests", func() {
 			atomic.AddInt64(&callCount, 1)
 			time.Sleep(50 * time.Millisecond) // simulate delay
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"access_token":"exchanged-token","expires_in":3600}`))
+			_, _ = w.Write([]byte(`{"access_token":"exchanged-token","expires_in":3600}`))
 		}))
 		defer server.Close()
 
@@ -88,10 +89,8 @@ var _ = Describe("Provider stub tests", func() {
 		var wg sync.WaitGroup
 		var errorsList []error
 		var mu sync.Mutex
-		for i := 0; i < 10; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+		for range 10 {
+			wg.Go(func() {
 				tok, err := provider.Token(ctx, "same-raw-token")
 				if err != nil {
 					mu.Lock()
@@ -100,7 +99,7 @@ var _ = Describe("Provider stub tests", func() {
 				} else {
 					Expect(tok).To(Equal("exchanged-token"))
 				}
-			}()
+			})
 		}
 		wg.Wait()
 		Expect(errorsList).To(BeEmpty())

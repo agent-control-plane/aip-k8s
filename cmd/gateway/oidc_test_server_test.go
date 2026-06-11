@@ -41,7 +41,7 @@ func newOIDCTestServer() *oidcTestServer {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]string{
 			"issuer":   s.IssuerURL,
 			"jwks_uri": s.IssuerURL + "/keys",
 		})
@@ -58,7 +58,7 @@ func newOIDCTestServer() *oidcTestServer {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(jwks)
+		_ = json.NewEncoder(w).Encode(jwks)
 	})
 
 	s.server = httptest.NewServer(mux)
@@ -101,7 +101,7 @@ func (s *oidcTestServer) Close() {
 }
 
 // mintTokenWithAZP returns a token that includes the azp claim.
-func (s *oidcTestServer) mintTokenWithAZP(sub, aud, azp string, ttl time.Duration) string {
+func (s *oidcTestServer) mintTokenWithAZP(sub, aud, azp string, ttl time.Duration) string { //nolint:unparam
 	signer, err := jose.NewSigner(
 		jose.SigningKey{Algorithm: jose.RS256, Key: s.key},
 		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", s.kid),
@@ -119,7 +119,7 @@ func (s *oidcTestServer) mintTokenWithAZP(sub, aud, azp string, ttl time.Duratio
 		Expiry:   jwt.NewNumericDate(now.Add(ttl)),
 	}
 
-	raw, err := jwt.Signed(signer).Claims(claims).Claims(map[string]interface{}{"azp": azp}).Serialize()
+	raw, err := jwt.Signed(signer).Claims(claims).Claims(map[string]any{"azp": azp}).Serialize()
 	if err != nil {
 		panic(err)
 	}
@@ -133,7 +133,7 @@ func writeKubeconfig(cfg *rest.Config) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	tmpl := `apiVersion: v1
 kind: Config

@@ -129,7 +129,7 @@ var _ = Describe("Phase 7: Gateway OIDC Authentication", Ordered, func() {
 	It("Missing Bearer token -> 401", func() {
 		resp, err := gwPostWithToken(gwPort, "/agent-requests", "{}", "")
 		Expect(err).NotTo(HaveOccurred())
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 	})
 
@@ -137,7 +137,7 @@ var _ = Describe("Phase 7: Gateway OIDC Authentication", Ordered, func() {
 		token := oidcServer.mintToken("agent-sub", "aip-gateway", -5*time.Minute)
 		resp, err := gwPostWithToken(gwPort, "/agent-requests", "{}", token)
 		Expect(err).NotTo(HaveOccurred())
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 	})
 
@@ -145,7 +145,7 @@ var _ = Describe("Phase 7: Gateway OIDC Authentication", Ordered, func() {
 		token := oidcServer.mintToken("agent-sub", "wrong-aud", 5*time.Minute)
 		resp, err := gwPostWithToken(gwPort, "/agent-requests", "{}", token)
 		Expect(err).NotTo(HaveOccurred())
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 	})
 
@@ -158,10 +158,10 @@ var _ = Describe("Phase 7: Gateway OIDC Authentication", Ordered, func() {
 			"reason":        "e2e tests"
 		}`, token)
 		Expect(err).NotTo(HaveOccurred())
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 		Expect(resp.StatusCode).To(Equal(http.StatusCreated))
 
-		var body map[string]interface{}
+		var body map[string]any
 		Expect(json.NewDecoder(resp.Body).Decode(&body)).To(Succeed())
 		createdReqName, _ = body["name"].(string)
 		Expect(createdReqName).NotTo(BeEmpty())
@@ -171,15 +171,16 @@ var _ = Describe("Phase 7: Gateway OIDC Authentication", Ordered, func() {
 		token := oidcServer.mintToken("agent-sub", "aip-gateway", 5*time.Minute)
 		resp, err := gwGetWithToken(gwPort, "/agent-requests", token)
 		Expect(err).NotTo(HaveOccurred())
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 		Expect(resp.StatusCode).To(Equal(http.StatusOK))
 	})
 
 	It("Valid agent token on approve (wrong role) -> 403", func() {
 		token := oidcServer.mintToken("agent-sub", "aip-gateway", 5*time.Minute)
-		resp, err := gwPostWithToken(gwPort, "/agent-requests/"+createdReqName+"/approve", `{"reason":"e2e agent approve"}`, token)
+		resp, err := gwPostWithToken(gwPort,
+			"/agent-requests/"+createdReqName+"/approve", `{"reason":"e2e agent approve"}`, token)
 		Expect(err).NotTo(HaveOccurred())
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 		Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
 
 		b, _ := io.ReadAll(resp.Body)
@@ -195,17 +196,18 @@ var _ = Describe("Phase 7: Gateway OIDC Authentication", Ordered, func() {
 			"reason":        "self approval tests"
 		}`, token)
 		Expect(err).NotTo(HaveOccurred())
-		defer createResp.Body.Close()
+		defer createResp.Body.Close() //nolint:errcheck
 		Expect(createResp.StatusCode).To(Equal(http.StatusCreated))
 
-		var body map[string]interface{}
+		var body map[string]any
 		Expect(json.NewDecoder(createResp.Body).Decode(&body)).To(Succeed())
 		selfReqName, _ := body["name"].(string)
 		Expect(selfReqName).NotTo(BeEmpty())
 
-		aprResp, err := gwPostWithToken(gwPort, "/agent-requests/"+selfReqName+"/approve", `{"reason":"self approve"}`, token)
+		aprResp, err := gwPostWithToken(gwPort,
+			"/agent-requests/"+selfReqName+"/approve", `{"reason":"self approve"}`, token)
 		Expect(err).NotTo(HaveOccurred())
-		defer aprResp.Body.Close()
+		defer aprResp.Body.Close() //nolint:errcheck
 		Expect(aprResp.StatusCode).To(Equal(http.StatusForbidden))
 
 		b, _ := io.ReadAll(aprResp.Body)
@@ -214,16 +216,17 @@ var _ = Describe("Phase 7: Gateway OIDC Authentication", Ordered, func() {
 
 	It("Valid reviewer token on approve — different creator -> 200/409", func() {
 		token := oidcServer.mintToken("reviewer-sub", "aip-gateway", 5*time.Minute)
-		resp, err := gwPostWithToken(gwPort, "/agent-requests/"+createdReqName+"/approve", `{"reason":"e2e review approve"}`, token)
+		resp, err := gwPostWithToken(gwPort,
+			"/agent-requests/"+createdReqName+"/approve", `{"reason":"e2e review approve"}`, token)
 		Expect(err).NotTo(HaveOccurred())
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 		Expect(resp.StatusCode).To(BeElementOf(http.StatusOK, http.StatusConflict))
 	})
 
 	It("Healthz unauthenticated -> 200", func() {
 		resp, err := http.Get("http://localhost:" + gwPort + "/healthz") //nolint:noctx
 		Expect(err).NotTo(HaveOccurred())
-		defer resp.Body.Close()
+		defer resp.Body.Close() //nolint:errcheck
 		Expect(resp.StatusCode).To(Equal(http.StatusOK))
 	})
 })
