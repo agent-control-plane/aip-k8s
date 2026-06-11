@@ -73,7 +73,7 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 
 		// Build images while Keycloak is starting up to reduce total wall-clock time.
 		By("building fake MCP server Docker image")
-		buildFake := exec.Command("docker", "build", "-f", "Dockerfile.fake-mcp",
+		buildFake := exec.Command("docker", "build", "-f", "test/e2e/Dockerfile.fake-mcp",
 			"-t", fakeMCPImageTag, ".")
 		buildFake.Dir = projDir
 		out, err = buildFake.CombinedOutput()
