@@ -14,10 +14,6 @@ on:
       - 'docs/**'
       - '**/*.md'
   workflow_dispatch:
-    inputs:
-      pat:
-        description: 'GitHub PAT for MCP tests (or use AIP_E2E_GITHUB_PAT secret)'
-        required: false
 
 env:
   KIND_VERSION: v0.31.0
