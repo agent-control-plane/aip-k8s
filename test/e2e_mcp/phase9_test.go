@@ -176,6 +176,10 @@ var _ = Describe("Phase 9: Keycloak Identity Flow and K8s Audit", Ordered, func(
 				},
 			})
 
+			By("removing pod security enforcement on namespace for k8s-mcp-server (image runs as root)")
+			_ = exec.Command("kubectl", "label", "--overwrite", "ns", "aip-k8s-system",
+				"pod-security.kubernetes.io/enforce-").Run()
+
 			By("deploying K8s MCP server")
 			deployK8sMCPServer()
 
