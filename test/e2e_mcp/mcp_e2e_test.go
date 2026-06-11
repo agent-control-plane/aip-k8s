@@ -936,7 +936,9 @@ spec:
 		})
 	})
 
-	Context("MCPServer controller: real upstream discovery", Ordered, func() {
+})
+
+var _ = Describe("MCPServer controller: real upstream discovery", Ordered, func() {
 		var fakeMCP *http.Server
 		var mcpServerDisc *governancev1alpha1.MCPServer
 		var bridgeIP string
@@ -1038,4 +1040,4 @@ spec:
 			}, 60*time.Second, 2*time.Second).Should(Succeed(), "MCPServer controller did not discover tools from fake upstream")
 		})
 	})
-})
+
