@@ -1,0 +1,21 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aip-agent-1-k8s-mcp
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aip-agent-1-k8s-mcp
+subjects:
+- kind: User
+  name: aip-agent-1
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: aip-agent-1-k8s-mcp
+  apiGroup: rbac.authorization.k8s.io

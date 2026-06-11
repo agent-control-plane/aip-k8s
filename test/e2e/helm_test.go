@@ -262,7 +262,6 @@ func chartCleanup() {
 		_, _ = utils.Run(cmd)
 	}
 	// Remove OpsLock Leases so the next run is not blocked by stale locks.
-	cmd := exec.Command("bash", "-c",
-		`kubectl get lease -n default -o name 2>/dev/null | grep aip-lock- | xargs -r kubectl delete -n default`)
+	cmd := exec.Command("kubectl", "delete", "lease", "-l", "governance.aip.io/managed-by=aip-controller", "-n", "default", "--ignore-not-found")
 	_, _ = utils.Run(cmd)
 }

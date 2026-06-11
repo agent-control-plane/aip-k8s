@@ -227,8 +227,8 @@ func TestKubernetesOIDCProvider(t *testing.T) {
 			if values.Get("subject_token") != "inbound-oidc-jwt" {
 				t.Errorf("expected subject_token=inbound-oidc-jwt, got %s", values.Get("subject_token"))
 			}
-			if values.Get("subject_token_type") != "urn:ietf:params:oauth:token-type:jwt" {
-				t.Errorf("expected subject_token_type jwt, got %s", values.Get("subject_token_type"))
+			if values.Get("subject_token_type") != "urn:ietf:params:oauth:token-type:access_token" {
+				t.Errorf("expected subject_token_type access_token, got %s", values.Get("subject_token_type"))
 			}
 			if values.Get("audience") != "k8s-cluster" {
 				t.Errorf("expected audience=k8s-cluster, got %s", values.Get("audience"))

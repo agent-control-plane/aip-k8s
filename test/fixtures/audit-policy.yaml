@@ -1,0 +1,19 @@
+apiVersion: audit.k8s.io/v1
+kind: Policy
+rules:
+- level: Request
+  resources:
+  - group: ""
+    resources: ["configmaps"]
+- level: None
+  resources:
+  - group: ""
+    resources: ["events"]
+- level: None
+  nonResourceURLs:
+  - /healthz
+  - /readyz
+  - /livez
+- level: Metadata
+  omitStages:
+  - RequestReceived

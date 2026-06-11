@@ -1,0 +1,95 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k8s-mcp-kubeconfig
+  namespace: aip-k8s-system
+data:
+  kubeconfig: |
+    apiVersion: v1
+    kind: Config
+    clusters:
+    - name: in-cluster
+      cluster:
+        server: https://kubernetes.default.svc
+        insecure-skip-tls-verify: true
+    contexts:
+    - name: in-cluster
+      context:
+        cluster: in-cluster
+    current-context: in-cluster
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-mcp-server
+  namespace: aip-k8s-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-mcp-server
+  template:
+    metadata:
+      labels:
+        app: k8s-mcp-server
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: k8s-mcp
+        image: ghcr.io/containers/kubernetes-mcp-server:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: KUBECONFIG
+          value: /etc/kubeconfig/kubeconfig
+        ports:
+        - containerPort: 8080
+        livenessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+        securityContext:
+          allowPrivilegeEscalation: false
+          seccompProfile:
+            type: RuntimeDefault
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: kubeconfig-volume
+          mountPath: /etc/kubeconfig
+          readOnly: true
+      volumes:
+      - name: kubeconfig-volume
+        configMap:
+          name: k8s-mcp-kubeconfig
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-mcp
+  namespace: aip-k8s-system
+spec:
+  selector:
+    app: k8s-mcp-server
+  ports:
+  - port: 80
+    targetPort: 8080

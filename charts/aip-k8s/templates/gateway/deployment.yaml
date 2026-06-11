@@ -29,6 +29,15 @@ spec:
                   name: {{ include "aip-k8s.fullname" . }}-gateway-config
                   key: MCP_REGISTRY
                   optional: true
+            {{- if .Values.gateway.oidcExchange.clientID }}
+            - name: OIDC_CLIENT_ID
+              value: {{ .Values.gateway.oidcExchange.clientID | quote }}
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.gateway.oidcExchange.clientSecretRef.name | quote }}
+                  key: {{ .Values.gateway.oidcExchange.clientSecretRef.key | quote }}
+            {{- end }}
           command:
             - /gateway
           args:

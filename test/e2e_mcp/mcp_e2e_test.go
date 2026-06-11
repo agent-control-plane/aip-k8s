@@ -8,15 +8,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -153,6 +156,140 @@ func submitToGatewayAs(agentIdentity string, replicas int) gwRequestResponse {
 
 var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 	BeforeAll(func() {
+		By("checking for GitHub PAT")
+		githubPAT := os.Getenv(githubPATEnv)
+		if githubPAT == "" {
+			Skip(fmt.Sprintf("%s env var not set — skipping MCP e2e tests", githubPATEnv))
+		}
+
+		By("ensuring GitHub branches exist")
+		ensureBranchLifecycle(e2eTestBranch, "e2e-dummy")
+		ensureBranchLifecycle(e2eTestBranch2, "e2e-dummy-c")
+		ensureBranchLifecycle(e2eTestBranch3, "e2e-dummy-d")
+
+		By("removing pod security enforcement on namespace for mcp server (image runs as root)")
+		cmd := exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+			"pod-security.kubernetes.io/enforce-")
+		_, _ = runCmd(cmd)
+
+		By("creating aip-github-token Secret")
+		tokenSecret := fmt.Sprintf(`{"apiVersion":"v1","kind":"Secret","metadata":{"name":"%s","namespace":"%s"},"type":"Opaque","stringData":{"token":"%s"}}`, githubTokenSecret, namespace, githubPAT)
+		Expect(kubectlApply(tokenSecret)).To(Succeed(), "Failed to create github token Secret")
+
+		By("creating AgentRegistrations for MCP e2e agents")
+		// These agents authenticate via X-Remote-User proxy header (no OIDC tokens).
+		// Omit the oidc field entirely: an empty oidc: {} is non-nil and activates
+		// AllowedSubjects enforcement with an empty list, which has subtly different
+		// semantics. Omitting it is the explicit "no OIDC validation" signal.
+		agentRegs := fmt.Sprintf(`apiVersion: governance.aip.io/v1alpha1
+kind: AgentRegistration
+metadata:
+  name: mcp-e2e-agent
+  namespace: %s
+spec:
+  agentIdentity: "e2e-mcp-agent"
+  externalIdentities:
+    - service: "github"
+      type: StaticSecret
+      staticSecret:
+        name: %s
+        namespace: %s
+        key: token
+---
+apiVersion: governance.aip.io/v1alpha1
+kind: AgentRegistration
+metadata:
+  name: mcp-e2e-agent-c
+  namespace: %s
+spec:
+  agentIdentity: "e2e-mcp-agent-c"
+  externalIdentities:
+    - service: "github"
+      type: StaticSecret
+      staticSecret:
+        name: %s
+        namespace: %s
+        key: token
+---
+apiVersion: governance.aip.io/v1alpha1
+kind: AgentRegistration
+metadata:
+  name: mcp-e2e-agent-d
+  namespace: %s
+spec:
+  agentIdentity: "e2e-mcp-agent-d"
+  externalIdentities:
+    - service: "github"
+      type: StaticSecret
+      staticSecret:
+        name: %s
+        namespace: %s
+        key: token
+`, namespace, githubTokenSecret, namespace, namespace, githubTokenSecret, namespace, namespace, githubTokenSecret, namespace)
+		Expect(kubectlApply(agentRegs)).To(Succeed(), "Failed to create AgentRegistration CRs")
+
+		By("deploying github-mcp-server into aip-k8s-system namespace")
+		projDir := getProjectDir()
+		cmd = exec.Command("kubectl", "apply", "-f", filepath.Join(projDir, "config", "mcp"))
+		_, err := runCmd(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to deploy github-mcp-server manifests")
+
+		By("waiting for github-mcp-server deployment to be ready")
+		waitForDeploymentReady(namespace, mcpServerDeployment, 3*time.Minute)
+
+		By("waiting for github-mcp Service endpoints")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "endpoints", mcpServerService, "-n", namespace, "-o", "jsonpath={.subsets[0].addresses[0].ip}")
+			out, err := runCmd(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(out)).NotTo(BeEmpty())
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+		By("port-forwarding github-mcp service for local gateway access")
+		mcpPFCmd = exec.Command("kubectl", "port-forward", "-n", namespace,
+			fmt.Sprintf("svc/%s", mcpServerService), fmt.Sprintf("%s:80", mcpPort))
+		mcpPFCmd.Stdout = GinkgoWriter
+		mcpPFCmd.Stderr = GinkgoWriter
+		err = mcpPFCmd.Start()
+		Expect(err).NotTo(HaveOccurred(), "Failed to start kubectl port-forward for MCP")
+		time.Sleep(2 * time.Second)
+
+		By("creating MCPServer CR for the github-mcp server")
+		mcpServerCR := &governancev1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: mcpServerCRDName,
+			},
+			Spec: governancev1alpha1.MCPServerSpec{
+				URL:             fmt.Sprintf("http://localhost:%s", mcpPort),
+				SecretNamespace: namespace,
+				BearerTokenSecretRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: githubTokenSecret},
+					Key:                  "token",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, mcpServerCR)).To(Succeed(), "Failed to create MCPServer CR")
+
+		// The gateway runs locally (not in-cluster) so it uses the port-forwarded URL.
+		// The controller (in-cluster) cannot reach localhost, so we manually populate
+		// status.tools here so the gateway's CRD watch sees a fully configured server.
+		By("patching MCPServer status with discovered tools")
+		mcpServerCR.Status.Tools = []governancev1alpha1.MCPServerTool{
+			{Name: "create_pull_request", ReadOnly: false},
+			{Name: "get_file_contents", ReadOnly: true},
+			{Name: "list_pull_requests", ReadOnly: true},
+		}
+		mcpServerCR.Status.DiscoveredToolCount = 3
+		Expect(k8sClient.Status().Update(ctx, mcpServerCR)).To(Succeed(), "Failed to patch MCPServer status")
+
+		By("waiting for gateway to cache MCPServer 'github' with tools")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("curl", "-sf", fmt.Sprintf("%s/mcp-registry", gwURL))
+			out, err := runCmd(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(ContainSubstring(`"create_pull_request"`))
+		}, 30*time.Second, 1*time.Second).Should(Succeed(), "gateway did not cache MCPServer 'github' with tools within 30s")
+
 		By("creating GovernedResource")
 		Expect(kubectlApply(govResourceJSON)).To(Succeed())
 
@@ -717,16 +854,12 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 		})
 
 		AfterAll(func() {
-			// Delete only the resources Scenario E created. AfterSuite handles the
-			// namespace-wide --all cleanup. Deleting --all here would also remove
-			// the BeforeSuite registrations (mcp-e2e-agent, -c, -d), which could
-			// corrupt any future scenario added after this one.
-			if agentRegE != nil {
-				_ = k8sClient.Delete(ctx, agentRegE)
-			}
-			if mcpServerE != nil {
-				_ = k8sClient.Delete(ctx, mcpServerE)
-			}
+			By("cleaning up Scenario E AgentRegistrations")
+			cmd := exec.Command("kubectl", "delete", "agentregistration", "--all", "-n", namespace, "--ignore-not-found")
+			_, _ = runCmd(cmd)
+			By("cleaning up Scenario E MCPServers")
+			cmd = exec.Command("kubectl", "delete", "mcpserver", "--all", "--ignore-not-found")
+			_, _ = runCmd(cmd)
 		})
 
 		It("should list tools and successfully execute tool call using per-agent credential", func() {
@@ -802,4 +935,109 @@ var _ = Describe("MCP E2E: GitHub PR Governance", Ordered, func() {
 			))
 		})
 	})
+
 })
+
+var _ = Describe("MCPServer controller: real upstream discovery", Ordered, func() {
+		var fakeMCP *http.Server
+		var mcpServerDisc *governancev1alpha1.MCPServer
+		var bridgeIP string
+
+		BeforeAll(func() {
+			By("starting a fake MCP HTTP server bound on 0.0.0.0")
+			mux := http.NewServeMux()
+			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				var req map[string]any
+				_ = json.Unmarshal(body, &req)
+				method, _ := req["method"].(string)
+				id := req["id"]
+
+				w.Header().Set("Content-Type", "text/event-stream")
+
+				var result map[string]any
+				switch method {
+				case "initialize":
+					w.Header().Set("Mcp-Session-Id", "disc-sess-1")
+					result = map[string]any{
+						"protocolVersion": "2025-03-26",
+						"serverInfo":      map[string]any{"name": "fake-mcp-disc"},
+						"capabilities":    map[string]any{},
+					}
+				case "tools/list":
+					result = map[string]any{
+						"tools": []map[string]any{
+							{"name": "discovered_tool", "inputSchema": map[string]any{"type": "object"}},
+						},
+					}
+				default:
+					result = map[string]any{}
+				}
+
+				data, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
+				fmt.Fprintf(w, "data: %s\n\n", data) //nolint:errcheck
+			})
+
+			ln, err := net.Listen("tcp", "0.0.0.0:0")
+			Expect(err).NotTo(HaveOccurred())
+			fakeMCP = &http.Server{Handler: mux}
+			go fakeMCP.Serve(ln)
+
+			port := ln.Addr().(*net.TCPAddr).Port
+
+			By("computing Docker bridge IP reachable from inside Kind node")
+			clusterName := os.Getenv("KIND_CLUSTER_NAME")
+			if clusterName == "" {
+				clusterName = "aip-k8s-test-e2e"
+			}
+			kindNodeName := clusterName + "-control-plane"
+			out, err := exec.Command("docker", "exec", kindNodeName,
+				"sh", "-c", "getent hosts host.docker.internal | awk '{print $1}'").CombinedOutput()
+			if err == nil {
+				if ip := strings.TrimSpace(string(out)); ip != "" {
+					bridgeIP = ip
+				}
+			}
+			if bridgeIP == "" {
+				out, err = exec.Command("docker", "network", "inspect", "kind",
+					"--format", "{{range .IPAM.Config}}{{.Gateway}}{{end}}").CombinedOutput()
+				if err == nil {
+					if ip := strings.TrimSpace(string(out)); ip != "" {
+						bridgeIP = ip
+					}
+				}
+			}
+			Expect(bridgeIP).NotTo(BeEmpty(), "could not determine Docker bridge IP")
+
+			By("creating MCPServer CR pointing at the bridge IP")
+			mcpServerDisc = &governancev1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "fake-mcp-discovery",
+				},
+				Spec: governancev1alpha1.MCPServerSpec{
+					URL:             fmt.Sprintf("http://%s:%d", bridgeIP, port),
+					SecretNamespace: namespace,
+				},
+			}
+			Expect(k8sClient.Create(ctx, mcpServerDisc)).To(Succeed(), "Failed to create fake-mcp-discovery MCPServer")
+		})
+
+		AfterAll(func() {
+			By("cleaning up MCPServers")
+			cmd := exec.Command("kubectl", "delete", "mcpserver", "--all", "--ignore-not-found")
+			_, _ = runCmd(cmd)
+			if fakeMCP != nil {
+				_ = fakeMCP.Close()
+			}
+		})
+
+		It("should discover tools from the real upstream and update status", func() {
+			By("waiting for MCPServer controller to discover tools")
+			Eventually(func(g Gomega) {
+				var mcp governancev1alpha1.MCPServer
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "fake-mcp-discovery"}, &mcp)).To(Succeed())
+				g.Expect(mcp.Status.DiscoveredToolCount).To(BeNumerically(">", 0))
+			}, 60*time.Second, 2*time.Second).Should(Succeed(), "MCPServer controller did not discover tools from fake upstream")
+		})
+	})
+

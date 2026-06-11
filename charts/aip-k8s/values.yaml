@@ -40,6 +40,14 @@ gateway:
   # at this path and mints Ed25519 JWT tokens on AgentRequest approval.
   # Leave empty to disable JWT minting.
   jwtKeyPath: ""
+  # oidcExchange configures the gateway's client credentials for RFC 8693 token exchange.
+  # Required when any AgentRegistration uses the KubernetesOIDC credential type.
+  # The client secret is read from the named K8s Secret.
+  oidcExchange:
+    clientID: ""
+    clientSecretRef:
+      name: ""
+      key: "client-secret"
   # unregisteredAgentPolicy controls gateway behavior for agents that have no
   # AgentRegistration CR. Valid values:
   #   "allow"  (default) — agent proceeds; no registration check enforced.

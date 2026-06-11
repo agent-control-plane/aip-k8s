@@ -14,10 +14,6 @@ on:
       - 'docs/**'
       - '**/*.md'
   workflow_dispatch:
-    inputs:
-      pat:
-        description: 'GitHub PAT for MCP tests (or use AIP_E2E_GITHUB_PAT secret)'
-        required: false
 
 env:
   KIND_VERSION: v0.31.0
@@ -57,6 +53,4 @@ jobs:
           go mod tidy
           make test-e2e-mcp
         env:
-          AIP_E2E_GITHUB_PAT: ${{ secrets.AIP_E2E_GITHUB_PAT }}
-          GH_TOKEN: ${{ secrets.AIP_E2E_GITHUB_PAT }}
           CERT_MANAGER_INSTALL_SKIP: "true"

@@ -77,18 +77,65 @@ setup-test-e2e: kubectl ## Set up a Kind cluster for e2e tests if it does not ex
 		*"$(KIND_CLUSTER)"*) \
 			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
 		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
+			echo "Generating OIDC certs..."; \
+			go run scripts/generate_certs.go test/fixtures/certs; \
+			echo "Creating Kind cluster '$(KIND_CLUSTER)' with OIDC configuration..."; \
+			$(KIND) create cluster --name $(KIND_CLUSTER) --config test/fixtures/kind-oidc.yaml ;; \
 	esac
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) OIDC_KIND_CLUSTER=true go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 30m
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+
+.PHONY: setup-dev-cluster
+setup-dev-cluster: setup-test-e2e manifests generate fmt vet ## Set up OIDC Kind cluster, build/load controller, deploy Keycloak + mcp servers + certs + RBAC for development
+	@echo "Building manager image..."
+	$(MAKE) docker-build IMG=example.com/aip-k8s:v0.0.1
+	@echo "Loading manager image..."
+	$(KIND) load docker-image example.com/aip-k8s:v0.0.1 --name $(KIND_CLUSTER)
+	@echo "Installing CRDs..."
+	$(MAKE) install
+	@echo "Deploying controller-manager..."
+	$(MAKE) deploy IMG=example.com/aip-k8s:v0.0.1
+	@echo "Creating keycloak namespace..."
+	kubectl create ns keycloak --dry-run=client -o yaml | kubectl apply -f -
+	@echo "Creating keycloak-tls secret..."
+	kubectl create secret tls keycloak-tls --cert=test/fixtures/certs/keycloak.crt --key=test/fixtures/certs/keycloak.key -n keycloak --dry-run=client -o yaml | kubectl apply -f -
+	@echo "Deploying Keycloak..."
+	kubectl apply -f test/fixtures/keycloak-dev.yaml
+	@echo "Waiting for Keycloak deployment to be ready..."
+	kubectl rollout status deployment/keycloak -n keycloak --timeout=180s
+	@echo "Installing socat inside control plane node container..."
+	docker exec $(KIND_CLUSTER)-control-plane sh -c "apt-get update && apt-get install -y socat"
+	@echo "Starting socat redirect tunnel inside control plane node..."
+	docker exec $(KIND_CLUSTER)-control-plane pkill -f socat || true
+	docker exec -d $(KIND_CLUSTER)-control-plane socat TCP-LISTEN:18091,fork,reuseaddr TCP:keycloak.keycloak.svc.cluster.local:8443
+	@echo "Configuring Keycloak realm and clients..."
+	go run scripts/setup_keycloak.go
+	@echo "Deploying K8s MCP server..."
+	kubectl apply -f config/mcp/k8s-mcp-server.yaml
+	@echo "Waiting for K8s MCP server deployment to be ready..."
+	kubectl rollout status deployment/k8s-mcp-server -n aip-k8s-system --timeout=180s
+	@echo "Applying MCPServer CR..."
+	kubectl apply -f config/mcp/k8s-mcp-server-cr.yaml
+	@echo "Setting up RBAC ClusterRole and ClusterRoleBinding for aip-agent-1..."
+	kubectl apply -f test/fixtures/rbac-aip-agent-1.yaml
+	@echo "Building gateway image..."
+	docker build -f Dockerfile.gateway -t example.com/aip-gateway:v0.0.1 .
+	@echo "Loading gateway image..."
+	$(KIND) load docker-image example.com/aip-gateway:v0.0.1 --name $(KIND_CLUSTER)
+	@echo "Creating gateway-ca-cert secret..."
+	kubectl create secret generic gateway-ca-cert --from-file=ca.crt=test/fixtures/certs/ca.crt -n aip-k8s-system --dry-run=client -o yaml | kubectl apply -f -
+	@echo "Deploying gateway..."
+	kubectl apply -f test/fixtures/gateway-dev.yaml
+	@echo "Waiting for gateway deployment to be ready..."
+	kubectl rollout status deployment/aip-gateway -n aip-k8s-system --timeout=180s
+	@echo "Development cluster setup completed successfully! Feel free to run/debug the gateway locally or via port-forward."
 
 KIND_CLUSTER_MCP ?= aip-k8s-test-mcp
 

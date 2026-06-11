@@ -23,10 +23,12 @@ const regWatchRetryDelay = 2 * time.Second
 
 // registrationCache is a thread-safe in-memory cache of AgentRegistration CRDs.
 type registrationCache struct {
-	k8sClient client.Client
-	mu        sync.RWMutex
-	byAgent   map[string]*v1alpha1.AgentRegistration
-	providers map[string]map[string]credential.Provider // agentIdentity -> service -> Provider
+	k8sClient        client.Client
+	oidcClientID     string
+	oidcClientSecret string
+	mu               sync.RWMutex
+	byAgent          map[string]*v1alpha1.AgentRegistration
+	providers        map[string]map[string]credential.Provider // agentIdentity -> service -> Provider
 }
 
 func newRegistrationCache(k8sClient client.Client) *registrationCache {
@@ -35,6 +37,14 @@ func newRegistrationCache(k8sClient client.Client) *registrationCache {
 		byAgent:   make(map[string]*v1alpha1.AgentRegistration),
 		providers: make(map[string]map[string]credential.Provider),
 	}
+}
+
+// withOIDCCredentials sets the client credentials used for KubernetesOIDC token exchange.
+// Call once at startup before watchAgentRegistrations begins.
+func (c *registrationCache) withOIDCCredentials(clientID, clientSecret string) *registrationCache {
+	c.oidcClientID = clientID
+	c.oidcClientSecret = clientSecret
+	return c
 }
 
 // getForSubject looks up a registration by claimed agent identity and/or caller subject.
@@ -128,13 +138,21 @@ func (c *registrationCache) listAgents() []string {
 	return out
 }
 
-// upsert atomically replaces the cached entry and instantiates its credential providers.
+// upsert adds or updates the cached entry. Providers are only rebuilt when the
+// spec actually changes (Generation increments), so status-only watch events
+// and relist reconnects do not evict cached exchanged tokens unnecessarily.
 func (c *registrationCache) upsert(reg *v1alpha1.AgentRegistration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	agentID := reg.Spec.AgentIdentity
 	if agentID == "" {
+		return
+	}
+
+	// Status updates, annotation/label changes, and relist reconnects do not
+	// change Generation. Skip the provider rebuild to preserve cached tokens.
+	if existing, ok := c.byAgent[agentID]; ok && existing.Generation == reg.Generation {
 		return
 	}
 
@@ -163,13 +181,27 @@ func (c *registrationCache) upsert(reg *v1alpha1.AgentRegistration) {
 				)
 			}
 		case v1alpha1.ExternalIdentityAWSWebIdentity:
-			provider = credential.NewAWSWebIdentityProvider()
+			if binding.AWSWebIdentity != nil {
+				provider = credential.NewAWSWebIdentityProvider(
+					binding.AWSWebIdentity.RoleARN,
+					binding.AWSWebIdentity.RoleSessionName,
+					binding.AWSWebIdentity.Region,
+					binding.AWSWebIdentity.DurationSeconds,
+					binding.AWSWebIdentity.STSEndpoint,
+				)
+			}
 		case v1alpha1.ExternalIdentityKubernetesOIDC:
 			if binding.KubernetesOIDC != nil {
+				if c.oidcClientID == "" {
+					log.Printf("WARNING: KubernetesOIDC binding for agent %q service %q: "+
+						"OIDC_CLIENT_ID is unset — token exchange will be unauthenticated; "+
+						"set gateway.oidcExchange.clientID in Helm values or OIDC_CLIENT_ID env var",
+						agentID, binding.Service)
+				}
 				provider = credential.NewKubernetesOIDCProvider(
 					binding.KubernetesOIDC.TokenExchangeURL,
 					binding.KubernetesOIDC.Audience,
-				)
+				).WithCredentials(c.oidcClientID, c.oidcClientSecret)
 			}
 		case v1alpha1.ExternalIdentityKubernetesTokenRequest:
 			if binding.KubernetesTokenRequest != nil {

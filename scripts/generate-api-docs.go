@@ -1,8 +1,9 @@
+//go:build ignore
+
 // scripts/generate-api-docs.go
 // Auto-generates the Gateway API endpoints table in docs/api-reference.md
 // from HandleFunc registrations in cmd/gateway/main.go.
 //
-//go:build ignore
 package main
 
 import (
@@ -15,46 +16,46 @@ import (
 )
 
 var handlerDescriptions = map[string]string{
-	"WhoAmI":                      "Return current authenticated identity",
-	"ListAgentRequests":           "List AgentRequests",
-	"CreateAgentRequest":          "Submit an AgentRequest",
-	"GetAgentRequest":             "Get an AgentRequest by name",
-	"WatchAgentRequest":           "Watch an AgentRequest via SSE",
-	"ExecutingAgentRequest":       "Signal agent started executing",
-	"CompletedAgentRequest":       "Signal agent completed the action",
-	"PutAgentRequestResult":       "Record execution result for an AgentRequest",
-	"ApproveAgentRequest":         "Approve an AgentRequest",
-	"DenyAgentRequest":            "Deny an AgentRequest",
-	"VerdictAgentRequest":         "Submit a verdict (correct/incorrect)",
-	"ListAuditRecords":            "List AuditRecords",
-	"RecomputeAccuracy":           "Trigger accuracy recomputation",
-	"ListAccuracySummaries":       "List DiagnosticAccuracySummaries",
-	"ListAgentTrustProfiles":      "List AgentTrustProfiles",
-	"GetAgentTrustProfile":        "Get an AgentTrustProfile by name",
-	"CreateGovernedResource":      "Create a GovernedResource",
-	"ListGovernedResources":       "List GovernedResources",
-	"GetGovernedResource":         "Get a GovernedResource by name",
-	"ReplaceGovernedResource":     "Replace a GovernedResource",
-	"DeleteGovernedResource":      "Delete a GovernedResource",
-	"CreateSafetyPolicy":          "Create a SafetyPolicy",
-	"ListSafetyPolicies":          "List SafetyPolicies",
-	"GetSafetyPolicy":             "Get a SafetyPolicy by name",
-	"ReplaceSafetyPolicy":         "Replace a SafetyPolicy",
-	"DeleteSafetyPolicy":          "Delete a SafetyPolicy",
-	"CreateAgentGraduationPolicy": "Create an AgentGraduationPolicy",
-	"ListAgentGraduationPolicies": "List AgentGraduationPolicies",
-	"GetAgentGraduationPolicy":    "Get an AgentGraduationPolicy by name",
+	"WhoAmI":                       "Return current authenticated identity",
+	"ListAgentRequests":            "List AgentRequests",
+	"CreateAgentRequest":           "Submit an AgentRequest",
+	"GetAgentRequest":              "Get an AgentRequest by name",
+	"WatchAgentRequest":            "Watch an AgentRequest via SSE",
+	"ExecutingAgentRequest":        "Signal agent started executing",
+	"CompletedAgentRequest":        "Signal agent completed the action",
+	"PutAgentRequestResult":        "Record execution result for an AgentRequest",
+	"ApproveAgentRequest":          "Approve an AgentRequest",
+	"DenyAgentRequest":             "Deny an AgentRequest",
+	"VerdictAgentRequest":          "Submit a verdict (correct/incorrect)",
+	"ListAuditRecords":             "List AuditRecords",
+	"RecomputeAccuracy":            "Trigger accuracy recomputation",
+	"ListAccuracySummaries":        "List DiagnosticAccuracySummaries",
+	"ListAgentTrustProfiles":       "List AgentTrustProfiles",
+	"GetAgentTrustProfile":         "Get an AgentTrustProfile by name",
+	"CreateGovernedResource":       "Create a GovernedResource",
+	"ListGovernedResources":        "List GovernedResources",
+	"GetGovernedResource":          "Get a GovernedResource by name",
+	"ReplaceGovernedResource":      "Replace a GovernedResource",
+	"DeleteGovernedResource":       "Delete a GovernedResource",
+	"CreateSafetyPolicy":           "Create a SafetyPolicy",
+	"ListSafetyPolicies":           "List SafetyPolicies",
+	"GetSafetyPolicy":              "Get a SafetyPolicy by name",
+	"ReplaceSafetyPolicy":          "Replace a SafetyPolicy",
+	"DeleteSafetyPolicy":           "Delete a SafetyPolicy",
+	"CreateAgentGraduationPolicy":  "Create an AgentGraduationPolicy",
+	"ListAgentGraduationPolicies":  "List AgentGraduationPolicies",
+	"GetAgentGraduationPolicy":     "Get an AgentGraduationPolicy by name",
 	"ReplaceAgentGraduationPolicy": "Replace an AgentGraduationPolicy",
-	"DeleteAgentGraduationPolicy": "Delete an AgentGraduationPolicy",
-	"CreateAgentRegistration":     "Create an AgentRegistration",
+	"DeleteAgentGraduationPolicy":  "Delete an AgentGraduationPolicy",
+	"CreateAgentRegistration":      "Create an AgentRegistration",
 	"ListAgentRegistrations":       "List AgentRegistrations",
 	"GetAgentRegistration":         "Get an AgentRegistration by name",
 	"ReplaceAgentRegistration":     "Replace an AgentRegistration",
 	"DeleteAgentRegistration":      "Delete an AgentRegistration",
 	"GetAgentRequestToken":         "Get a brokered token for an AgentRequest",
-	"MCP":                        "Proxy MCP tool calls via JSON-RPC 2.0 (native MCP protocol)",
-	"MCPProxy":                   "Proxy MCP tool calls via REST (legacy, for non-MCP clients)",
-	"MCPRegistry":                "List available MCP servers and their tools",
+	"MCP":                          "Proxy MCP tool calls via JSON-RPC 2.0 (native MCP protocol)",
+	"MCPProxy":                     "Proxy MCP tool calls via REST (legacy, for non-MCP clients)",
+	"MCPRegistry":                  "List available MCP servers and their tools",
 }
 
 type route struct {

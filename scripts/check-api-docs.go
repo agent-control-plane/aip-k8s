@@ -1,7 +1,8 @@
+//go:build ignore
+
 // scripts/check-api-docs.go
 // Lint: fail if docs/api-reference.md is out of sync with cmd/gateway/main.go.
 //
-//go:build ignore
 package main
 
 import (

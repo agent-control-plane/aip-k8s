@@ -83,7 +83,10 @@ func (c *TokenCache) GetOrFetch(
 		}
 		c.mu.RUnlock()
 
-		token, expiry, err := fetch(ctx)
+		// Detach from the first caller's context so a single canceled request
+		// does not abort the in-flight exchange for all concurrent waiters.
+		// The provider's own HTTP timeout (15 s) bounds the exchange duration.
+		token, expiry, err := fetch(context.WithoutCancel(ctx))
 		if err != nil {
 			return "", err
 		}
@@ -139,7 +142,9 @@ func (c *TokenCache) Get(ctx context.Context) (string, error) {
 		}
 		c.mu.RUnlock()
 
-		token, expiresAt, err := c.fetch(ctx)
+		// Detach from the first caller's context so a single canceled request
+		// does not abort the in-flight fetch for all concurrent waiters.
+		token, expiresAt, err := c.fetch(context.WithoutCancel(ctx))
 		if err != nil {
 			return "", err
 		}
