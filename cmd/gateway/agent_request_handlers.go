@@ -129,18 +129,13 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		if s.regCache != nil {
 			if reg = s.regCache.getForSubject("", sub); reg != nil {
 				agentIdentity = reg.Spec.AgentIdentity
-			} else {
-				reg = s.regCache.get(agentIdentity)
-				if reg != nil {
-					if err := validateOIDCSubject(reg, sub); err != nil {
-						writeError(w, http.StatusForbidden, fmt.Sprintf("IDENTITY_MISMATCH: %v", err))
-						return
-					}
-					agentIdentity = reg.Spec.AgentIdentity
+			} else if reg = s.regCache.get(agentIdentity); reg != nil {
+				if err := validateOIDCSubject(reg, sub); err != nil {
+					writeError(w, http.StatusForbidden, fmt.Sprintf("IDENTITY_MISMATCH: %v", err))
+					return
 				}
+				agentIdentity = reg.Spec.AgentIdentity
 			}
-		} else {
-			agentIdentity = sub
 		}
 	} else if agentIdentity == "" {
 		agentIdentity = "unauthenticated"

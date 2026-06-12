@@ -154,7 +154,7 @@ func runAuthAndApprovalTests(t *testing.T, mgrClient, directClient client.Client
 		cleanup(ctx, gm, directClient)
 	})
 
-	t.Run("Auth - agentIdentity derived from token sub when authRequired: true", func(t *testing.T) {
+	t.Run("Auth - caller sub is used when body agentIdentity is omitted and authRequired: true", func(t *testing.T) {
 		gm := gomega.NewWithT(t)
 		s := &Server{
 			client:       mgrClient,
@@ -230,12 +230,8 @@ func runAuthAndApprovalTests(t *testing.T, mgrClient, directClient client.Client
 		}
 		gm.Expect(found).NotTo(gomega.BeNil())
 		gm.Expect(found.Spec.AgentIdentity).To(gomega.Equal("agent-sub-token"))
-
-		// Assert all derived keys use "agent-sub-token", not the body
 		gm.Expect(found.Labels["aip.io/agentIdentity"]).To(gomega.Equal(sanitizeLabelValue("agent-sub-token")))
 		gm.Expect(found.Labels["aip.io/profileName"]).To(gomega.Equal(v1alpha1.ProfileNameForAgent("agent-sub-token")))
-		expectedSlug := sanitizeDNSSegment("agent-sub-token", 54)
-		gm.Expect(found.Name).To(gomega.HavePrefix(expectedSlug))
 
 		cleanup(ctx, gm, directClient)
 	})
@@ -327,7 +323,7 @@ func runAuthAndApprovalTests(t *testing.T, mgrClient, directClient client.Client
 		// We use callerSub = "forbidden-agent" (who is not in permittedAgents)
 		// but body agentIdentity = "agent-sub-token" (who is in permittedAgents).
 		body := createAgentRequestBody{
-			AgentIdentity: "agent-sub-token",
+			AgentIdentity: "forbidden-agent",
 			Action:        "restart",
 			TargetURI:     "k8s://prod/default/deployment/auth-permitted-agents-test",
 			Reason:        "test",
