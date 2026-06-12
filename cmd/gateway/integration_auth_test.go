@@ -320,8 +320,9 @@ func runAuthAndApprovalTests(t *testing.T, mgrClient, directClient client.Client
 			return mgrClient.Get(ctx, types.NamespacedName{Name: gr.Name}, &checkGR)
 		}, eventuallyTimeout).Should(gomega.Succeed())
 
-		// We use callerSub = "forbidden-agent" (who is not in permittedAgents)
-		// but body agentIdentity = "agent-sub-token" (who is in permittedAgents).
+		// We use callerSub = "forbidden-agent" and body agentIdentity = "forbidden-agent".
+		// Since authRequired=true and they match, the handler derives identity from the caller.
+		// "forbidden-agent" is not in permittedAgents, so the request is rejected.
 		body := createAgentRequestBody{
 			AgentIdentity: "forbidden-agent",
 			Action:        "restart",
