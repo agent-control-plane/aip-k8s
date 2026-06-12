@@ -119,16 +119,41 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 	}
 
 	agentIdentity := body.AgentIdentity
-	if agentIdentity == "" {
-		if s.authRequired {
-			agentIdentity = sub
+	var reg *v1alpha1.AgentRegistration
+	if s.authRequired {
+		if s.regCache != nil {
+			if agentIdentity != "" {
+				reg = s.regCache.get(agentIdentity)
+				if reg != nil {
+					if err := validateOIDCSubject(reg, sub); err != nil {
+						writeError(w, http.StatusForbidden, fmt.Sprintf("IDENTITY_MISMATCH: %v", err))
+						return
+					}
+					agentIdentity = reg.Spec.AgentIdentity
+				} else {
+					agentIdentity = sub
+				}
+			} else if reg = s.regCache.getForSubject("", sub); reg != nil {
+				agentIdentity = reg.Spec.AgentIdentity
+			} else {
+				agentIdentity = sub
+				reg = s.regCache.get(agentIdentity)
+				if reg != nil {
+					if err := validateOIDCSubject(reg, sub); err != nil {
+						writeError(w, http.StatusForbidden, fmt.Sprintf("IDENTITY_MISMATCH: %v", err))
+						return
+					}
+					agentIdentity = reg.Spec.AgentIdentity
+				}
+			}
 		} else {
-			agentIdentity = "unauthenticated"
+			agentIdentity = sub
 		}
+	} else if agentIdentity == "" {
+		agentIdentity = "unauthenticated"
 	}
 
-	var reg *v1alpha1.AgentRegistration
-	if s.regCache != nil {
+	if !s.authRequired && s.regCache != nil {
 		reg = s.regCache.get(agentIdentity)
 		if reg != nil {
 			agentIdentity = reg.Spec.AgentIdentity
@@ -179,7 +204,7 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 	if s.regCache != nil {
 		if reg == nil {
 			switch s.unregisteredAgentPolicy {
-			case "strict":
+			case policyStrict:
 				writeError(w, http.StatusForbidden,
 					fmt.Sprintf("AGENT_NOT_REGISTERED: agent %q has no AgentRegistration", agentIdentity))
 				return
