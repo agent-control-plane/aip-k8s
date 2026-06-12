@@ -196,7 +196,7 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		rrWrong := httptest.NewRecorder()
 		s.handleCreateAgentRequest(rrWrong, reqWrong)
 		gm.Expect(rrWrong.Code).To(gomega.Equal(http.StatusForbidden))
-		gm.Expect(rrWrong.Body.String()).To(gomega.ContainSubstring("IDENTITY_MISMATCH"))
+		gm.Expect(rrWrong.Body.String()).To(gomega.ContainSubstring("agentIdentity does not match authenticated subject"))
 
 		// 6. Registered agent, OIDC == nil on registration -> 201 when the caller subject matches the identity.
 		regNilOIDC := &v1alpha1.AgentRegistration{
@@ -287,7 +287,7 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		sEmptyOIDC.handleCreateAgentRequest(rrEmptyOIDCPost, reqEmptyOIDCPost)
 		gm.Expect(rrEmptyOIDCPost.Code).To(gomega.Equal(http.StatusCreated))
 
-		// 8. Registered agent, empty AllowedSubjects, mismatched sub -> 403 IDENTITY_MISMATCH
+		// 8. Registered agent, empty AllowedSubjects, mismatched sub -> 403 mismatch.
 		reqEmptyOIDCWrong := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBodyEmptyOIDC))
 		reqEmptyOIDCWrongCtx := withCallerSub(reqEmptyOIDCWrong.Context(), "someone-else")
 		reqEmptyOIDCWrongCtx = withCallerGroups(reqEmptyOIDCWrongCtx, []string{})
@@ -295,7 +295,7 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		rrEmptyOIDCWrong := httptest.NewRecorder()
 		sEmptyOIDC.handleCreateAgentRequest(rrEmptyOIDCWrong, reqEmptyOIDCWrong)
 		gm.Expect(rrEmptyOIDCWrong.Code).To(gomega.Equal(http.StatusForbidden))
-		gm.Expect(rrEmptyOIDCWrong.Body.String()).To(gomega.ContainSubstring("IDENTITY_MISMATCH"))
+		gm.Expect(rrEmptyOIDCWrong.Body.String()).To(gomega.ContainSubstring("agentIdentity does not match authenticated subject"))
 
 		cleanup(ctx, gm, directClient)
 	})
