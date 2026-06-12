@@ -485,16 +485,63 @@ The `singleflight.Group` deduplicates concurrent exchanges: if 10 requests arriv
 simultaneously for the same agent when the cache is cold, only one STS/Azure call is
 made. The other 9 wait on the in-flight result.
 
-### 3. Gateway: AgentRegistration watch and credential resolution
+### 3. Gateway: AgentRegistration watch, naming, and credential resolution
 
-The gateway adds an `AgentRegistration` informer/cache. This is the same watch pattern
-used for `MCPServer` CRDs today (`cmd/gateway/mcp_watch.go`).
+#### Identity model and storage
+
+`agentIdentity` is **flat and globally unique within an AIP deployment's trust domain**.
+It never carries a namespace — the protocol is K8s-independent and must survive a
+move to any other storage backend unchanged. K8s namespace is a storage detail:
+the gateway stores all registrations in its own deployment namespace, read at startup
+from the `POD_NAMESPACE` env var (downward API). Same convention controllers already
+use for leader election leases. No flag, no config, never exposed in any API shape,
+error message, or client tool — exactly as Kubernetes never exposes which namespace
+is `kube-system` as a configuration option.
+
+Uniqueness is anchored in the IdP: the bootstrap carve-out enforces
+`agentIdentity == token subject` at self-registration time, and an IdP cannot issue
+two clients with the same subject. Cross-issuer collisions (cluster SA issuer vs
+enterprise IdP both happen to have a `payment-bot`) are rare in practice (SA subjects
+are prefixed `system:serviceaccount:…`) and handled by first-wins + admin arbitration
+— the same contract as any flat registry.
+
+#### Deterministic naming and atomic dedup
+
+Following the same pattern introduced for AgentRequests in #232 (which eliminated a
+List→Create race): the gateway derives the K8s object name deterministically from
+`agentIdentity`, making K8s `Create` the sole dedup primitive. No pre-flight existence
+check, no race window.
+
+```go
+// registrationObjectName returns the stable K8s metadata.name for an agentIdentity.
+// Format: <dns-slug>-<8 hex chars of sha256(agentIdentity)>
+// The hash suffix prevents sanitization collisions:
+//   "payment.bot" and "payment-bot" both sanitize to "payment-bot" but differ in hash.
+// Total length bounded to ≤ 63 chars.
+func registrationObjectName(agentIdentity string) string {
+    h := sha256.Sum256([]byte(agentIdentity))
+    suffix := hex.EncodeToString(h[:])[:8]
+    slug := sanitizeDNSSegment(agentIdentity, 54)
+    return slug + "-" + suffix
+}
+```
+
+On `POST /agent-registrations`:
+- Gateway calls `registrationObjectName(body.AgentIdentity)` and attempts K8s `Create`.
+- `AlreadyExists` → HTTP 409 (first-wins; same as AgentRequest dedup semantics).
+- No list, no read-before-write, no race.
+
+#### Watch cache
+
+The gateway adds an `AgentRegistration` informer/cache watching its own deployment
+namespace (from `POD_NAMESPACE`). Same pattern as `MCPServer` today
+(`cmd/gateway/mcp_watch.go`).
 
 ```go
 // cmd/gateway/registration_watch.go
 
 // registrationCache is a read-through cache of AgentRegistration objects,
-// keyed by agentIdentity. Analogous to mcpServerCache for MCPServer CRDs.
+// keyed by agentIdentity (flat, not namespace-qualified).
 type registrationCache struct {
     mu          sync.RWMutex
     byAgent     map[string]*v1alpha1.AgentRegistration  // agentIdentity → Registration
@@ -535,6 +582,41 @@ if provider := s.regCache.providerFor(agentIdentity, mcpServerName); provider !=
     }
 }
 ```
+
+**Credential ceiling enforcement:**
+
+`providerFor` gates on `status.approvedServices` before returning a provider.
+An `externalIdentities` binding for a service that was not approved at registration
+time is silently inert — the caller falls through to the shared MCPServer token.
+This is the scope ceiling: registration approval is the authorization boundary for
+which services an agent may mint scoped credentials for.
+
+```go
+// registrationCache.providerFor — enforcement point
+func (c *registrationCache) providerFor(agentIdentity, service string) credential.Provider {
+    c.mu.RLock()
+    defer c.mu.RUnlock()
+    reg := c.byAgent[agentIdentity]
+    if reg == nil || reg.Status.Phase != "Approved" {
+        return nil
+    }
+    // Ceiling check: service must be in status.approvedServices.
+    if !slices.Contains(reg.Status.ApprovedServices, service) {
+        return nil  // binding exists but was not approved — inert
+    }
+    svcProviders := c.providers[agentIdentity]
+    if svcProviders == nil {
+        return nil
+    }
+    return svcProviders[service]
+}
+```
+
+Consequence: `auto` approval writes `status.approvedServices = spec.requestedServices`
+at creation time. `manual` approval writes only the admin-selected subset. An operator
+adding a new `externalIdentities` entry later must also get the new service approved
+(or re-run auto-approval) before the ceiling lifts. This prevents credential-scope
+creep via spec edits that bypass the approval gate.
 
 **Admission enforcement in `handleCreateAgentRequest`:**
 
@@ -621,7 +703,52 @@ No impersonation header. No elevated gateway SA permissions. The gateway service
 is used only for its own management operations (reading AgentRequests, GovernedResources,
 etc.) — not for agent tool calls that target the K8s MCP server.
 
-### 6. `--unregistered-agent-policy` flag
+### 6. MCPServer catalog and `requestedServices` validation
+
+#### `GET /services` — the advertised catalog
+
+```
+GET /services    roleAgent, roleReviewer, roleAdmin
+```
+
+Returns the MCPServer names available for registration in this deployment. The
+namespace is opaque to the caller — the gateway serves a flat list of names derived
+from its MCPServer watch cache. `aipctl services list` and `aipctl register
+--services ...` autocomplete consume this endpoint.
+
+Response:
+```json
+{ "services": ["github", "k8s", "bedrock", "azure-devops"] }
+```
+
+**Now:** the catalog = MCPServers in the gateway's own deployment namespace. These
+are operator-installed, platform-wide services visible to all authenticated callers.
+No configuration needed — the gateway already watches this namespace.
+
+**Later:** the catalog merges the gateway's namespace MCPServers with MCPServers in
+the tenant's assigned namespace (derived from claims, Phase 13a). The response
+remains a flat deduplicated list — the caller never sees namespace labels.
+
+#### Validation at registration time
+
+`spec.requestedServices` entries are validated against the catalog on
+`POST /agent-registrations`. An unknown service name is a 400 with the available
+names in the error body — the error teaches:
+
+```json
+{
+  "error": "unknown service \"datadog\"; available: [github, k8s, bedrock]"
+}
+```
+
+This enforces `requestedServices ⊆ knownMCPServers` at write time, which means
+`approvedServices` (the ceiling) is always a subset of real, named objects.
+No phantom service bindings can exist.
+
+The `externalIdentities[].service` field undergoes the same validation — a binding
+for an unknown MCPServer is rejected at registration, not silently ignored at runtime.
+
+### 7. `--unregistered-agent-policy` flag
 
 ```text
 --unregistered-agent-policy string
@@ -967,6 +1094,120 @@ Files:
 - Example operator under `examples/` consuming the wrapper in one line
 - e2e: operator pod in governed mode exercising the wrapped client against Kind
 
+### Phase 13 — Claims-scoped admin, GitHub App provider, chart hardening
+
+#### Phase 13a — Claims-scoped admin (multi-tenant)
+
+`roleAdmin` is global today — any admin can approve/deny any registration. For
+multi-team deployments, admin scope must be bounded to the set of agents the admin
+is responsible for, without exposing K8s namespace topology to the registration
+protocol.
+
+**Interface (to be settled before implementation):**
+
+Each registration is stamped at create time with a tenant label derived from the
+registrant's token claims:
+
+```
+governance.aip.io/tenant: <value>
+```
+
+The `--tenant-claim` flag (default: `groups[0]`, configurable) selects which OIDC
+claim to read. An admin's approve/deny calls succeed only when their own token carries
+a matching claim value, enforced server-side. This one mechanism serves three purposes:
+which admins can approve a registration, which MCPServers appear in that team's
+`GET /services` catalog (Phase 13a.ii), and (later) where registrations are stored
+when multi-namespace storage lands.
+
+No new CRD. No K8s namespace changes. The flag + label + server-side claim check is
+the entire implementation surface. Until this phase ships, global admin is the
+**documented** (not implicit) model and the architecture is built so this lands as
+an additive change with no migration.
+
+Files:
+- `cmd/gateway/agent_registration_handlers.go` — stamp `tenant` label on create;
+  enforce claim match on approve/deny
+- `cmd/gateway/main.go` — `--tenant-claim` flag
+- `cmd/gateway/registration_watch.go` — per-tenant catalog filtering by tenant
+  label on MCPServer (no flag; gateway namespace is the anchor)
+- Integration tests: admin with matching claim approves; admin without matching
+  claim gets 403; `GET /services` returns only tenant-matched services
+
+#### Phase 13b — GitHub App installation-token provider
+
+Removes long-lived PATs from agents that write to GitHub. The gateway holds the
+App's private key (a static config secret, not a per-agent secret); every token it
+mints is short-lived (≤1h), scoped to specific repos and permissions, and fully
+attributable in GitHub's audit log — the entry shows the App installation, not a
+shared PAT identity.
+
+```go
+// internal/credential/github_app.go
+
+// GitHubAppProvider exchanges the agent's OIDC token for a GitHub App installation
+// token. The provider holds nothing per-agent — the App private key is a one-time
+// gateway config item, not a credential stored per-registration.
+//
+// Flow:
+//   1. Sign a GitHub App JWT from the App's private key (RS256, 10-min TTL).
+//   2. GET /app/installations to find the installation for the target org/repo.
+//   3. POST /app/installations/{id}/access_tokens scoped to the requested repos
+//      and permissions. Returns a token valid for ≤1h.
+//
+// The agent's OIDC token is used for attribution (populates the `actor` field in
+// the access_token request if GitHub supports it), not for authentication.
+// Authentication to GitHub is via the signed App JWT.
+type GitHubAppProvider struct { ... }
+```
+
+New `ExternalIdentityType`:
+
+```go
+ExternalIdentityGitHubApp ExternalIdentityType = "GitHubApp"
+
+type GitHubAppCredential struct {
+    // AppID is the GitHub App's numeric ID.
+    AppID int64 `json:"appID"`
+    // PrivateKeySecretRef points to the K8s Secret holding the App's PEM private key.
+    PrivateKeySecretRef SecretKeyRef `json:"privateKeySecretRef"`
+    // InstallationID pins a specific installation. If zero, the provider
+    // discovers the installation for the target org at token-mint time.
+    // +optional
+    InstallationID int64 `json:"installationID,omitempty"`
+    // Repositories scopes the token to specific repos (empty = all installed repos).
+    // +optional
+    Repositories []string `json:"repositories,omitempty"`
+    // Permissions scopes the token (empty = all permissions the installation has).
+    // +optional
+    Permissions map[string]string `json:"permissions,omitempty"`
+}
+```
+
+Cache key: `(agentIdentity, appID, installationID, sha256(repos+perms))`.
+Output TTL: token expiry from GitHub response (≤1h). Refresh within 5-min buffer.
+
+Files:
+- `api/v1alpha1/agentregistration_types.go` — `GitHubApp` type + credential struct
+- `internal/credential/github_app.go` — provider implementation
+- `internal/credential/github_app_test.go` — httptest stub for GitHub API
+- `cmd/gateway/registration_watch.go` — construct `GitHubAppProvider` in `upsert`
+
+#### Phase 13c — Chart hardening
+
+Adoption blocker for any second deployer. All three items are independent and can
+land as a single PR:
+
+- `nodeSelector` and `tolerations` support for gateway and controller Deployments
+  (patched locally by multiple adopters; trivial upstream addition)
+- Remove `:latest` image tag default; use
+  `{{ .Values.image.tag | default .Chart.AppVersion }}` (already required by
+  CLAUDE.md Helm standards, just not applied)
+- Bump `Chart.AppVersion` past `0.1.0` to reflect the phases already shipped
+
+Files: `charts/aip-k8s/Chart.yaml`, `charts/aip-k8s/values.yaml`,
+`charts/aip-k8s/templates/deployment-gateway.yaml`,
+`charts/aip-k8s/templates/deployment-controller.yaml`
+
 ---
 
 ## Self-Service Registration and External Agents (`aipctl`)
@@ -1024,6 +1265,14 @@ type AgentRegistrationStatus struct {
     // humans across sessions).
     RegisteredBy string `json:"registeredBy,omitempty"`
 
+    // ApprovedServices is the admin-confirmed subset of spec.requestedServices.
+    // Under auto policy it equals requestedServices. Under manual policy the
+    // admin may approve a subset; bindings for unapproved services are inert
+    // even if externalIdentities carries a matching entry. This is the scope
+    // ceiling — see "Credential ceiling enforcement" in §3.
+    // +optional
+    ApprovedServices []string `json:"approvedServices,omitempty"`
+
     Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 ```
@@ -1054,6 +1303,35 @@ Behavior:
   Explicitly setting `strict` + `auto` remains allowed (authenticated self-service —
   identity vetting delegated entirely to the IdP) but the gateway logs a startup
   warning naming the trade-off.
+
+- **Registration is the authorization boundary, not the action gate.** An `Approved`
+  registration makes the agent *known* and sets the credential ceiling — it does not
+  grant the right to act. Every credential mint still flows through a separate approved
+  intent (for Governed agents, an approved `AgentRequest`; for Standing agents, an
+  approved session intent). The full authorization chain is:
+
+  ```
+  Authenticated (OIDC token valid)
+    → Registered (AgentRegistration Approved)
+      → Intent approved (AgentRequest / session intent Approved by policy/human)
+        → Credential minted within approvedServices ceiling
+          → Action executed
+  ```
+
+  Breaking any link blocks the action. `auto` registration shortens step 2 to
+  milliseconds; it does not bypass steps 3–5. `strict` enforces step 2 by hand;
+  steps 3–5 are unchanged regardless of registration policy.
+
+- **`auto` sets `approvedServices = requestedServices` atomically at creation.** The
+  approval handler writes `status.approvedServices` in the same patch that transitions
+  `status.phase → Approved`. There is no window where Phase=Approved but
+  `approvedServices` is empty. `manual` approval always requires an explicit body:
+
+  ```json
+  POST /agent-registrations/{name}/approve
+  { "approvedServices": ["k8s"] }   ← required; omitting = deny all services
+  ```
+
 - New routes (mirror AgentRequest lifecycle handlers):
 
 ```
@@ -1064,13 +1342,20 @@ GET  /agent-registrations/{name}/watch     SSE, owner or roleAdmin/roleReviewer
 
 - Pending registrations are denied-by-timeout after `--registration-pending-ttl`
   (default 168h) so abandoned requests don't accumulate as standing approval risk.
-- **Revoking a registration is not containment for Standing agents.** A Standing
-  agent's underlying access never depended on AIP — deleting or denying its
-  registration removes attribution and credential bindings, not the agent's own
-  RBAC. Containing a compromised Standing agent means revoking its underlying
-  RoleBinding/credentials directly. (For Governed agents, registration revocation
-  *does* cut off the only write path, since the mint stops.) Documentation and the
-  dashboard revoke flow must state this distinction.
+- **Revocation and kill-switch paths are mode-specific.** The dashboard revoke flow
+  and `aipctl registrations deny` must surface this table:
+
+  | Mode | What approval gave | Revocation effect | One-command kill-switch |
+  |---|---|---|---|
+  | Standing | attribution + audit | removes attribution + credential bindings; agent's own RBAC unchanged | `kubectl delete rolebinding <agent>` (out of AIP) |
+  | Governed | the only write path (mint stops) | agent loses all JIT tokens; in-flight sessions drain within TTL | `aipctl registrations deny <name>` |
+
+  For Standing agents the RoleBinding revocation is outside AIP by design — AIP
+  never created it. The dashboard must link to the relevant RBAC objects so an
+  operator can revoke with one click, even though AIP does not execute the deletion.
+  For Governed agents, `deny` transitions `status.phase → Denied`, removes the
+  registration from `registrationCache`, and the SSE watch notifies active `aipctl`
+  sessions so they surface an error immediately rather than waiting for token expiry.
 - **Approved registrations can re-attest**: optional `--registration-max-age`
   (default off) transitions Approved → Pending after the configured age, forcing
   re-approval so long-lived registrations don't quietly become standing risk.
@@ -1214,10 +1499,8 @@ kubeconfigs from repository secrets entirely.
 - **Auto-approval registration policies as a CRD** (`match issuer/groups →
   auto-approve with bindings`). The `--registration-policy=auto` flag covers the
   current need without a new noun.
-- **Per-tenant admin scoping**. `roleAdmin` is global today: any admin can
-  approve/deny any registration. Multi-team deployments will want "admin for
-  *these* agents/namespaces" — likely group-to-namespace mapping on the existing
-  groups claim. Deferred until a multi-tenant deployment demands it; until then,
+- **Per-tenant admin scoping** — moved to Phase 13a. Interface defined there;
+  implementation deferred until a multi-tenant deployment demands it. Until then,
   global admin is the documented (not implicit) model.
 
 ### Acceptance demo (laptop segment)
