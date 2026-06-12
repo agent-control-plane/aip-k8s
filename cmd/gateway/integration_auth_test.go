@@ -188,11 +188,10 @@ func runAuthAndApprovalTests(t *testing.T, mgrClient, directClient client.Client
 		}, eventuallyTimeout).Should(gomega.Succeed())
 
 		body := createAgentRequestBody{
-			AgentIdentity: "impersonated-agent-body",
-			Action:        "restart",
-			TargetURI:     "k8s://prod/default/deployment/auth-override-test",
-			Reason:        "test",
-			Namespace:     testDefaultNS,
+			Action:    "restart",
+			TargetURI: "k8s://prod/default/deployment/auth-override-test",
+			Reason:    "test",
+			Namespace: testDefaultNS,
 		}
 		jsonBody, err := json.Marshal(body)
 		gm.Expect(err).NotTo(gomega.HaveOccurred())
@@ -239,6 +238,57 @@ func runAuthAndApprovalTests(t *testing.T, mgrClient, directClient client.Client
 		gm.Expect(found.Name).To(gomega.HavePrefix(expectedSlug))
 
 		cleanup(ctx, gm, directClient)
+	})
+
+	t.Run("Auth - mismatched agentIdentity body is rejected when authRequired: true", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
+		s := &Server{
+			client:       mgrClient,
+			apiReader:    mgrClient,
+			dedupWindow:  0,
+			waitTimeout:  2 * time.Second,
+			roles:        newRoleConfig("agent-sub-token", testReviewerSub, "", "", "", ""),
+			authRequired: true,
+		}
+
+		gr := &v1alpha1.GovernedResource{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "auth-override-mismatch-gr",
+			},
+			Spec: v1alpha1.GovernedResourceSpec{
+				URIPattern:       "k8s://prod/default/deployment/auth-override-mismatch-test",
+				PermittedActions: []string{"restart"},
+				PermittedAgents:  []string{"agent-sub-token"},
+				ContextFetcher:   "none",
+			},
+		}
+		gm.Expect(directClient.Create(ctx, gr)).To(gomega.Succeed())
+		defer func() {
+			gm.Expect(directClient.Delete(ctx, gr)).To(gomega.Succeed())
+		}()
+
+		gm.Eventually(func() error {
+			var checkGR v1alpha1.GovernedResource
+			return mgrClient.Get(ctx, types.NamespacedName{Name: gr.Name}, &checkGR)
+		}, eventuallyTimeout).Should(gomega.Succeed())
+
+		body := createAgentRequestBody{
+			AgentIdentity: "impersonated-agent-body",
+			Action:        "restart",
+			TargetURI:     "k8s://prod/default/deployment/auth-override-mismatch-test",
+			Reason:        "test",
+			Namespace:     testDefaultNS,
+		}
+		jsonBody, err := json.Marshal(body)
+		gm.Expect(err).NotTo(gomega.HaveOccurred())
+
+		ctxWithAuth := withCallerSub(ctx, "agent-sub-token")
+		req := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody)).WithContext(ctxWithAuth)
+		rr := httptest.NewRecorder()
+
+		s.handleCreateAgentRequest(rr, req)
+		gm.Expect(rr.Code).To(gomega.Equal(http.StatusForbidden))
+		gm.Expect(rr.Body.String()).To(gomega.ContainSubstring("agentIdentity does not match authenticated subject"))
 	})
 
 	t.Run("Auth - permittedAgents check uses callerSub, not body when authRequired: true", func(t *testing.T) {

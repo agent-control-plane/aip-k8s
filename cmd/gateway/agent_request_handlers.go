@@ -121,22 +121,15 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 	agentIdentity := body.AgentIdentity
 	var reg *v1alpha1.AgentRegistration
 	if s.authRequired {
+		if agentIdentity != "" && agentIdentity != sub {
+			writeError(w, http.StatusForbidden, "agentIdentity does not match authenticated subject")
+			return
+		}
+		agentIdentity = sub
 		if s.regCache != nil {
-			if agentIdentity != "" {
-				reg = s.regCache.get(agentIdentity)
-				if reg != nil {
-					if err := validateOIDCSubject(reg, sub); err != nil {
-						writeError(w, http.StatusForbidden, fmt.Sprintf("IDENTITY_MISMATCH: %v", err))
-						return
-					}
-					agentIdentity = reg.Spec.AgentIdentity
-				} else {
-					agentIdentity = sub
-				}
-			} else if reg = s.regCache.getForSubject("", sub); reg != nil {
+			if reg = s.regCache.getForSubject("", sub); reg != nil {
 				agentIdentity = reg.Spec.AgentIdentity
 			} else {
-				agentIdentity = sub
 				reg = s.regCache.get(agentIdentity)
 				if reg != nil {
 					if err := validateOIDCSubject(reg, sub); err != nil {

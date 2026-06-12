@@ -126,6 +126,37 @@ func TestCreateAgentRequest_MissingAgentIdentityUsesUnauthenticatedRegistration(
 	g.Expect(created.Annotations["governance.aip.io/unregistered"]).To(gomega.Equal(""))
 }
 
+func TestCreateAgentRequest_RejectsMismatchedAuthenticatedAgentIdentity(t *testing.T) {
+	g := gomega.NewWithT(t)
+	s := newTestServer()
+
+	body := createAgentRequestBody{
+		AgentIdentity: "impersonated-agent-body",
+		Action:        "restart",
+		TargetURI:     "k8s://prod/default/deployment/auth-mismatch-test",
+		Reason:        "test",
+		Namespace:     "default",
+	}
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/agent-requests", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(withCallerSub(req.Context(), "agent-sub"))
+	w := httptest.NewRecorder()
+
+	s.handleCreateAgentRequest(w, req)
+
+	g.Expect(w.Code).To(gomega.Equal(http.StatusForbidden))
+	g.Expect(w.Body.String()).To(gomega.ContainSubstring("agentIdentity does not match authenticated subject"))
+
+	var list v1alpha1.AgentRequestList
+	g.Expect(s.client.List(context.Background(), &list, client.InNamespace("default"))).To(gomega.Succeed())
+	g.Expect(list.Items).To(gomega.BeEmpty())
+}
+
 //nolint:unparam // ns is always "default" in tests but kept for symmetry with pendingAgentRequest
 func approvedAgentRequest(name, ns, agentIdentity string) *v1alpha1.AgentRequest {
 	ar := pendingAgentRequest(name, ns, agentIdentity)
