@@ -108,11 +108,6 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	var reg *v1alpha1.AgentRegistration
-	if s.regCache != nil && body.AgentIdentity != "" {
-		reg = s.regCache.get(body.AgentIdentity)
-	}
-
 	// 1. Role check.
 	if s.authRequired {
 		if !requireRole(s.roles, roleAgent, sub, callerGroupsFromCtx(r.Context()), w) {
@@ -120,18 +115,33 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	var agentIdentity string
-	if reg != nil {
-		agentIdentity = reg.Spec.AgentIdentity
-	} else {
-		if s.authRequired {
-			agentIdentity = sub
-		} else {
-			if body.AgentIdentity == "" {
-				writeError(w, http.StatusBadRequest, "agentIdentity is required when running without authentication")
-				return
+	agentIdentity := body.AgentIdentity
+	var reg *v1alpha1.AgentRegistration
+	if s.authRequired {
+		if agentIdentity != "" && agentIdentity != sub {
+			writeError(w, http.StatusForbidden, "agentIdentity does not match authenticated subject")
+			return
+		}
+		agentIdentity = sub
+		if s.regCache != nil {
+			if reg = s.regCache.getForSubject("", sub); reg != nil {
+				agentIdentity = reg.Spec.AgentIdentity
+			} else if reg = s.regCache.get(agentIdentity); reg != nil {
+				if err := validateOIDCSubject(reg, sub); err != nil {
+					writeError(w, http.StatusForbidden, fmt.Sprintf("IDENTITY_MISMATCH: %v", err))
+					return
+				}
+				agentIdentity = reg.Spec.AgentIdentity
 			}
-			agentIdentity = body.AgentIdentity
+		}
+	} else if agentIdentity == "" {
+		agentIdentity = "unauthenticated"
+	}
+
+	if !s.authRequired && s.regCache != nil {
+		reg = s.regCache.get(agentIdentity)
+		if reg != nil {
+			agentIdentity = reg.Spec.AgentIdentity
 		}
 	}
 
@@ -179,13 +189,13 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 	if s.regCache != nil {
 		if reg == nil {
 			switch s.unregisteredAgentPolicy {
-			case "strict":
+			case policyStrict:
 				writeError(w, http.StatusForbidden,
-					fmt.Sprintf("AGENT_NOT_REGISTERED: agent %q has no AgentRegistration", body.AgentIdentity))
+					fmt.Sprintf("AGENT_NOT_REGISTERED: agent %q has no AgentRegistration", agentIdentity))
 				return
 			case "warn":
 				log.Printf("Unregistered AgentRequest submitted agentIdentity=%q policy=%q",
-					body.AgentIdentity, s.unregisteredAgentPolicy)
+					agentIdentity, s.unregisteredAgentPolicy)
 				if agentReq.Annotations == nil {
 					agentReq.Annotations = map[string]string{}
 				}

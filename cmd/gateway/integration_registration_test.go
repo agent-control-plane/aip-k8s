@@ -164,11 +164,10 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		}
 
 		body := createAgentRequestBody{
-			AgentIdentity: "agent-1",
-			Action:        "restart",
-			TargetURI:     "k8s://prod/default/deployment/approval-test-oidc",
-			Reason:        "test",
-			Namespace:     testDefaultNS,
+			Action:    "restart",
+			TargetURI: "k8s://prod/default/deployment/approval-test-oidc",
+			Reason:    "test",
+			Namespace: testDefaultNS,
 		}
 		jsonBody, _ := json.Marshal(body)
 
@@ -182,16 +181,24 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		gm.Expect(rrOk.Code).To(gomega.Equal(http.StatusCreated))
 
 		// 5. Call with wrong subject -> 403, body contains IDENTITY_MISMATCH
-		reqWrong := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody))
+		bodyWrong := createAgentRequestBody{
+			AgentIdentity: "agent-1",
+			Action:        "restart",
+			TargetURI:     "k8s://prod/default/deployment/approval-test-oidc",
+			Reason:        "test",
+			Namespace:     testDefaultNS,
+		}
+		jsonBodyWrong, _ := json.Marshal(bodyWrong)
+		reqWrong := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBodyWrong))
 		reqWrongCtx := withCallerSub(reqWrong.Context(), "sub-wrong")
 		reqWrongCtx = withCallerGroups(reqWrongCtx, []string{})
 		reqWrong = reqWrong.WithContext(reqWrongCtx)
 		rrWrong := httptest.NewRecorder()
 		s.handleCreateAgentRequest(rrWrong, reqWrong)
 		gm.Expect(rrWrong.Code).To(gomega.Equal(http.StatusForbidden))
-		gm.Expect(rrWrong.Body.String()).To(gomega.ContainSubstring("IDENTITY_MISMATCH"))
+		gm.Expect(rrWrong.Body.String()).To(gomega.ContainSubstring("agentIdentity does not match authenticated subject"))
 
-		// 6. Registered agent, OIDC == nil on registration -> 201 (nil OIDC = no subject enforcement)
+		// 6. Registered agent, OIDC == nil on registration -> 201 when the caller subject matches the identity.
 		regNilOIDC := &v1alpha1.AgentRegistration{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-agent-nil-oidc",
@@ -211,7 +218,7 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 			apiReader:               directClient,
 			dedupWindow:             0,
 			waitTimeout:             serverWaitTimeout,
-			roles:                   newRoleConfig("any-sub,agent-nil-oidc", "", "", "", "", ""),
+			roles:                   newRoleConfig("agent-nil-oidc", "", "", "", "", ""),
 			authRequired:            true,
 			regCache:                regCache,
 			unregisteredAgentPolicy: "strict",
@@ -226,7 +233,7 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		}
 		jsonBodyNilOIDC, _ := json.Marshal(bodyNilOIDC)
 		reqNilOIDCPost := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBodyNilOIDC))
-		reqNilOIDCPostCtx := withCallerSub(reqNilOIDCPost.Context(), "any-sub")
+		reqNilOIDCPostCtx := withCallerSub(reqNilOIDCPost.Context(), "agent-nil-oidc")
 		reqNilOIDCPostCtx = withCallerGroups(reqNilOIDCPostCtx, []string{})
 		reqNilOIDCPost = reqNilOIDCPost.WithContext(reqNilOIDCPostCtx)
 		rrNilOIDCPost := httptest.NewRecorder()
@@ -280,7 +287,7 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		sEmptyOIDC.handleCreateAgentRequest(rrEmptyOIDCPost, reqEmptyOIDCPost)
 		gm.Expect(rrEmptyOIDCPost.Code).To(gomega.Equal(http.StatusCreated))
 
-		// 8. Registered agent, empty AllowedSubjects, mismatched sub -> 403 IDENTITY_MISMATCH
+		// 8. Registered agent, empty AllowedSubjects, mismatched sub -> 403 mismatch.
 		reqEmptyOIDCWrong := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBodyEmptyOIDC))
 		reqEmptyOIDCWrongCtx := withCallerSub(reqEmptyOIDCWrong.Context(), "someone-else")
 		reqEmptyOIDCWrongCtx = withCallerGroups(reqEmptyOIDCWrongCtx, []string{})
@@ -288,7 +295,7 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		rrEmptyOIDCWrong := httptest.NewRecorder()
 		sEmptyOIDC.handleCreateAgentRequest(rrEmptyOIDCWrong, reqEmptyOIDCWrong)
 		gm.Expect(rrEmptyOIDCWrong.Code).To(gomega.Equal(http.StatusForbidden))
-		gm.Expect(rrEmptyOIDCWrong.Body.String()).To(gomega.ContainSubstring("IDENTITY_MISMATCH"))
+		gm.Expect(rrEmptyOIDCWrong.Body.String()).To(gomega.ContainSubstring("agentIdentity does not match authenticated subject"))
 
 		cleanup(ctx, gm, directClient)
 	})
