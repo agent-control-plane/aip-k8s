@@ -935,7 +935,7 @@ Files:
 
 Files:
 - `api/v1alpha1/agentregistration_types.go` — `spec.mode`, `spec.requestedServices`,
-  `status.phase`, `status.operatedBy`, conditions; `make generate && make manifests`
+  `status.phase`, `status.registeredBy`, conditions; `make generate && make manifests`
 - `cmd/gateway/agent_registration_handlers.go` — self-registration carve-out
   (identity == token subject, exempt from strict policy), approve/deny handlers
   (mirror `agent_request_lifecycle_handlers.go`), SSE watch
@@ -987,6 +987,12 @@ considered and deferred — see Deferred Work below.)
 approve it — mirroring the AgentRequest approve/deny pattern (same roles, same audit
 records, same handler shape).
 
+**An `Approved` registration grants no capability by itself.** Approval makes the
+agent *known* — eligible for credential flows and attributable in audit. Every
+credential still flows through an approved intent / session-intent with its own
+policy evaluation. `requestedServices` declares which bindings exist, not what the
+agent may do with them; policies decide that per action or per session.
+
 Spec additions:
 
 ```go
@@ -1010,10 +1016,13 @@ type AgentRegistrationStatus struct {
     // Phase: "" | Pending | Approved | Denied
     Phase string `json:"phase,omitempty"`
 
-    // OperatedBy records the human identity whose login submitted this
+    // RegisteredBy records the human identity whose login submitted this
     // registration (laptop/script agents). Set by the gateway from the
-    // authenticated caller; immutable thereafter.
-    OperatedBy string `json:"operatedBy,omitempty"`
+    // authenticated caller; immutable thereafter. This answers "who registered
+    // it" — per-action operator attribution comes from the per-exchange `act`
+    // claim, not this field (a shared or CI agent is operated by different
+    // humans across sessions).
+    RegisteredBy string `json:"registeredBy,omitempty"`
 
     Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
@@ -1027,8 +1036,24 @@ Behavior:
   even under `--unregistered-agent-policy=strict`. This is the only endpoint exempt
   from the registration check. Authentication is still required.
 - **Approval gate is a dial, default open**: `--registration-policy=auto|manual`.
-  `auto` (default) approves immediately on creation — registration feels like
-  installing a GitHub App. `manual` holds at Pending for admin approve/deny.
+  `auto` approves immediately on creation — registration feels like installing a
+  GitHub App — and grants **all** `requestedServices` as requested (subset selection
+  is a manual-mode capability; there is no admin in the loop to choose one).
+  `manual` holds at Pending for admin approve/deny, optionally with a service subset.
+- **Defaults compose safely with `--unregistered-agent-policy`.** Under `strict`,
+  auto self-registration would make any *authenticated* caller registered
+  immediately — `strict` would degrade from a vetting gate to a mere authentication
+  gate, which is not what operators selecting `strict` expect. Therefore the
+  unset default of `--registration-policy` is mode-dependent:
+
+  | `--unregistered-agent-policy` | `--registration-policy` default | Result |
+  |---|---|---|
+  | `allow` / `warn` | `auto` | frictionless self-service onboarding |
+  | `strict` | `manual` | human-vetted registration |
+
+  Explicitly setting `strict` + `auto` remains allowed (authenticated self-service —
+  identity vetting delegated entirely to the IdP) but the gateway logs a startup
+  warning naming the trade-off.
 - New routes (mirror AgentRequest lifecycle handlers):
 
 ```
@@ -1039,6 +1064,17 @@ GET  /agent-registrations/{name}/watch     SSE, owner or roleAdmin/roleReviewer
 
 - Pending registrations are denied-by-timeout after `--registration-pending-ttl`
   (default 168h) so abandoned requests don't accumulate as standing approval risk.
+- **Revoking a registration is not containment for Standing agents.** A Standing
+  agent's underlying access never depended on AIP — deleting or denying its
+  registration removes attribution and credential bindings, not the agent's own
+  RBAC. Containing a compromised Standing agent means revoking its underlying
+  RoleBinding/credentials directly. (For Governed agents, registration revocation
+  *does* cut off the only write path, since the mint stops.) Documentation and the
+  dashboard revoke flow must state this distinction.
+- **Approved registrations can re-attest**: optional `--registration-max-age`
+  (default off) transitions Approved → Pending after the configured age, forcing
+  re-approval so long-lived registrations don't quietly become standing risk.
+  Re-attestation of an active agent under `auto` policy is a no-op by design.
 
 ### `aipctl`
 
@@ -1059,7 +1095,10 @@ Key behaviors:
 
 - **Zero-config bootstrap**: the gateway serves a discovery document
   (`GET /.well-known/aip`) carrying issuer URL, client ID, and device endpoint.
-  `aipctl login` needs only the gateway URL.
+  `aipctl login` needs only the gateway URL. The document exposes nothing beyond
+  standard public OIDC discovery fields — the client ID is a public client
+  (device flow / PKCE, no secret), and the issuer/device endpoints are already
+  public at the IdP's own `/.well-known/openid-configuration`.
 - **Exec credential plugin**: `aipctl kubeconfig` emits a kubeconfig whose
   `users[].user.exec` invokes `aipctl token`. kubectl/client-go calls it on demand;
   aipctl presents the cached login token, the gateway evaluates a session intent,
@@ -1099,9 +1138,13 @@ sub: cleanup-script          # the agent
 act: { sub: ravi@example }   # the human whose login enabled it
 ```
 
-The gateway populates `act` from the login identity during exchange and records it
-as `status.operatedBy` on the registration. The K8s audit log then answers:
-*"cleanup-script, operated by ravi, scaled payment-api, under approval X."*
+The gateway populates `act` from the login identity **at each exchange** — this
+per-session claim is the authoritative record of who operated a given action, and
+it is what audit consumers must read. `status.registeredBy` is static provenance
+("who registered this agent"), not operator attribution: a shared or CI agent is
+operated by different humans across sessions, and only the per-exchange `act`
+claim tracks that. The K8s audit log then answers: *"cleanup-script, operated by
+ravi (this session), scaled payment-api, under approval X."*
 
 ### Client library: `aip-go` (operators that cannot change)
 
@@ -1123,6 +1166,12 @@ mgr, _ := ctrl.NewManager(cfg, opts)                          // unchanged
   subscribes to the SSE stream.
 - **SDK is sugar, never plumbing**: nothing requires the library; an unwrapped
   client simply sees standard 403s on expired sessions and retries.
+- **One client core, multiple skins**: `aipctl` and `aip-go` share a single Go
+  package for login/device-flow, discovery, session-intent submission, and token
+  refresh — the CLI and the transport wrapper are thin frontends over it, so the
+  protocol cannot drift between them. The future Python port reimplements the
+  same documented HTTP protocol (discovery + session intent + mint), not a
+  second design.
 - Python port follows once the Go shape settles.
 
 ### Multi-issuer trust
@@ -1165,6 +1214,11 @@ kubeconfigs from repository secrets entirely.
 - **Auto-approval registration policies as a CRD** (`match issuer/groups →
   auto-approve with bindings`). The `--registration-policy=auto` flag covers the
   current need without a new noun.
+- **Per-tenant admin scoping**. `roleAdmin` is global today: any admin can
+  approve/deny any registration. Multi-team deployments will want "admin for
+  *these* agents/namespaces" — likely group-to-namespace mapping on the existing
+  groups claim. Deferred until a multi-tenant deployment demands it; until then,
+  global admin is the documented (not implicit) model.
 
 ### Acceptance demo (laptop segment)
 
