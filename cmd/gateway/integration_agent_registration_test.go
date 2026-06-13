@@ -328,8 +328,8 @@ func runAgentRegistrationCRUDTests(t *testing.T, directClient client.Client, ctx
 			req = req.WithContext(ctx2)
 			rr := httptest.NewRecorder()
 			ss.handleCreateAgentRequest(rr, req)
-			gm.Expect(rr.Code).To(gomega.Equal(http.StatusForbidden))
-			gm.Expect(rr.Body.String()).To(gomega.ContainSubstring("IDENTITY_MISMATCH"))
+			gm2.Expect(rr.Code).To(gomega.Equal(http.StatusForbidden))
+			gm2.Expect(rr.Body.String()).To(gomega.ContainSubstring("IDENTITY_MISMATCH"))
 		})
 
 		// --- Token tests ---
