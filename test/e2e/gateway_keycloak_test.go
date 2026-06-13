@@ -38,7 +38,7 @@ const (
 	kcRegisteredAgentSecret = "reg-agent-secret"
 
 	// kcWrongSubjectID is a valid OIDC client whose azp is NOT listed in the
-	// registered agent's AllowedSubjects. Used to exercise IDENTITY_MISMATCH.
+	// registered agent's AllowedSubjects. Used to exercise subject mismatch rejection.
 	kcWrongSubjectID     = "aip-wrong-subject"
 	kcWrongSubjectSecret = "wrong-subject-secret"
 
@@ -64,7 +64,7 @@ const (
 // Phase 8 extends the Keycloak OIDC integration with registration policy enforcement
 // and credential brokering validation.
 //
-//   - Policy tests (strict/IDENTITY_MISMATCH/registered success) exercise the
+//   - Policy tests (strict/subject-mismatch/registered success) exercise the
 //     K8s watch → registrationCache → gateway enforcement path with real Keycloak tokens.
 //     The logic branches themselves are covered by unit-level integration tests;
 //     what is unique here is the real K8s watch and real JWT azp claim extraction.
@@ -204,7 +204,7 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 		agentSubjects := strings.Join([]string{
 			kcRegisteredAgentID, // tests 3, 4, 5
 			"aip-agent-1",       // test 1: unregistered agent strict rejection
-			kcWrongSubjectID,    // test 2: IDENTITY_MISMATCH
+			kcWrongSubjectID,    // test 2: subject mismatch rejection
 		}, ",")
 		gwProc = exec.Command(binPath,
 			"--addr=:"+kc8GWPort,
@@ -290,7 +290,7 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 		Expect(string(b)).To(ContainSubstring("AGENT_NOT_REGISTERED"))
 	})
 
-	It("wrong OIDC subject claiming registered identity → 403 IDENTITY_MISMATCH", func() {
+	It("wrong OIDC subject claiming registered identity -> 403 subject mismatch", func() {
 		// aip-wrong-subject's azp is "aip-wrong-subject", which is not in the
 		// AgentRegistration's AllowedSubjects for "aip-registered-agent".
 		token := kcFetchToken(kcPort, kcRealm, kcWrongSubjectID, kcWrongSubjectSecret)
@@ -354,7 +354,7 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 		Expect(err).NotTo(HaveOccurred())
 		defer resp.Body.Close() //nolint:errcheck
 		Expect(resp.StatusCode).To(Equal(http.StatusOK))
-		Expect(fakeMCP.lastAuth()).To(Equal("Bearer " + kcStaticUpstreamToken),
+		Expect(fakeMCP.lastAuth()).To(Equal("Bearer "+kcStaticUpstreamToken),
 			"upstream should receive per-agent static credential, not shared MCPServer token")
 	})
 

@@ -296,7 +296,8 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		sEmptyOIDC.handleCreateAgentRequest(rrEmptyOIDCWrong, reqEmptyOIDCWrong)
 		gm.Expect(rrEmptyOIDCWrong.Code).To(gomega.Equal(http.StatusForbidden))
 		gm.Expect(rrEmptyOIDCWrong.Body.String()).To(
-			gomega.ContainSubstring("agentIdentity does not match authenticated subject"))
+			gomega.ContainSubstring("agentIdentity does not match authenticated subject"),
+		)
 
 		cleanup(ctx, gm, directClient)
 	})
