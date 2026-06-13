@@ -55,6 +55,7 @@ make build-gateway
 | `PUT` | `/agent-registrations/{name}` | Replace an AgentRegistration |
 | `PUT` | `/governed-resources/{name}` | Replace a GovernedResource |
 | `PUT` | `/safety-policies/{name}` | Replace a SafetyPolicy |
+| `POST` | `/agent-registrations/self` | Self-register as an agent (agent role) |
 | `PATCH` | `/agent-requests/{name}/verdict` | Submit a verdict (correct/incorrect) |
 | `GET` | `/agent-requests/{name}/watch` | Watch an AgentRequest via SSE |
 | `GET` | `/whoami` | Return current authenticated identity |
@@ -141,6 +142,7 @@ The gateway supports OIDC/JWT authentication. When enabled, every non-healthz re
 | `GET /agent-registrations`, `GET /agent-registrations/{name}` | `reviewer` or `admin` |
 | `PUT /agent-registrations/{name}` | `admin` |
 | `DELETE /agent-registrations/{name}` | `admin` |
+| `POST /agent-registrations/self` | `agent` |
 | `POST /agent-graduation-policies` | `admin` |
 | `GET /agent-graduation-policies`, `GET /agent-graduation-policies/{name}` | `admin` |
 | `PUT /agent-graduation-policies/{name}` | `admin` |

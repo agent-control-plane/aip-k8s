@@ -101,7 +101,10 @@ var _ = Describe("Registration policy tests", Ordered, func() {
 		Expect(string(b)).To(ContainSubstring("AGENT_NOT_REGISTERED"))
 	})
 
-	It("wrong OIDC subject claiming registered identity → 403 IDENTITY_MISMATCH", func() {
+	It("agent without registration spoofing another identity → 403 AGENT_NOT_REGISTERED", func() {
+		// Token identity is "wrong-agent" (from azp claim); body claims "registered-agent".
+		// Gateway looks up by sub="wrong-agent" — no registration found → strict policy fires.
+		// The body.agentIdentity is ignored when auth is required.
 		token := oidcServer.mintTokenWithAZP("wrong-agent", "aip-gateway", "wrong-agent", 5*time.Minute)
 		resp, err := gwPostWithToken(gwPort, "/agent-requests", fmt.Sprintf(`{
 			"agentIdentity": %q,
@@ -113,7 +116,7 @@ var _ = Describe("Registration policy tests", Ordered, func() {
 		defer resp.Body.Close() //nolint:errcheck
 		Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
 		b, _ := io.ReadAll(resp.Body)
-		Expect(string(b)).To(ContainSubstring("IDENTITY_MISMATCH"))
+		Expect(string(b)).To(ContainSubstring("AGENT_NOT_REGISTERED"))
 	})
 
 	It("registered agent with matching OIDC subject → 201", func() {

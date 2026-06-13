@@ -193,9 +193,11 @@ func newOIDCMiddleware(
 				return
 			}
 			groups := claimStringSlice(allClaims, groupsClaim)
+			issuer := claimString(allClaims, "iss")
 			rctx := withCallerSub(r.Context(), identity)
 			rctx = withCallerGroups(rctx, groups)
 			rctx = withRawOIDCToken(rctx, raw)
+			rctx = withCallerIssuer(rctx, issuer)
 			next.ServeHTTP(w, r.WithContext(rctx))
 		})
 	}, nil

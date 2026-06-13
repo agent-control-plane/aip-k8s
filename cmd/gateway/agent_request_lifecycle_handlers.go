@@ -393,13 +393,19 @@ func (s *Server) handleListAgentRequests(w http.ResponseWriter, r *http.Request)
 	}
 }
 
-// validateOIDCSubject checks whether sub appears in reg.Spec.OIDC.AllowedSubjects.
-// Returns nil when the registration has no OIDC config (no subject enforcement).
-// Replaces the old equality check that used 400 and required exact agentIdentity==sub.
-func validateOIDCSubject(reg *v1alpha1.AgentRegistration, sub string) error {
+// validateOIDCIdentity checks whether (issuer, sub) matches the AgentRegistration.
+// Both the issuer URL and the subject must match; a mismatch on either is a 403.
+// Returns nil when the registration has no OIDC config.
+func validateOIDCIdentity(reg *v1alpha1.AgentRegistration, issuer, sub string) error {
 	if reg.Spec.OIDC == nil {
 		return nil
 	}
+	// Issuer check: token iss must match the registered issuer exactly.
+	if issuer != reg.Spec.OIDC.Issuer {
+		return fmt.Errorf("token issuer %q does not match registered issuer %q for agent %q",
+			issuer, reg.Spec.OIDC.Issuer, reg.Spec.AgentIdentity)
+	}
+	// Subject check: same logic as before.
 	if len(reg.Spec.OIDC.AllowedSubjects) > 0 {
 		if slices.Contains(reg.Spec.OIDC.AllowedSubjects, sub) {
 			return nil
@@ -407,7 +413,6 @@ func validateOIDCSubject(reg *v1alpha1.AgentRegistration, sub string) error {
 		return fmt.Errorf("token subject %q not in allowedSubjects for agent %q",
 			sub, reg.Spec.AgentIdentity)
 	}
-	// Fallback when AllowedSubjects is empty: sub must match the agent identity (or sub is empty)
 	if sub == "" || sub == reg.Spec.AgentIdentity {
 		return nil
 	}

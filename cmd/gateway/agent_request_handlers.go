@@ -109,8 +109,22 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 	}
 
 	var reg *v1alpha1.AgentRegistration
-	if s.regCache != nil && body.AgentIdentity != "" {
-		reg = s.regCache.get(body.AgentIdentity)
+	if s.authRequired {
+		// Auth on: derive identity from the trusted token, not the request body.
+		// Try direct match on agentIdentity == sub first (covers self-registered
+		// agents), then fall back to scanning AllowedSubjects (covers admin-created
+		// registrations where agentIdentity != sub).
+		if s.regCache != nil && sub != "" {
+			reg = s.regCache.get(sub)
+			if reg == nil {
+				reg = s.regCache.getForSubject("", sub)
+			}
+		}
+	} else {
+		// Auth off: fall back to body identity (dev mode).
+		if s.regCache != nil && body.AgentIdentity != "" {
+			reg = s.regCache.get(body.AgentIdentity)
+		}
 	}
 
 	// 1. Role check.
@@ -181,11 +195,11 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 			switch s.unregisteredAgentPolicy {
 			case "strict":
 				writeError(w, http.StatusForbidden,
-					fmt.Sprintf("AGENT_NOT_REGISTERED: agent %q has no AgentRegistration", body.AgentIdentity))
+					fmt.Sprintf("AGENT_NOT_REGISTERED: agent %q has no AgentRegistration", agentIdentity))
 				return
 			case "warn":
 				log.Printf("Unregistered AgentRequest submitted agentIdentity=%q policy=%q",
-					body.AgentIdentity, s.unregisteredAgentPolicy)
+					agentIdentity, s.unregisteredAgentPolicy)
 				if agentReq.Annotations == nil {
 					agentReq.Annotations = map[string]string{}
 				}
@@ -193,7 +207,8 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 			}
 			// "allow": proceed silently — backward-compatible default
 		} else {
-			if err := validateOIDCSubject(reg, sub); err != nil {
+			issuer := callerIssuerFromCtx(r.Context())
+			if err := validateOIDCIdentity(reg, issuer, sub); err != nil {
 				writeError(w, http.StatusForbidden, fmt.Sprintf("IDENTITY_MISMATCH: %v", err))
 				return
 			}

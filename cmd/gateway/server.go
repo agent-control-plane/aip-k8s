@@ -23,6 +23,7 @@ type contextKey string
 const callerSubKey contextKey = "callerSub"
 const callerGroupsKey contextKey = "callerGroups"
 const rawOIDCTokenKey contextKey = "rawOIDCToken"
+const callerIssuerKey contextKey = "callerIssuer"
 
 func withCallerSub(ctx context.Context, sub string) context.Context {
 	return context.WithValue(ctx, callerSubKey, sub)
@@ -48,6 +49,15 @@ func withRawOIDCToken(ctx context.Context, token string) context.Context {
 
 func rawOIDCTokenFromCtx(ctx context.Context) string {
 	s, _ := ctx.Value(rawOIDCTokenKey).(string)
+	return s
+}
+
+func withCallerIssuer(ctx context.Context, issuer string) context.Context {
+	return context.WithValue(ctx, callerIssuerKey, issuer)
+}
+
+func callerIssuerFromCtx(ctx context.Context) string {
+	s, _ := ctx.Value(callerIssuerKey).(string)
 	return s
 }
 

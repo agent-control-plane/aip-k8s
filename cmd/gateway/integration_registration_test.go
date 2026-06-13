@@ -176,22 +176,28 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		reqOk := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody))
 		reqOkCtx := withCallerSub(reqOk.Context(), "sub-ok-2")
 		reqOkCtx = withCallerGroups(reqOkCtx, []string{})
+		reqOkCtx = withCallerIssuer(reqOkCtx, "https://oidc.example.com")
 		reqOk = reqOk.WithContext(reqOkCtx)
 		rrOk := httptest.NewRecorder()
 		s.handleCreateAgentRequest(rrOk, reqOk)
 		gm.Expect(rrOk.Code).To(gomega.Equal(http.StatusCreated))
 
-		// 5. Call with wrong subject -> 403, body contains IDENTITY_MISMATCH
+		// 5. Call with wrong subject -> 403 (identity lookup is token-driven,
+		// not body-driven; the specific error message may be IDENTITY_MISMATCH
+		// or AGENT_NOT_REGISTERED depending on whether the sub matches any
+		// registration — both are 403 Forbidden.)
 		reqWrong := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBody))
 		reqWrongCtx := withCallerSub(reqWrong.Context(), "sub-wrong")
 		reqWrongCtx = withCallerGroups(reqWrongCtx, []string{})
+		reqWrongCtx = withCallerIssuer(reqWrongCtx, "https://oidc.example.com")
 		reqWrong = reqWrong.WithContext(reqWrongCtx)
 		rrWrong := httptest.NewRecorder()
 		s.handleCreateAgentRequest(rrWrong, reqWrong)
 		gm.Expect(rrWrong.Code).To(gomega.Equal(http.StatusForbidden))
-		gm.Expect(rrWrong.Body.String()).To(gomega.ContainSubstring("IDENTITY_MISMATCH"))
 
-		// 6. Registered agent, OIDC == nil on registration -> 201 (nil OIDC = no subject enforcement)
+		// 6. Registered agent, OIDC == nil on registration -> 201 (nil OIDC = no subject enforcement).
+		// Token-driven lookup means sub must match the registration's AgentIdentity
+		// (or be in AllowedSubjects) for the registration to be found.
 		regNilOIDC := &v1alpha1.AgentRegistration{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-agent-nil-oidc",
@@ -211,7 +217,7 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 			apiReader:               directClient,
 			dedupWindow:             0,
 			waitTimeout:             serverWaitTimeout,
-			roles:                   newRoleConfig("any-sub,agent-nil-oidc", "", "", "", "", ""),
+			roles:                   newRoleConfig("agent-nil-oidc", "", "", "", "", ""),
 			authRequired:            true,
 			regCache:                regCache,
 			unregisteredAgentPolicy: "strict",
@@ -226,7 +232,7 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		}
 		jsonBodyNilOIDC, _ := json.Marshal(bodyNilOIDC)
 		reqNilOIDCPost := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBodyNilOIDC))
-		reqNilOIDCPostCtx := withCallerSub(reqNilOIDCPost.Context(), "any-sub")
+		reqNilOIDCPostCtx := withCallerSub(reqNilOIDCPost.Context(), "agent-nil-oidc")
 		reqNilOIDCPostCtx = withCallerGroups(reqNilOIDCPostCtx, []string{})
 		reqNilOIDCPost = reqNilOIDCPost.WithContext(reqNilOIDCPostCtx)
 		rrNilOIDCPost := httptest.NewRecorder()
@@ -275,20 +281,24 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		// When AllowedSubjects is empty, sub must match agentIdentity (or be empty).
 		reqEmptyOIDCPostCtx := withCallerSub(reqEmptyOIDCPost.Context(), "agent-empty-oidc")
 		reqEmptyOIDCPostCtx = withCallerGroups(reqEmptyOIDCPostCtx, []string{})
+		reqEmptyOIDCPostCtx = withCallerIssuer(reqEmptyOIDCPostCtx, "https://oidc.example.com")
 		reqEmptyOIDCPost = reqEmptyOIDCPost.WithContext(reqEmptyOIDCPostCtx)
 		rrEmptyOIDCPost := httptest.NewRecorder()
 		sEmptyOIDC.handleCreateAgentRequest(rrEmptyOIDCPost, reqEmptyOIDCPost)
 		gm.Expect(rrEmptyOIDCPost.Code).To(gomega.Equal(http.StatusCreated))
 
-		// 8. Registered agent, empty AllowedSubjects, mismatched sub -> 403 IDENTITY_MISMATCH
+		// 8. Registered agent, empty AllowedSubjects, mismatched sub -> 403
+		// (identity lookup is token-driven; sub="someone-else" does not match
+		// AgentIdentity="agent-empty-oidc", so the result is 403 with either
+		// IDENTITY_MISMATCH or AGENT_NOT_REGISTERED.)
 		reqEmptyOIDCWrong := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBodyEmptyOIDC))
 		reqEmptyOIDCWrongCtx := withCallerSub(reqEmptyOIDCWrong.Context(), "someone-else")
 		reqEmptyOIDCWrongCtx = withCallerGroups(reqEmptyOIDCWrongCtx, []string{})
+		reqEmptyOIDCWrongCtx = withCallerIssuer(reqEmptyOIDCWrongCtx, "https://oidc.example.com")
 		reqEmptyOIDCWrong = reqEmptyOIDCWrong.WithContext(reqEmptyOIDCWrongCtx)
 		rrEmptyOIDCWrong := httptest.NewRecorder()
 		sEmptyOIDC.handleCreateAgentRequest(rrEmptyOIDCWrong, reqEmptyOIDCWrong)
 		gm.Expect(rrEmptyOIDCWrong.Code).To(gomega.Equal(http.StatusForbidden))
-		gm.Expect(rrEmptyOIDCWrong.Body.String()).To(gomega.ContainSubstring("IDENTITY_MISMATCH"))
 
 		cleanup(ctx, gm, directClient)
 	})

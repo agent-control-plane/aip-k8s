@@ -287,6 +287,7 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 	mux.HandleFunc("GET /agent-registrations/{name}", server.handleGetAgentRegistration)
 	mux.HandleFunc("PUT /agent-registrations/{name}", server.handleReplaceAgentRegistration)
 	mux.HandleFunc("DELETE /agent-registrations/{name}", server.handleDeleteAgentRegistration)
+	mux.HandleFunc("POST /agent-registrations/self", server.handleSelfRegisterAgentRegistration)
 	mux.HandleFunc("POST /agent-graduation-policies", server.handleCreateAgentGraduationPolicy)
 	mux.HandleFunc("GET /agent-graduation-policies", server.handleListAgentGraduationPolicies)
 	mux.HandleFunc("GET /agent-graduation-policies/{name}", server.handleGetAgentGraduationPolicy)

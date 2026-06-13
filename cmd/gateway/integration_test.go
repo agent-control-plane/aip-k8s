@@ -105,6 +105,7 @@ func TestGatewayIntegration(t *testing.T) {
 	runSSEStreamingTests(t, mgrClient, directClient, watchClient, ctx)
 	runRegistrationIntegrationTests(t, directClient, ctx)
 	runAgentRegistrationCRUDTests(t, directClient, ctx)
+	runSelfRegistrationTests(t, directClient, ctx)
 }
 
 func startTestManager(t *testing.T, cfg *rest.Config) client.Client {
