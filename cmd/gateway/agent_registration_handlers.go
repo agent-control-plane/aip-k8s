@@ -2,15 +2,23 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 )
+
+type selfRegisterRequest struct {
+	RequestedServices []string                       `json:"requestedServices,omitempty"`
+	Mode              v1alpha1.AgentRegistrationMode `json:"mode,omitempty"`
+}
 
 // handleCreateAgentRegistration creates a new AgentRegistration.
 func (s *Server) handleCreateAgentRegistration(w http.ResponseWriter, r *http.Request) {
@@ -210,4 +218,69 @@ func (s *Server) handleDeleteAgentRegistration(w http.ResponseWriter, r *http.Re
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// handleSelfRegisterAgentRegistration allows an authenticated agent to register itself.
+// The agent's identity, issuer, and namespace are derived from the authenticated request,
+// not from the request body. Only requestedServices and mode may be provided in the body.
+func (s *Server) handleSelfRegisterAgentRegistration(w http.ResponseWriter, r *http.Request) {
+	sub := callerSubFromCtx(r.Context())
+	issuer := callerIssuerFromCtx(r.Context())
+
+	if s.authRequired && sub == "" {
+		writeError(w, http.StatusUnauthorized, "caller identity required")
+		return
+	}
+
+	groups := callerGroupsFromCtx(r.Context())
+	if !requireRole(s.roles, roleAgent, sub, groups, w) {
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
+
+	var body selfRegisterRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	ns := defaultNamespace
+
+	mode := body.Mode
+	if mode == "" {
+		mode = v1alpha1.AgentRegistrationModeStanding
+	}
+
+	if sub == "" {
+		writeError(w, http.StatusBadRequest, "agent identity not available")
+		return
+	}
+
+	reg := &v1alpha1.AgentRegistration{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      v1alpha1.RegistrationObjectName(sub),
+			Namespace: ns,
+		},
+		Spec: v1alpha1.AgentRegistrationSpec{
+			AgentIdentity:     sub,
+			Mode:              mode,
+			RequestedServices: body.RequestedServices,
+			OIDC: &v1alpha1.AgentRegistrationOIDC{
+				Issuer: issuer,
+			},
+		},
+	}
+
+	if err := s.client.Create(r.Context(), reg); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			writeError(w, http.StatusConflict, fmt.Sprintf("agent %q is already registered", sub))
+			return
+		}
+		log.Printf("ERROR: failed to self-register agent %q: %v", sub, err)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, reg)
 }

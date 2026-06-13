@@ -193,7 +193,8 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 			}
 			// "allow": proceed silently — backward-compatible default
 		} else {
-			if err := validateOIDCSubject(reg, sub); err != nil {
+			issuer := callerIssuerFromCtx(r.Context())
+			if err := validateOIDCIdentity(reg, issuer, sub); err != nil {
 				writeError(w, http.StatusForbidden, fmt.Sprintf("IDENTITY_MISMATCH: %v", err))
 				return
 			}
