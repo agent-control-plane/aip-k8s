@@ -58,7 +58,8 @@ type AgentTrustProfileReconciler struct {
 // +kubebuilder:rbac:groups=governance.aip.io,resources=diagnosticaccuracysummaries,verbs=get;list;watch
 // +kubebuilder:rbac:groups=governance.aip.io,resources=agentrequests,verbs=get;list;watch
 // +kubebuilder:rbac:groups=governance.aip.io,resources=auditrecords,verbs=create
-// +kubebuilder:rbac:groups=governance.aip.io,resources=agentregistrations,verbs=get;list;watch
+// +kubebuilder:rbac:groups=governance.aip.io,resources=agentregistrations,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=governance.aip.io,resources=agentregistrations/status,verbs=get;update;patch
 
 func (r *AgentTrustProfileReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)

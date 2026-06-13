@@ -20,6 +20,24 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// Registration condition types
+const (
+	// ConditionServiceBindingInert is True when an externalIdentities binding
+	// exists for a service that is not in status.approvedServices or no longer
+	// exists in the MCPServer catalog.
+	ConditionServiceBindingInert = "ServiceBindingInert"
+)
+
+// Reasons for ConditionServiceBindingInert
+const (
+	// ReasonServiceNotApproved means the service was not included in the
+	// admin-approved subset of requestedServices.
+	ReasonServiceNotApproved = "ServiceNotApproved"
+	// ReasonServiceNotFound means the MCPServer referenced in the binding
+	// no longer exists in the catalog.
+	ReasonServiceNotFound = "ServiceNotFound"
+)
+
 // ExternalIdentityType identifies the credential provider for an outbound binding.
 // +kubebuilder:validation:Enum=StaticSecret;AzureWorkloadIdentity;AWSWebIdentity;KubernetesOIDC;KubernetesTokenRequest
 type ExternalIdentityType string
@@ -181,6 +199,25 @@ type AgentRegistrationOIDC struct {
 	AllowedSubjects []string `json:"allowedSubjects,omitempty"`
 }
 
+// AgentRegistrationMode selects the credential posture for this agent.
+// +kubebuilder:validation:Enum=Standing;Governed
+type AgentRegistrationMode string
+
+const (
+	// AgentRegistrationModeStanding means the agent keeps its existing access;
+	// AIP provides attribution, shadow policies, and audit. This is the default
+	// posture — registration must never change an existing agent's behavior
+	// without explicit opt-in (design principle 1: the affected party consents).
+	// A Governed default would mean the act of registering cuts off an agent's
+	// write path — imposed, not chosen. Defaulting to Standing keeps enrollment
+	// a zero-risk observation step; the developer requests Governed, the admin
+	// countersigns. This is a considered decision, not an oversight.
+	AgentRegistrationModeStanding AgentRegistrationMode = "Standing"
+	// AgentRegistrationModeGoverned means writes flow through approved intents
+	// and JIT-minted tokens. The gateway is the only write path.
+	AgentRegistrationModeGoverned AgentRegistrationMode = "Governed"
+)
+
 // AgentRegistrationSpec defines the operator-declared identity configuration for
 // an agent.
 type AgentRegistrationSpec struct {
@@ -188,6 +225,19 @@ type AgentRegistrationSpec struct {
 	// GovernedResource.spec.permittedAgents, and AgentTrustProfile.spec.agentIdentity.
 	// +kubebuilder:validation:MinLength=1
 	AgentIdentity string `json:"agentIdentity"`
+
+	// Mode selects the credential posture for this agent.
+	//   "Standing" (default) — agent keeps its existing access; AIP provides
+	//   attribution, shadow policies, and audit. Pure addition, zero risk.
+	//   "Governed" — writes flow through approved intents + JIT-minted tokens.
+	// +kubebuilder:default=Standing
+	// +optional
+	Mode AgentRegistrationMode `json:"mode,omitempty"`
+
+	// RequestedServices lists the services the agent wants credential
+	// bindings for (e.g. "k8s", "github"). Admin may approve a subset.
+	// +optional
+	RequestedServices []string `json:"requestedServices,omitempty"`
 
 	// OIDC declares which OIDC tokens prove this agent's identity.
 	// When absent, the gateway falls back to --agent-subjects flag checks.
@@ -205,6 +255,27 @@ type AgentRegistrationSpec struct {
 
 // AgentRegistrationStatus defines the observed state of an AgentRegistration.
 type AgentRegistrationStatus struct {
+	// Phase is the lifecycle phase: "" | Pending | Approved | Denied.
+	// +optional
+	Phase string `json:"phase,omitempty"`
+
+	// RegisteredBy records the human identity whose login submitted this
+	// registration. Set by the gateway from the authenticated caller at
+	// creation time; immutable thereafter.
+	// +optional
+	RegisteredBy string `json:"registeredBy,omitempty"`
+
+	// ApprovedServices is the admin-confirmed subset of spec.requestedServices.
+	// Under auto policy it equals requestedServices. Under manual policy the
+	// admin may approve a subset.
+	// +optional
+	ApprovedServices []string `json:"approvedServices,omitempty"`
+
+	// ApprovedAt records when the registration last transitioned to Approved.
+	// Drives --registration-max-age re-attestation.
+	// +optional
+	ApprovedAt *metav1.Time `json:"approvedAt,omitempty"`
+
 	// Conditions represent the latest available observations of the registration's state.
 	// +optional
 	// +listType=map
@@ -215,6 +286,8 @@ type AgentRegistrationStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced,shortName=areg
+// +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=`.spec.mode`
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Agent",type=string,JSONPath=`.spec.agentIdentity`
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
