@@ -657,8 +657,12 @@ an agent may mint scoped credentials for.
 
 **Inertness is never silent.** Fail-closed fall-through is correct behavior but an
 operator debugging "why isn't my agent minting?" must not need gateway logs to find
-out. The controller (which gains a Registration watch in Phase 10 for pending-TTL)
-maintains a status condition per inert binding:
+out. The **controller is the sole writer of `AgentRegistration` status** — the
+stateless gateway never patches registration status (it would put an API write on
+the credential hot path and fight the controller for the field). The gateway fails
+closed and logs at `V(1)`; the controller, which gains a Registration watch in
+Phase 10 (pending-TTL, max-age), lists MCPServers on its watch/resync and maintains
+a status condition per inert binding:
 
 ```yaml
 status:
@@ -1474,6 +1478,17 @@ agent may do with them; policies decide that per action or per session.
 Spec additions:
 
 ```go
+// Printer columns make governance posture visible at a glance — `kubectl get
+// agentregistration` shows MODE and PHASE without -o yaml. This (not a Warning
+// condition on the Standing default) is the right way to surface mode: Standing
+// is the recommended onboarding posture, so a condition that fires True on it
+// would be condition-spam that trains operators to ignore the field. A column
+// is the idiomatic answer to "which of my agents are governed vs. observed?"
+// +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=`.spec.mode`
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+type AgentRegistration struct { /* root type carries the markers above */ }
+
 type AgentRegistrationSpec struct {
     // ... existing fields ...
 
