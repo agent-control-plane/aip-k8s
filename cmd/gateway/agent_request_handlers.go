@@ -108,9 +108,13 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	lookupID := body.AgentIdentity
+	if lookupID == "" {
+		lookupID = sub
+	}
 	var reg *v1alpha1.AgentRegistration
-	if s.regCache != nil && body.AgentIdentity != "" {
-		reg = s.regCache.get(body.AgentIdentity)
+	if s.regCache != nil && lookupID != "" {
+		reg = s.regCache.get(lookupID)
 	}
 
 	// 1. Role check.

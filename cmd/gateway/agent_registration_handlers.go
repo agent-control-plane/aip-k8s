@@ -232,6 +232,11 @@ func (s *Server) handleSelfRegisterAgentRegistration(w http.ResponseWriter, r *h
 		return
 	}
 
+	if issuer == "" {
+		writeError(w, http.StatusBadRequest, "OIDC issuer required for self-registration")
+		return
+	}
+
 	groups := callerGroupsFromCtx(r.Context())
 	if !requireRole(s.roles, roleAgent, sub, groups, w) {
 		return
@@ -275,6 +280,10 @@ func (s *Server) handleSelfRegisterAgentRegistration(w http.ResponseWriter, r *h
 	if err := s.client.Create(r.Context(), reg); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			writeError(w, http.StatusConflict, fmt.Sprintf("agent %q is already registered", sub))
+			return
+		}
+		if apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		log.Printf("ERROR: failed to self-register agent %q: %v", sub, err)
