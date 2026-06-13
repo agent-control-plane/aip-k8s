@@ -101,6 +101,16 @@ rules:
   - get
   - list
   - watch
+  - update
+  - patch
+- apiGroups:
+  - governance.aip.io
+  resources:
+  - agentregistrations/status
+  verbs:
+  - get
+  - update
+  - patch
 - apiGroups:
   - ""
   resources:

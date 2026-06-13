@@ -17,6 +17,12 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .spec.mode
+      name: Mode
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
     - jsonPath: .spec.agentIdentity
       name: Agent
       type: string
@@ -226,6 +232,17 @@ spec:
                 x-kubernetes-list-map-keys:
                 - service
                 x-kubernetes-list-type: map
+              mode:
+                default: Standing
+                description: |-
+                  Mode selects the credential posture for this agent.
+                    "Standing" (default) — agent keeps its existing access; AIP provides
+                    attribution, shadow policies, and audit. Pure addition, zero risk.
+                    "Governed" — writes flow through approved intents + JIT-minted tokens.
+                enum:
+                - Standing
+                - Governed
+                type: string
               oidc:
                 description: |-
                   OIDC declares which OIDC tokens prove this agent's identity.
@@ -252,6 +269,13 @@ spec:
                 required:
                 - issuer
                 type: object
+              requestedServices:
+                description: |-
+                  RequestedServices lists the services the agent wants credential
+                  bindings for (e.g. "k8s", "github"). Admin may approve a subset.
+                items:
+                  type: string
+                type: array
             required:
             - agentIdentity
             type: object
@@ -259,6 +283,20 @@ spec:
             description: AgentRegistrationStatus defines the observed state of an
               AgentRegistration.
             properties:
+              approvedAt:
+                description: |-
+                  ApprovedAt records when the registration last transitioned to Approved.
+                  Drives --registration-max-age re-attestation.
+                format: date-time
+                type: string
+              approvedServices:
+                description: |-
+                  ApprovedServices is the admin-confirmed subset of spec.requestedServices.
+                  Under auto policy it equals requestedServices. Under manual policy the
+                  admin may approve a subset.
+                items:
+                  type: string
+                type: array
               conditions:
                 description: Conditions represent the latest available observations
                   of the registration's state.
@@ -320,6 +358,16 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              phase:
+                description: 'Phase is the lifecycle phase: "" | Pending | Approved
+                  | Denied.'
+                type: string
+              registeredBy:
+                description: |-
+                  RegisteredBy records the human identity whose login submitted this
+                  registration. Set by the gateway from the authenticated caller at
+                  creation time; immutable thereafter.
+                type: string
             type: object
         required:
         - spec
