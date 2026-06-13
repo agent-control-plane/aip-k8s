@@ -304,7 +304,7 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 		defer resp.Body.Close() //nolint:errcheck
 		Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
 		b, _ := io.ReadAll(resp.Body)
-		Expect(string(b)).To(ContainSubstring("IDENTITY_MISMATCH"))
+		Expect(string(b)).To(ContainSubstring("agentIdentity does not match authenticated subject"))
 	})
 
 	It("registered agent with matching OIDC subject → 201", func() {
